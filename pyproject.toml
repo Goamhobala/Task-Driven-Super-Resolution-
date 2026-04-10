@@ -1,0 +1,81 @@
+[project]
+name = "instaroadprototype"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10.8",
+    "numpy>=1.24.0"
+]
+
+[project.optional-dependencies]
+sentinel2 = [
+    "sknw",
+    "scikit-image",
+    "opencv-python"
+]
+
+samroad = [
+    "addict",               # Configuration dictionary management (utils.py)
+    "igraph",               # High-performance graph processing (dataset.py via graph_utils)
+    "imageio",              # Image reading/writing (inferencer.py)
+    "networkx",             # Graph topology building (graph_extraction.py)
+    "numpy>=1.24.0",        # Array manipulation
+    "opencv-python",        # Image processing (cv2)
+    "lightning",            # Training orchestration (train.py, model.py)
+    "pyyaml",               # Parsing YAML config files (utils.py)
+    "rtree",                # Spatial indexing for bounding box queries (dataset.py, inferencer.py)
+    "scikit-image",         # Image drawing algorithms (graph_extraction.py)
+    "scikit-learn",         # KDTree for spatial neighbor queries (graph_extraction.py)
+    "scipy",                # KDTree for spatial point queries (dataset.py, inferencer.py)
+    "segment-anything",     # Official Meta SAM repository (model.py)
+    "tcod",                 # A* Pathfinding library (graph_extraction.py)
+    "torch>=2.1.0",         # Core deep learning
+    "torchmetrics",         # Evaluation metrics like IoU and F1 (model.py)
+    "torchvision>=0.25.0",  # Vision operations and loss functions
+    "wandb",
+]
+
+instageo = [
+    "instageo[gpu,data,model]",
+]
+terra = [
+    "albumentations>=2.0.8",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.2",
+    "terratorch",
+    "torch>=2.1.0",
+    "torchvision>=0.25.0",
+]
+
+utilities = [
+    "absl-py>=2.4.0",
+    "geopandas>=1.1.2",
+    "rasterio>=1.5.0",
+]
+
+
+[tool.uv.sources]
+instageo = { git = "https://github.com/kelviy/InstaGeo-E2E-Geospatial-ML.git" }
+terratorch = { git = "https://github.com/terrastackai/terratorch.git" }
+segment-anything = { git = "https://github.com/facebookresearch/segment-anything.git" }
+
+# Linux uses torch CUDA index. Mac fall back to default PyPI
+torch = [ { index = "pytorch-cu128", marker = "sys_platform == 'linux'" } ]
+torchvision = [ { index = "pytorch-cu128", marker = "sys_platform == 'linux'" } ]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv]
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",  # Apple Silicon Mac
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'"   # Intel Mac
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
