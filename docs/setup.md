@@ -76,6 +76,7 @@ repo_name = "InstaRoad"
 cmd_string = f"git clone --recursive https://oauth2:{github_pat}@github.com/{github_user}/{repo_name}.git"
 %cd /kaggle/working
 !rm -rf /content/InstaRoad
+!git config --global url."https://github.com/".insteadOf git@github.com:
 !{cmd_string}
 ```
 
