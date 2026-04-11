@@ -29,7 +29,7 @@ def main():
             "encoder": "resnet50",
             "dataset": "Sentinel-2",
             "epochs": 5,
-            "batch_size": 4, # Updated config tracking
+            "batch_size": 16, 
             "image_size": 256,
             "loss_function": "DiceLoss"
         }
