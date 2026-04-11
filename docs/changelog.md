@@ -22,3 +22,6 @@ Changes to use sentinel 2 dataset. Also added code create comparison output imag
 
 #### Misc
 Added configs and dataset config files
+
+### Unet Repo Changes
+Mostly again imports from the kaggle notebook code. Split up the code so that it's better organised. There is no validation metrics currently. Further plans to add Weights and Bias Metrics. 
