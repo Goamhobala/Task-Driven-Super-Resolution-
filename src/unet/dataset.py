@@ -18,7 +18,7 @@ class SentinelRoadsDataset(Dataset):
 
     def __getitem__(self, idx):
         # Get the filename from the predefined list
-        filename = self.file_list[idx]
+        filename = self.file_list[idx] + ".png"  
 
         img_path = os.path.join(self.image_dir, filename)
         mask_path = os.path.join(self.mask_dir, filename)
