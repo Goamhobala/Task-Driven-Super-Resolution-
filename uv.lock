@@ -1495,6 +1495,10 @@ terra = [
     { name = "torchvision", version = "0.26.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin')" },
     { name = "torchvision", version = "0.26.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
+unet = [
+    { name = "albumentations", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "segmentation-models-pytorch", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
 utilities = [
     { name = "absl-py", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "geopandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1506,6 +1510,7 @@ requires-dist = [
     { name = "absl-py", marker = "extra == 'utilities'", specifier = ">=2.4.0" },
     { name = "addict", marker = "extra == 'samroad'" },
     { name = "albumentations", marker = "extra == 'terra'", specifier = ">=2.0.8" },
+    { name = "albumentations", marker = "extra == 'unet'" },
     { name = "geopandas", marker = "extra == 'utilities'", specifier = ">=1.1.2" },
     { name = "igraph", marker = "extra == 'samroad'" },
     { name = "imageio", marker = "extra == 'samroad'" },
@@ -1528,6 +1533,7 @@ requires-dist = [
     { name = "scikit-learn", marker = "extra == 'samroad'" },
     { name = "scipy", marker = "extra == 'samroad'" },
     { name = "segment-anything", marker = "extra == 'samroad'", git = "https://github.com/facebookresearch/segment-anything.git" },
+    { name = "segmentation-models-pytorch", marker = "extra == 'unet'" },
     { name = "sknw", marker = "extra == 'sentinel2'" },
     { name = "tcod", marker = "extra == 'samroad'" },
     { name = "terratorch", marker = "extra == 'terra'", git = "https://github.com/terrastackai/terratorch.git" },
@@ -1542,7 +1548,7 @@ requires-dist = [
     { name = "torchvision", marker = "sys_platform != 'linux' and extra == 'terra'", specifier = ">=0.25.0" },
     { name = "wandb", marker = "extra == 'samroad'" },
 ]
-provides-extras = ["sentinel2", "samroad", "instageo", "terra", "utilities"]
+provides-extras = ["sentinel2", "samroad", "unet", "instageo", "terra", "utilities"]
 
 [[package]]
 name = "isoduration"

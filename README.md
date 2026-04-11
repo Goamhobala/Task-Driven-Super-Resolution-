@@ -78,5 +78,6 @@ uv pip install -e ".[samroad,sentinel2]
 | instageo              | Run instageo framework                       |
 | terra                 | Terratorch and Terramind (in progress)       |
 | utitiles              | Utilities shared (in progress)               |
+| unet                  | Unet++ model                                 |
 
 > More documentation is served via mkdocs on the web. Or can be found in docs folder

@@ -38,6 +38,11 @@ samroad = [
     "wandb",
 ]
 
+unet = [
+    "segmentation-models-pytorch",
+    "albumentations"
+]
+
 instageo = [
     "instageo[gpu,data,model]",
 ]
@@ -92,4 +97,4 @@ build-backend = "hatchling.build"
 
 # This section tells hatchling to look inside 'src' for packages
 [tool.hatch.build.targets.wheel]
-packages = ["src/samroad", "src/sentinel2data"]
+packages = ["src/samroad", "src/sentinel2data", "src/unet"]
