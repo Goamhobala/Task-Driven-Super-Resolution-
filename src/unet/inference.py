@@ -12,14 +12,14 @@ def main():
     # Input path
     BASE_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2'
     # DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_1024'
-    DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_256'
+    DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_256/15765738'
     # IMG_DIR = os.path.join(DATASET_DIR, 'images_1024')
     # MASK_DIR = os.path.join(DATASET_DIR, 'clean_masks')
     IMG_DIR = os.path.join(DATASET_DIR, 'images_enhanced_png', 'images_enhanced_png')
     MASK_DIR = os.path.join(DATASET_DIR, 'masks_png', 'masks_png')
 
     CHECKPOINT_PATH = '/kaggle/working/unetplusplus_resnet50_roads.pth'
-    PREDICTIONS_PATH = '/kaggle/working/predictions/test_set'f
+    PREDICTIONS_PATH = '/kaggle/working/predictions/test_set'
 
     os.makedirs(PREDICTIONS_PATH, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
