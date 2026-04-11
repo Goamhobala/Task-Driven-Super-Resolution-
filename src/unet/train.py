@@ -15,8 +15,10 @@ def main():
     DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_1024'
     CHECKPOINT_PATH = '/kaggle/working/unetplusplus_resnet50_roads.pth'
 
-    IMG_DIR = os.path.join(DATASET_DIR, 'images_1024')
-    MASK_DIR = os.path.join(DATASET_DIR, 'clean_masks')
+    # IMG_DIR = os.path.join(DATASET_DIR, 'images_1024')
+    # MASK_DIR = os.path.join(DATASET_DIR, 'clean_masks')
+    IMG_DIR = os.path.join(DATASET_DIR, 'images_enhanced_png', 'images_enhanced_png')
+    MASK_DIR = os.path.join(DATASET_DIR, 'masks_png', 'masks_png')
 
     # Initialize Weights & Biases
     wandb.init(

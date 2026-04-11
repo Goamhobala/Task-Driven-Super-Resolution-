@@ -11,9 +11,12 @@ import albumentations as A
 def main():
     # Input path
     BASE_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2'
-    DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_1024'
-    IMG_DIR = os.path.join(DATASET_DIR, 'images_1024')
-    MASK_DIR = os.path.join(DATASET_DIR, 'clean_masks')
+    # DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_1024'
+    DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_256'
+    # IMG_DIR = os.path.join(DATASET_DIR, 'images_1024')
+    # MASK_DIR = os.path.join(DATASET_DIR, 'clean_masks')
+    IMG_DIR = os.path.join(DATASET_DIR, 'images_enhanced_png', 'images_enhanced_png')
+    MASK_DIR = os.path.join(DATASET_DIR, 'masks_png', 'masks_png')
 
     CHECKPOINT_PATH = '/kaggle/working/unetplusplus_resnet50_roads.pth'
     PREDICTIONS_PATH = '/kaggle/working/predictions/test_set'
@@ -23,7 +26,8 @@ def main():
 
     # Data Setup
     _, _, test_list = sentinel2_data_partition(BASE_DIR)
-    transform = A.Compose([A.Resize(1024, 1024)])
+    # transform = A.Compose([A.Resize(1024, 1024)])
+    transform = A.Compose([A.Resize(256, 256)])
 
     test_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, test_list, transform=transform)
     test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2)
