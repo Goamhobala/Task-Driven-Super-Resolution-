@@ -1,4 +1,4 @@
-from sentinel2.preprocessor import convert_dataset_to_graphs
+from sentinel2data.preprocessor import convert_dataset_to_graphs
 
 def main():
     # Update this to where your original 256x256 satellite images are stored

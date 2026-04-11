@@ -50,6 +50,11 @@ We probably should also have tasks assigned to every one each week. Again probab
 ## Environment Setup
 Python dependencies are handled with UV. Optional dependencies are used so only the dependencies that are needed are installed.
 
+This repository uses submodules hence you have to git clone with recursive flag:
+``` bash
+git clone --recursive https://github.com/InstaRoad/InstaRoadPrototype.git
+```
+
 You can install and pick optional dependencies to be installed as follows:
 ``` bash
 # adding optional dependencies with exact lock file

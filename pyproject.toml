@@ -92,4 +92,4 @@ build-backend = "hatchling.build"
 
 # This section tells hatchling to look inside 'src' for packages
 [tool.hatch.build.targets.wheel]
-packages = ["src/samroad", "src/sentinel2"]
+packages = ["src/samroad", "src/sentinel2data"]
