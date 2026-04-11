@@ -63,6 +63,22 @@ cmd_string = f"git clone https://oauth2:{password}@github.com/{user}/{repo_name}
 !{cmd_string}
 ```
 
+cloneing the repo (kaggle)
+``` python
+from kaggle_secrets import UserSecretsClient
+import os
+
+user_secrets = UserSecretsClient()
+github_pat = user_secrets.get_secret("InstaRoad_GITHUB_PAT")
+github_user = "instaroad"
+repo_name = "InstaRoad"
+
+cmd_string = f"git clone --recursive https://oauth2:{github_pat}@github.com/{github_user}/{repo_name}.git"
+%cd /kaggle/working
+!rm -rf /content/InstaRoad
+!{cmd_string}
+```
+
 ## Kaggle Authentication Setup
 This if datasets are generated on colab or private models/datasets to be downloaded. First save your kaggle username and kaggle key in to google colab secrets.
 
