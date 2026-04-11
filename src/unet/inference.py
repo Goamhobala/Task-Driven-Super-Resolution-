@@ -10,9 +10,10 @@ import albumentations as A
 
 def main():
     # Input path
-    BASE_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_1024'
-    IMG_DIR = os.path.join(BASE_DIR, 'images_1024')
-    MASK_DIR = os.path.join(BASE_DIR, 'clean_masks')
+    BASE_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2'
+    DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_1024'
+    IMG_DIR = os.path.join(DATASET_DIR, 'images_1024')
+    MASK_DIR = os.path.join(DATASET_DIR, 'clean_masks')
 
     CHECKPOINT_PATH = '/kaggle/working/unetplusplus_resnet50_roads.pth'
     PREDICTIONS_PATH = '/kaggle/working/predictions/test_set'

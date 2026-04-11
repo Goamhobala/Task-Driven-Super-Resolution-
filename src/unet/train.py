@@ -11,11 +11,12 @@ from unet.model import build_model, train_model
 
 def main():
     # Input paths
-    BASE_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_1024'
+    BASE_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2'
+    DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_1024'
     CHECKPOINT_PATH = '/kaggle/working/unetplusplus_resnet50_roads.pth'
 
-    IMG_DIR = os.path.join(BASE_DIR, 'images_1024')
-    MASK_DIR = os.path.join(BASE_DIR, 'clean_masks')
+    IMG_DIR = os.path.join(DATASET_DIR, 'images_1024')
+    MASK_DIR = os.path.join(DATASET_DIR, 'clean_masks')
 
     # Initialize Weights & Biases
     wandb.init(
@@ -25,7 +26,7 @@ def main():
             "architecture": "UnetPlusPlus",
             "encoder": "resnet50",
             "dataset": "Sentinel-2",
-            "epochs": 50,
+            "epochs": 5,
             "batch_size": 4, # Updated config tracking
             "image_size": 1024,
             "loss_function": "DiceLoss"
