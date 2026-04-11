@@ -19,7 +19,7 @@ def main():
     MASK_DIR = os.path.join(DATASET_DIR, 'masks_png', 'masks_png')
 
     CHECKPOINT_PATH = '/kaggle/working/unetplusplus_resnet50_roads.pth'
-    PREDICTIONS_PATH = '/kaggle/working/predictions/test_set'
+    PREDICTIONS_PATH = '/kaggle/working/predictions/test_set'f
 
     os.makedirs(PREDICTIONS_PATH, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

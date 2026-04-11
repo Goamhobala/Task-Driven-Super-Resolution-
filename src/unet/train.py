@@ -12,7 +12,7 @@ from unet.model import build_model, train_model
 def main():
     # Input paths
     BASE_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2'
-    DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_1024'
+    DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_256/15765738'
     CHECKPOINT_PATH = '/kaggle/working/unetplusplus_resnet50_roads.pth'
 
     # IMG_DIR = os.path.join(DATASET_DIR, 'images_1024')
@@ -30,7 +30,7 @@ def main():
             "dataset": "Sentinel-2",
             "epochs": 5,
             "batch_size": 4, # Updated config tracking
-            "image_size": 1024,
+            "image_size": 256,
             "loss_function": "DiceLoss"
         }
     )
@@ -39,7 +39,7 @@ def main():
     train_list, val_list, test_list = sentinel2_data_partition(BASE_DIR)
 
     # Transform
-    transform = A.Compose([A.Resize(1024, 1024)])
+    transform = A.Compose([A.Resize(256, 256)])
 
     # Instantiate datasets
     train_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, train_list, transform=transform)
