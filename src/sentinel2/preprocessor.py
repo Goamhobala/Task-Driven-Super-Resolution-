@@ -7,24 +7,6 @@ import networkx as nx
 from skimage.morphology import skeletonize
 import sknw
 
-def main():
-    # Update this to where your original 256x256 satellite images are stored
-    IMG_DIR = "/kaggle/input/datasets/sonisuyash/sentinel-2-roads-dataset/15765738/images_enhanced_png/images_enhanced_png"
-    MASK_DIR = "/kaggle/input/datasets/sonisuyash/sentinel-2-roads-dataset/15765738/masks_png/masks_png"
-
-    # The new root directory for the 1024x1024 dataset
-    OUTPUT_ROOT_DIR = "/kaggle/working/InstaRoad/sam_road/sentinel2_test_1024"
-
-    convert_dataset_to_graphs(
-        img_dir=IMG_DIR,
-        mask_dir=MASK_DIR,
-        output_dir=OUTPUT_ROOT_DIR,
-        node_spacing=5,        # Baseline distance in 256x256 space (auto-scales to 20px)
-        kernel_size=10,         # Morphological closing kernel (applied directly to upscaled image)
-        scale_factor=4.0,      # Upscale factor (4x turns 256x256 into 1024x1024)
-        min_spur_length=3      # Removes dead ends shorter than 3 pixels in 256x256 space (auto-scales to 12px)
-    )
-
 def prune_graph_spurs(nx_graph, min_spur_length):
     """
     Removes short dead-end branches (spurs) from the graph that are
@@ -246,21 +228,20 @@ def convert_dataset_to_graphs(img_dir, mask_dir, output_dir, node_spacing=5, ker
 
 
 if __name__ == "__main__":
-    # # Update this to where your original 256x256 satellite images are stored
-    # IMG_DIR = "/Users/mistycloud/Projects/InstaRoad/data/sentinel2_test/images"
-    # MASK_DIR = "/Users/mistycloud/Projects/InstaRoad/data/sentinel2_test/masks"
+    # Update this to where your original 256x256 satellite images are stored
+    IMG_DIR = "/Users/mistycloud/Projects/InstaRoad/data/sentinel2_test/images"
+    MASK_DIR = "/Users/mistycloud/Projects/InstaRoad/data/sentinel2_test/masks"
 
-    # # The new root directory for the 1024x1024 dataset
-    # OUTPUT_ROOT_DIR = "/Users/mistycloud/Projects/InstaRoad/data/sentinel2_test_1024"
+    # The new root directory for the 1024x1024 dataset
+    OUTPUT_ROOT_DIR = "/Users/mistycloud/Projects/InstaRoad/data/sentinel2_test_1024"
 
-    # convert_dataset_to_graphs(
-    #     img_dir=IMG_DIR,
-    #     mask_dir=MASK_DIR,
-    #     output_dir=OUTPUT_ROOT_DIR,
-    #     node_spacing=5,        # Baseline distance in 256x256 space (auto-scales to 20px)
-    #     kernel_size=10,         # Morphological closing kernel (applied directly to upscaled image)
-    #     scale_factor=4.0,      # Upscale factor (4x turns 256x256 into 1024x1024)
-    #     min_spur_length=3      # Removes dead ends shorter than 3 pixels in 256x256 space (auto-scales to 12px)
-    # )
+    convert_dataset_to_graphs(
+        img_dir=IMG_DIR,
+        mask_dir=MASK_DIR,
+        output_dir=OUTPUT_ROOT_DIR,
+        node_spacing=5,        # Baseline distance in 256x256 space (auto-scales to 20px)
+        kernel_size=10,         # Morphological closing kernel (applied directly to upscaled image)
+        scale_factor=4.0,      # Upscale factor (4x turns 256x256 into 1024x1024)
+        min_spur_length=3      # Removes dead ends shorter than 3 pixels in 256x256 space (auto-scales to 12px)
+    )
 
-    main()

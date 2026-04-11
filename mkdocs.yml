@@ -1,0 +1,7 @@
+site_name: "InstaRoad: Deep Learning Road Network Extraction from Satellite Imagery"
+theme: readthedocs
+
+nav:
+  - Introduction: index.md
+  - Setup Guide: setup.md
+  - SAM Road: samroad.md
