@@ -3,33 +3,50 @@ import wandb
 from terratorch.models import EncoderDecoderFactory
 
 
-def build_model(pretrained: bool = True):
+def build_model(ckpt_path: str | None = None):
     """
     Builds a TerraMind-based binary segmentation model using TerraTorch.
 
-    Backbone: terramind_v1_base (ViT-Base pre-trained on EO data)
-    Decoder:  FCNDecoder -> 1-channel logit map (road / no-road)
+    Backbone : terramind_v1_base  (ViT-Base pre-trained on EO data)
+    Modality : RGB  — supported natively; patch embedding was pre-trained on
+               Sentinel-2 RGB inputs in [0, 255].
+    Necks    : ReshapeTokensToImage → SelectIndices → LearnedInterpolateToPyramidal
+               Required to convert ViT token outputs [B, T, D] into a
+               multi-scale spatial feature pyramid for the UperNet decoder.
+    Decoder  : UperNetDecoder → 1-channel logit map (road / no-road)
 
-    The dataset images are RGB PNGs (3 channels, 256x256).  TerraMind
-    was pre-trained on multi-spectral data but can be fine-tuned on RGB
-    by setting in_chans=3, which replaces the patch-embedding projection.
+    Args:
+        ckpt_path: Path to a locally downloaded TerraMind backbone checkpoint
+                   (e.g. TerraMind_v1_base.pt).  When None the backbone is
+                   initialised with random weights — intended for inference
+                   where a full fine-tuned state dict will be loaded afterwards
+                   via model.load_state_dict().
     """
     factory = EncoderDecoderFactory()
 
+    backbone_extra = {}
+    if ckpt_path is not None:
+        backbone_extra["backbone_ckpt_path"] = ckpt_path
+
     model = factory.build_model(
         task="segmentation",
+        # --- Backbone ---
         backbone="terramind_v1_base",
-        backbone_kwargs={
-            "pretrained": pretrained,
-            "in_chans": 3,         # RGB input (Sentinel-2 enhanced PNGs)
-        },
-        decoder="FCNDecoder",
+        backbone_pretrained=False,          # weights come from backbone_ckpt_path
+        backbone_modalities=["RGB"],        # 3-channel RGB input
+        **backbone_extra,
+        # --- Necks: reshape ViT tokens → multi-scale spatial pyramid ---
+        # Follows the pattern documented at:
+        # https://terrastackai.github.io/terratorch/stable/guide/terramind/
+        necks=[
+            {"name": "ReshapeTokensToImage", "remove_cls_token": False},
+            {"name": "SelectIndices", "indices": [2, 5, 8, 11]},
+            {"name": "LearnedInterpolateToPyramidal"},
+        ],
+        # --- Decoder ---
+        decoder="UperNetDecoder",
         decoder_kwargs={
-            "num_classes": 1,      # Binary: road vs. background
-            "channels": 256,
-        },
-        head_kwargs={
-            "dropout": 0.1,
+            "num_classes": 1,               # binary: road vs. background
         },
     )
 
@@ -48,7 +65,6 @@ def _extract_logits(output):
         return output.get("output", next(iter(output.values())))
     if isinstance(output, (list, tuple)):
         return output[0]
-    # terratorch ModelOutput / dataclass
     if hasattr(output, "output"):
         return output.output
     if hasattr(output, "logits"):
@@ -78,7 +94,8 @@ def train_model(
             images, masks = images.to(device), masks.to(device)
 
             optimizer.zero_grad()
-            raw = model(images)
+            # TerraMind expects a modality dict; "RGB" maps to 3-channel input
+            raw = model({"RGB": images})
             outputs = _extract_logits(raw)
             loss = criterion(outputs, masks)
             loss.backward()
@@ -95,7 +112,7 @@ def train_model(
             for val_images, val_masks, _ in val_loader:
                 val_images, val_masks = val_images.to(device), val_masks.to(device)
 
-                raw = model(val_images)
+                raw = model({"RGB": val_images})
                 outputs = _extract_logits(raw)
                 loss = criterion(outputs, val_masks)
                 val_loss += loss.item()

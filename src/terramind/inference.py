@@ -16,7 +16,8 @@ def main():
     IMG_DIR     = os.path.join(DATASET_DIR, 'images_enhanced_png', 'images_enhanced_png')
     MASK_DIR    = os.path.join(DATASET_DIR, 'masks_png', 'masks_png')
 
-    CHECKPOINT_PATH  = '/kaggle/working/terramind_v1_base_roads.pth'
+    # Fine-tuned model saved by train.py (backbone + decoder + head weights)
+    FINETUNED_CKPT   = '/kaggle/working/terramind_v1_base_roads_finetuned.pth'
     PREDICTIONS_PATH = '/kaggle/working/predictions/terramind_test_set'
     os.makedirs(PREDICTIONS_PATH, exist_ok=True)
 
@@ -28,11 +29,12 @@ def main():
     test_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, test_list, transform=transform)
     test_loader  = DataLoader(test_dataset, batch_size=8, shuffle=False, num_workers=2)
 
+    # Build architecture (no backbone ckpt needed — fine-tuned state dict covers all weights)
     print("Initialising TerraMind model architecture...")
-    model = build_model(pretrained=False).to(device)
+    model = build_model().to(device)
 
-    print(f"Loading weights from {CHECKPOINT_PATH}...")
-    model.load_state_dict(torch.load(CHECKPOINT_PATH, map_location=device))
+    print(f"Loading fine-tuned weights from {FINETUNED_CKPT}...")
+    model.load_state_dict(torch.load(FINETUNED_CKPT, map_location=device))
     model.eval()
 
     print("\nEvaluating TerraMind on Test Set...")
@@ -53,7 +55,7 @@ def save_predictions(model, dataloader, output_dir, device, save_comparison=Fals
         for images, masks, filenames in dataloader:
             images = images.to(device)
 
-            raw = model(images)
+            raw     = model({"RGB": images})
             outputs = _extract_logits(raw)
 
             preds = torch.sigmoid(outputs)
@@ -105,7 +107,7 @@ def evaluate_metrics(model, dataloader, device, threshold=0.5):
         for images, masks, _ in dataloader:
             images, masks = images.to(device), masks.to(device)
 
-            raw     = model(images)
+            raw     = model({"RGB": images})
             outputs = _extract_logits(raw)
             preds   = torch.sigmoid(outputs)
             preds   = (preds > threshold).float()

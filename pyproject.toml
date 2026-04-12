@@ -48,6 +48,7 @@ instageo = [
 ]
 terra = [
     "albumentations>=2.0.8",
+    "huggingface-hub",              # hf_hub_download for TerraMind checkpoint
     "matplotlib>=3.10.8",
     "numpy>=2.4.2",
     "segmentation-models-pytorch",  # DiceLoss for binary segmentation
