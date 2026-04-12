@@ -30,7 +30,7 @@ samroad = [
     "scikit-image",         # Image drawing algorithms (graph_extraction.py)
     "scikit-learn",         # KDTree for spatial neighbor queries (graph_extraction.py)
     "scipy",                # KDTree for spatial point queries (dataset.py, inferencer.py)
-    "segment-anything",     # Official Meta SAM repository (model.py)
+    # "segment-anything",     # Official Meta SAM repository (model.py)
     "tcod",                 # A* Pathfinding library (graph_extraction.py)
     "torch>=2.1.0",         # Core deep learning
     "torchmetrics",         # Evaluation metrics like IoU and F1 (model.py)
@@ -50,9 +50,11 @@ terra = [
     "albumentations>=2.0.8",
     "matplotlib>=3.10.8",
     "numpy>=2.4.2",
+    "segmentation-models-pytorch",  # DiceLoss for binary segmentation
     "terratorch",
     "torch>=2.1.0",
     "torchvision>=0.25.0",
+    "wandb",
 ]
 
 utilities = [
@@ -65,7 +67,7 @@ utilities = [
 [tool.uv.sources]
 instageo = { git = "https://github.com/kelviy/InstaGeo-E2E-Geospatial-ML.git" }
 terratorch = { git = "https://github.com/terrastackai/terratorch.git" }
-segment-anything = { git = "https://github.com/facebookresearch/segment-anything.git" }
+# segment-anything = { git = "https://github.com/facebookresearch/segment-anything.git" }
 
 # Linux uses torch CUDA index. Mac fall back to default PyPI
 torch = [ { index = "pytorch-cu128", marker = "sys_platform == 'linux'" } ]
@@ -97,4 +99,4 @@ build-backend = "hatchling.build"
 
 # This section tells hatchling to look inside 'src' for packages
 [tool.hatch.build.targets.wheel]
-packages = ["src/samroad", "src/sentinel2data", "src/unet"]
+packages = ["src/samroad", "src/sentinel2data", "src/unet", "src/terramind"]
