@@ -140,7 +140,9 @@ def train_model(
                 f"to {avg_val_loss:.4f}. Saving model..."
             )
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), save_path)
+            # DataParallel wraps the real model under .module
+            state_dict = model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict()
+            torch.save(state_dict, save_path)
 
     print("Fine-tuning complete.")
     return model

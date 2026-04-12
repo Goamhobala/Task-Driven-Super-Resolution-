@@ -52,16 +52,26 @@ def main():
     val_dataset   = SentinelRoadsDataset(IMG_DIR, MASK_DIR, val_list,   transform=transform)
     test_dataset  = SentinelRoadsDataset(IMG_DIR, MASK_DIR, test_list,  transform=transform)
 
-    batch_size   = wandb.config.batch_size
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,  num_workers=2)
-    val_loader   = DataLoader(val_dataset,   batch_size=batch_size, shuffle=False, num_workers=2)
+    # Scale batch size and workers by GPU count so each GPU sees batch_size samples
+    n_gpus       = torch.cuda.device_count()
+    batch_size   = wandb.config.batch_size * max(1, n_gpus)
+    num_workers  = 2 * max(1, n_gpus)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,  num_workers=num_workers)
+    val_loader   = DataLoader(val_dataset,   batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     print(f"Training samples: {len(train_dataset)}, Validation: {len(val_dataset)}, Test: {len(test_dataset)}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    n_gpus = torch.cuda.device_count()
+    print(f"GPUs available: {n_gpus}")
 
     # Build model and load the pre-downloaded TerraMind backbone checkpoint
     model = build_model(ckpt_path=TERRAMIND_CKPT).to(device)
+
+    # Distribute across all available GPUs
+    if n_gpus > 1:
+        model = torch.nn.DataParallel(model)
+        print(f"Using DataParallel across {n_gpus} GPUs")
 
     # DiceLoss for binary road segmentation (consistent with UNet baseline)
     criterion = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
