@@ -10,10 +10,10 @@ def build_model(ckpt_path: str | None = None):
     Backbone : terramind_v1_base  (ViT-Base pre-trained on EO data)
     Modality : RGB  — supported natively; patch embedding was pre-trained on
                Sentinel-2 RGB inputs in [0, 255].
-    Necks    : ReshapeTokensToImage → SelectIndices → LearnedInterpolateToPyramidal
-               Required to convert ViT token outputs [B, T, D] into a
-               multi-scale spatial feature pyramid for the UperNet decoder.
-    Decoder  : UperNetDecoder → 1-channel logit map (road / no-road)
+    Neck     : ReshapeTokensToImage — converts final-layer ViT tokens
+               [B, T, D] → [B, 768, 16, 16] (patch_size=16, 256px input).
+    Decoder  : FCNDecoder → 1-channel logit map (road / no-road), bilinearly
+               upsampled to 256×256 by the factory's built-in rescale.
 
     Args:
         ckpt_path: Path to a locally downloaded TerraMind backbone checkpoint
@@ -36,16 +36,19 @@ def build_model(ckpt_path: str | None = None):
         backbone_pretrained=False,          # weights come from backbone_ckpt_path
         backbone_modalities=["RGB"],        # 3-channel RGB input
         **backbone_extra,
-        # --- Necks: reshape ViT tokens → multi-scale spatial pyramid ---
-        # Follows the pattern documented at:
-        # https://terrastackai.github.io/terratorch/stable/guide/terramind/
+        # --- Neck ---
+        # ViT outputs token sequences [B, T, D]. ReshapeTokensToImage converts
+        # the final-layer tokens to [B, D, H', W'] (16×16 for 256px input with
+        # patch_size=16). The factory's rescale=True then bilinearly upsamples
+        # the decoder output back to 256×256.
+        # UperNetDecoder is avoided here: its Pyramid Pooling Module requires
+        # spatial dims ≥ its pool_scales, which breaks on the 8×8 / 4×4 / 2×2
+        # maps that LearnedInterpolateToPyramidal would produce from a 16×16 grid.
         necks=[
-            {"name": "ReshapeTokensToImage", "remove_cls_token": False},
-            {"name": "SelectIndices", "indices": [2, 5, 8, 11]},
-            {"name": "LearnedInterpolateToPyramidal"},
+            {"name": "ReshapeTokensToImage"},   # removes CLS token, gives [B, 768, 16, 16]
         ],
         # --- Decoder ---
-        decoder="UperNetDecoder",
+        decoder="FCNDecoder",
     )
 
     return model

@@ -33,7 +33,7 @@ def main():
             "architecture": "TerraMind",
             "backbone": "terramind_v1_base",
             "modality": "RGB",
-            "decoder": "UperNetDecoder",
+            "decoder": "FCNDecoder",
             "dataset": "Sentinel-2",
             "epochs": 5,
             "batch_size": 8,            # ViT-Base is heavier than ResNet50
