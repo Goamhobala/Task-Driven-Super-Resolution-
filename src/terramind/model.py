@@ -30,6 +30,7 @@ def build_model(ckpt_path: str | None = None):
 
     model = factory.build_model(
         task="segmentation",
+        num_classes=1,                      # top-level: binary road vs. background
         # --- Backbone ---
         backbone="terramind_v1_base",
         backbone_pretrained=False,          # weights come from backbone_ckpt_path
@@ -45,9 +46,6 @@ def build_model(ckpt_path: str | None = None):
         ],
         # --- Decoder ---
         decoder="UperNetDecoder",
-        decoder_kwargs={
-            "num_classes": 1,               # binary: road vs. background
-        },
     )
 
     return model
