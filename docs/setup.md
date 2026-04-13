@@ -156,3 +156,61 @@ wandb_api_key = user_secrets.get_secret("WANDB_API_KEY")
 os.environ["WANDB_API_KEY"] = wandb_api_key
 wandb.login(key=wandb_api_key)
 ```
+
+### CloudFlare Tunnels
+Install the cloudflared tool
+``` bash
+brew install cloudflared
+```
+
+Insert into your ssh config
+``` bash
+Host sports-encountered-regarded-gig.trycloudflare.com
+  HostName sports-encountered-regarded-gig.trycloudflare.com
+  User root
+  ProxyCommand /opt/homebrew/bin/cloudflared access ssh --hostname %h
+```
+
+ssh in with your password that you've set. For now you probably have to change the url every time you have a new instance.
+
+
+How run this in kaggle notebook
+``` python
+
+!mkdir -p /var/run/sshd
+!echo "root:{USER_PASSWORD}" | chpasswd
+!sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+!sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+# Restart SSH service
+!service ssh stop
+os.system("/usr/sbin/sshd -D &")
+
+# 3. Start Cloudflare Tunnel
+print("Starting Cloudflare Tunnel...")
+with open("tunnel.log", "w") as f:
+    process = subprocess.Popen(["cloudflared", "tunnel", "--url", "tcp://localhost:22"],
+                               stdout=f, stderr=f)
+
+# Wait and Parse
+time.sleep(8) # Giving it a few extra seconds to handshake
+with open("tunnel.log", "r") as f:
+    log_content = f.read()
+    # Regex to find the random hostname provided by Cloudflare
+    match = re.search(r"([a-zA-Z0-9-]+\.trycloudflare\.com)", log_content)
+
+    if match:
+        hostname = match.group(1)
+        print("\n" + "="*40)
+        print("✅ SSH SERVER IS LIVE")
+        print(f"Hostname: {hostname}")
+        print("="*40)
+        print("\nIN VS CODE:")
+        print(f"1. F1 -> Remote-SSH: Connect to Host...")
+        print(f"2. Enter: root@{hostname}")
+    else:
+        print("\n❌ Could not find tunnel URL in logs.")
+        print("--- DEBUG LOG START ---")
+        print(log_content)
+        print("--- DEBUG LOG END ---")
+```
