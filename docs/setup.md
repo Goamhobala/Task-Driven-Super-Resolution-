@@ -71,11 +71,11 @@ import os
 user_secrets = UserSecretsClient()
 github_pat = user_secrets.get_secret("InstaRoad_GITHUB_PAT")
 github_user = "instaroad"
-repo_name = "InstaRoad"
+repo_name = "InstaRoadPrototype"
 
 cmd_string = f"git clone --recursive https://oauth2:{github_pat}@github.com/{github_user}/{repo_name}.git"
 %cd /kaggle/working
-!rm -rf /content/InstaRoad
+!rm -rf /kaggle/working/InstaRoadPrototype
 !git config --global url."https://github.com/".insteadOf git@github.com:
 !{cmd_string}
 ```
