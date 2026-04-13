@@ -56,10 +56,10 @@ from google.colab import userdata
 
 user = "instaroad"
 password = userdata.get('Github_kaggle')
-repo_name = "InstaRoad"
+repo_name = "InstaRoadPrototype"
 cmd_string = f"git clone https://oauth2:{password}@github.com/{user}/{repo_name}.git"
 
-!rm -rf /content/InstaRoad
+!rm -rf /content/InstaRoadPrototype
 !{cmd_string}
 ```
 
