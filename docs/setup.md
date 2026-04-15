@@ -214,3 +214,46 @@ with open("tunnel.log", "r") as f:
         print(log_content)
         print("--- DEBUG LOG END ---")
 ```
+
+## SSH GPU
+Problem: LD_LIBRARY_PATH was empty, so NVIDIA libraries in /usr/local/nvidia/lib64/ couldn't be found by nvidia-smi or PyTorch.
+
+You have: 2x Tesla T4 GPUs (15GB each), CUDA 13.0, Driver 580.105.08
+
+To fix for the current session, run:
+
+
+export LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+export PATH=/opt/bin:$PATH
+To fix permanently, add those two lines to your ~/.bashrc or ~/.bash_profile:
+
+
+echo 'export LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+echo 'export PATH=/opt/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
+Note: On Kaggle, this environment resets between sessions, so you'll need to re-run the export commands each time you SSH in (or add them to ~/.bashrc if that persists in your setup).
+
+
+``` python
+import os
+
+# 1. Define the Kaggle-specific GPU paths
+gpu_env = {
+    "LD_LIBRARY_PATH": "/usr/local/nvidia/lib64:/usr/local/cuda/lib64",
+    "PATH": f"/opt/bin:{os.environ['PATH']}",
+    "NVIDIA_VISIBLE_DEVICES": "all"
+}
+
+# 2. Inject into /etc/environment (This fixes SSH sessions)
+print("Injecting GPU paths into system environment...")
+with open("/etc/environment", "a") as f:
+    for key, value in gpu_env.items():
+        # Check if it's already there to avoid duplicates
+        f.write(f'{key}="{value}"\n')
+
+# 3. Inject into .bashrc (This fixes interactive terminal sessions)
+os.system(f"echo 'export LD_LIBRARY_PATH={gpu_env['LD_LIBRARY_PATH']}:$LD_LIBRARY_PATH' >> /root/.bashrc")
+os.system(f"echo 'export PATH=/opt/bin:$PATH' >> /root/.bashrc")
+
+print("✅ GPU environment variables are now persistent for this session's SSH logins.")
+```

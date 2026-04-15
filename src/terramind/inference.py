@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 import albumentations as A
 
 from terramind.dataset import SentinelRoadsDataset, sentinel2_data_partition
-from terramind.model import build_model, _extract_logits
+from terramind.model import build_model
 
 
 def main():
@@ -55,9 +55,7 @@ def save_predictions(model, dataloader, output_dir, device, save_comparison=Fals
         for images, masks, filenames in dataloader:
             images = images.to(device)
 
-            raw     = model({"RGB": images})
-            outputs = _extract_logits(raw)
-
+            outputs = model({"RGB": images})
             preds = torch.sigmoid(outputs)
             preds = (preds > 0.5).float().cpu().numpy()
 
@@ -107,8 +105,7 @@ def evaluate_metrics(model, dataloader, device, threshold=0.5):
         for images, masks, _ in dataloader:
             images, masks = images.to(device), masks.to(device)
 
-            raw     = model({"RGB": images})
-            outputs = _extract_logits(raw)
+            outputs = model({"RGB": images})
             preds   = torch.sigmoid(outputs)
             preds   = (preds > threshold).float()
 
