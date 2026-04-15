@@ -35,7 +35,7 @@ def main():
             "modality": "RGB",
             "decoder": "FCNDecoder",
             "dataset": "Sentinel-2",
-            "epochs": 5,
+            "epochs": 50,
             "batch_size": 8,            # ViT-Base is heavier than ResNet50
             "image_size": 256,
             "loss_function": "DiceLoss",
