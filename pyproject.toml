@@ -43,9 +43,10 @@ unet = [
     "albumentations"
 ]
 
-dataset = [
+benchmarking = [
     "geopandas",
-    "awscli"
+    "awscli",
+    "eotdl"
     ]
 
 instageo = [
