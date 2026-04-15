@@ -31,4 +31,6 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 
 # 6. Install Python Dependencies
+# Upgrade Python to 3.12
+RUN /opt/conda/bin/conda install -y python=3.12
 RUN uv pip install --system -e ".[sentinel2,samroad,unet,instageo,terra,utilities]"

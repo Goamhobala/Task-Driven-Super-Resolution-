@@ -43,6 +43,11 @@ unet = [
     "albumentations"
 ]
 
+dataset = [
+    "geopandas",
+    "awscli"
+    ]
+
 instageo = [
     "instageo[gpu,data,model]",
 ]
