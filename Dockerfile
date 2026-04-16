@@ -39,4 +39,4 @@ COPY src ./src
 
 # 8. Install Python Dependencies
 
-RUN uv pip install -e ".[sentinel2,samroad,unet,instageo,terra,utilities,benchmarking]"
+RUN uv pip install -e ".[sentinel2,samroad,unet,utilities,benchmarking]"
