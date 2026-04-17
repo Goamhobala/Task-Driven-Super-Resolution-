@@ -5,5 +5,5 @@ nav:
   - Introduction: index.md
   - Setup Guide: setup.md
   - SAM Road: samroad.md
+  - Sentinel2: sentinel2.md
   - Change Log: changelog.md
-  
