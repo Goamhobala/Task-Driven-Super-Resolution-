@@ -1486,13 +1486,16 @@ sentinel2 = [
 ]
 terra = [
     { name = "albumentations", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "huggingface-hub", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "matplotlib", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "segmentation-models-pytorch", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "terratorch", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin')" },
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "torchvision", version = "0.26.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin')" },
     { name = "torchvision", version = "0.26.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "wandb", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 unet = [
     { name = "albumentations", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1511,6 +1514,7 @@ requires-dist = [
     { name = "albumentations", marker = "extra == 'terra'", specifier = ">=2.0.8" },
     { name = "albumentations", marker = "extra == 'unet'" },
     { name = "geopandas", marker = "extra == 'utilities'", specifier = ">=1.1.2" },
+    { name = "huggingface-hub", marker = "extra == 'terra'" },
     { name = "igraph", marker = "extra == 'samroad'" },
     { name = "imageio", marker = "extra == 'samroad'" },
     { name = "instageo", extras = ["gpu", "data", "model"], marker = "extra == 'instageo'", git = "https://github.com/kelviy/InstaGeo-E2E-Geospatial-ML.git" },
@@ -1531,6 +1535,7 @@ requires-dist = [
     { name = "scikit-image", marker = "extra == 'sentinel2'" },
     { name = "scikit-learn", marker = "extra == 'samroad'" },
     { name = "scipy", marker = "extra == 'samroad'" },
+    { name = "segmentation-models-pytorch", marker = "extra == 'terra'" },
     { name = "segmentation-models-pytorch", marker = "extra == 'unet'" },
     { name = "sknw", marker = "extra == 'sentinel2'" },
     { name = "tcod", marker = "extra == 'samroad'" },
@@ -1545,6 +1550,7 @@ requires-dist = [
     { name = "torchvision", marker = "sys_platform != 'linux' and extra == 'samroad'", specifier = ">=0.25.0" },
     { name = "torchvision", marker = "sys_platform != 'linux' and extra == 'terra'", specifier = ">=0.25.0" },
     { name = "wandb", marker = "extra == 'samroad'" },
+    { name = "wandb", marker = "extra == 'terra'" },
 ]
 provides-extras = ["sentinel2", "samroad", "unet", "instageo", "terra", "utilities"]
 
