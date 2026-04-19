@@ -35,3 +35,13 @@ Then set spatial_resolution to 10m when running chip_creator. The default is ~30
 ```bash
 uv run instageo/data/chip_creator.py --dataframe_path=/mnt/hhd/home/Projects/InstaRoadPrototype/dataset/sentinel2/sa_observations.csv --output_directory=/mnt/hhd/home/Projects/S2Image10m --data_source=S2 --data_format=csv --processing_method=cog --chip_size=256 --cloud_coverage=0 --temporal_tolerance=365 --num_steps=1 --nois_time_series_task --noshift_to_month_start --min_count=1 --spatial_resolution=0.00008983
 ```
+
+Second script
+```
+uv run download_s2.py \
+  --geojson /mnt/hhd/home/Projects/InstaRoadPrototype/dataset/sentinel2/sa_map.geojson \
+  --output_dir /mnt/hhd/home/Projects/S2ImageOriginal \
+  --start_date 2025-01-01 \
+  --end_date 2026-04-01 \
+  --cloud_coverage 0
+```
