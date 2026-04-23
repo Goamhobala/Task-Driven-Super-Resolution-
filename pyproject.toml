@@ -14,7 +14,8 @@ dependencies = [
 sentinel2 = [
     "sknw",
     "scikit-image",
-    "opencv-python"
+    "opencv-python",
+    "earthengine-api>=1.7.22",
 ]
 
 samroad = [
