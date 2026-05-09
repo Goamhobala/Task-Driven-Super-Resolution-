@@ -1,9 +1,26 @@
 site_name: "InstaRoad: Deep Learning Road Network Extraction from Satellite Imagery"
 theme: readthedocs
 
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - docs/gen_ref_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: true
+            show_root_heading: true
+            docstring_style: google
+
 nav:
   - Introduction: index.md
   - Setup Guide: setup.md
   - SAM Road: samroad.md
   - Sentinel2: sentinel2.md
   - Change Log: changelog.md
+  - API Reference: reference/

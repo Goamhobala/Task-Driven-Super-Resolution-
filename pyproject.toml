@@ -106,6 +106,13 @@ python_files = ["test_*.py", "*_test.py", "*_tests.py"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[dependency-groups]
+dev = [
+    "mkdocs-gen-files>=0.6.1",
+    "mkdocs-literate-nav>=0.6.3",
+    "mkdocstrings[python]>=1.0.4",
+]
+
 # This section tells hatchling to look inside 'src' for packages
 [tool.hatch.build.targets.wheel]
 packages = ["src/samroad", "src/sentinel2data", "src/unet", "src/terramind"]
