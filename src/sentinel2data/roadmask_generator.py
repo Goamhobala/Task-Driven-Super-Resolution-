@@ -11,9 +11,9 @@ import jenkspy
 
 def main():
     # 1. Define your paths
-    raster_file = "/Volumes/FILES/SouthAfricanS2/JohannesburgOutsideSouthWest.tif"
+    raster_file = "/Volumes/FILES/SouthAfricanS2/CapeTown.tif"
     parquet_file = "/Volumes/FILES/RoadVectorData/OvertureSARoadData/south_africa_overture_roads.parquet"
-    output_folder = "/Volumes/FILES/PrototypeDataset/JohannesburgOutsideSouthWest"
+    output_folder = "/Volumes/FILES/PrototypeDataset/CapeTown"
 
     # 2. Initialize the Builder
     builder = InstaRoadDatasetBuilder(
@@ -26,8 +26,9 @@ def main():
     builder.prepare_data()
     builder.generate_mask(buffer_m=10)
     builder.classify_grid()
-    builder.plot_classification()
-    builder.extract_patches()
+    # builder.plot_classification()
+    builder.plot_classification_on_image()
+    # builder.extract_patches()
 
 class InstaRoadDatasetBuilder:
     """
@@ -208,6 +209,66 @@ class InstaRoadDatasetBuilder:
 
         # Optional Cleanup: Remove the large temporary mask if you don't need it
         # os.remove(self.mask_path)
+
+
+    def plot_classification_on_image(self, out_name="classification_on_image.png"):
+        """Saves a plot of the classified patches overlaid on the stretched satellite image."""
+        if self.grid is None:
+            raise ValueError("Grid not generated. Run classify_grid() first.")
+
+        from rasterio.plot import show
+
+        print("Generating stretched satellite background for plotting...")
+        with rasterio.open(self.raster_path) as src:
+            # Read RGB bands (1, 2, 3)
+            img = src.read([1, 2, 3]).astype(np.float32)
+            transform = src.transform
+
+        # Apply 2% - 98% cumulative stretch for visualization
+        stretched_img = np.zeros_like(img)
+        for i in range(3):
+            band = img[i]
+            # Avoid calculating percentiles on pure 0 background padding
+            valid_pixels = band[band > 0]
+
+            if len(valid_pixels) > 0:
+                p2, p98 = np.percentile(valid_pixels, [2, 98])
+                # Prevent division by zero if an entire band is uniform
+                if p98 > p2:
+                    stretched = np.clip(band, p2, p98)
+                    stretched = (stretched - p2) / (p98 - p2)
+                    stretched_img[i] = stretched * 255
+            else:
+                stretched_img[i] = 0
+
+        # Convert to 8-bit unsigned integer
+        img_8bit = stretched_img.astype(np.uint8)
+
+        print("Saving Classification on Image plot...")
+        fig, ax = plt.subplots(1, 1, figsize=(12, 12))
+
+        # 1. Plot the stretched satellite image background
+        show(img_8bit, transform=transform, ax=ax)
+
+        # 2. Overlay the classified grid
+        # alpha=0.4 makes the grid semi-transparent so you can see the city below
+        self.grid.plot(
+            column='class',
+            cmap='viridis',
+            legend=True,
+            alpha=0.4,
+            edgecolor='white',
+            linewidth=0.5,
+            ax=ax
+        )
+
+        ax.set_title("Overture Road Classification over Sentinel-2 Imagery")
+        ax.set_xlabel("Easting (meters)")
+        ax.set_ylabel("Northing (meters)")
+
+        # Save with a high DPI so zooming in looks crisp
+        plt.savefig(os.path.join(self.base_out_dir, out_name), dpi=300, bbox_inches='tight')
+        plt.close(fig)
 
 
 if __name__ == "__main__":
