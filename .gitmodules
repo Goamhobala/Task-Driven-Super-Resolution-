@@ -4,6 +4,3 @@
 [submodule "instageo"]
 	path = instageo
 	url = https://github.com/InstaRoad/InstaGeo.git
-[submodule "GlobalUrbanMapper"]
-	path = GlobalUrbanMapper
-	url = git@github.com:InstaRoad/GlobalUrbanMapper.git
