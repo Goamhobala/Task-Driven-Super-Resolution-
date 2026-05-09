@@ -8,6 +8,9 @@ dependencies = [
     "matplotlib>=3.10.8",
     "mkdocs>=1.6.1",
     "numpy>=1.24.0",
+    "mkdocs-gen-files>=0.6.1",
+    "mkdocs-literate-nav>=0.6.3",
+    "mkdocstrings[python]>=1.0.4",
 ]
 
 [project.optional-dependencies]

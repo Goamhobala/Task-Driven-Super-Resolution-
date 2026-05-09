@@ -1,5 +1,5 @@
 # Sentinel 2 Dataset Curation
-Documentation details the curatation of Sentinel 1 & 2 imagery with road vector data.
+Documentation detailing the curatation of Sentinel 1 & 2 imagery with road vector data.
 
 ## Overview
 General process of curating the dataset and getting it ready for deep learning models.
@@ -92,7 +92,7 @@ kaggle datasets create -p /example/dataset_folder --dir-mode tar
 #### Updating Kaggle Dataset
 Updating a dataset is easier with the web UI. The CLI requires you to reupload everything.
 
-Tip: Rather zip and upload seperate folders. So you can remove and reupload specific folders if they are changed. 
+Tip: Rather zip and upload seperate folders. So you can remove and reupload specific folders if they are changed.
 
 ``` bash
 kaggle datasets version -p /example/dataset_folder -m "Updated data with new features" --dir-mode tar
