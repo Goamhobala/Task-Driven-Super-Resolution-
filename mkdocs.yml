@@ -13,8 +13,8 @@ plugins:
         python:
           paths: [src]
           options:
-            show_source: true
-            show_root_heading: true
+            show_source: false
+            show_root_heading: false
             docstring_style: google
 
 nav:
