@@ -1,5 +1,7 @@
 site_name: "InstaRoad: Deep Learning Road Network Extraction from Satellite Imagery"
-theme: readthedocs
+theme:
+  name: readthedocs
+  navigation_depth: 6
 
 plugins:
   - search
