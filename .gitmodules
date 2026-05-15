@@ -3,4 +3,4 @@
 	url = https://github.com/InstaRoad/samroad.git
 [submodule "instageo"]
 	path = instageo
-	url = https://github.com/InstaRoad/InstaGeoPrototype.git
+	url = https://github.com/InstaRoad/InstaGeo.git
