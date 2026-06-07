@@ -17,16 +17,18 @@ def mask(
     sat_img: Annotated[str, typer.Option(help="Filename of satellite COG inside imagery/")],
     parquet: Annotated[Path, typer.Option(help="Absolute path to Overture parquet file")],
 ):
-    """Generate the COG road mask."""
+    """Generate the COG road mask and road vector parquet."""
     sat_path = os.path.join(dataset_dir, "imagery", sat_img)
-    # Name the output mask similarly to the satellite image
-    mask_out_name = f"{os.path.splitext(sat_img)[0]}_mask.tif"
-    mask_out_path = os.path.join(dataset_dir, "masks_raster", mask_out_name)
+    stem = os.path.splitext(sat_img)[0]
+    # Name the outputs similarly to the satellite image
+    mask_out_path = os.path.join(dataset_dir, "masks_raster", f"{stem}_mask.tif")
+    graph_out_path = os.path.join(dataset_dir, "masks_graph", f"{stem}_roads.parquet")
 
     builder = RoadMaskGenerator(
         sat_cog_path=sat_path,
         vector_parquet_path=str(parquet),
         out_mask_path=mask_out_path,
+        out_graph_path=graph_out_path,
     )
     builder.generate()
 
@@ -56,7 +58,8 @@ def visualize(
     sat_path = os.path.join(dataset_dir, "imagery", sat_img)
     meta_dir = os.path.join(dataset_dir, "metadata")
     metadata_path = os.path.join(meta_dir, "metadata.parquet")
-    plot_out_path = os.path.join(meta_dir, "classification_on_image.png")
+    plot_out_name = f"{os.path.splitext(sat_img)[0]}_mask.tif"
+    plot_out_path = os.path.join(meta_dir, plot_out_name)
 
     visualize_classification(
         sat_cog_path=sat_path,
