@@ -56,7 +56,7 @@ class InstaRoadDatasetBuilder:
         self.mask_path = None
 
     def prepare_data(self):
-        """Loads raster metadata, aligns CRSs, and clips vectors to the raster footprint."""
+        """Loads raster metadata, aligns CRSs, and extracts vectors using spatial filtering."""
         print(f"[{os.path.basename(self.raster_path)}] Extracting metadata...")
 
         with rasterio.open(self.raster_path) as src:
@@ -65,9 +65,29 @@ class InstaRoadDatasetBuilder:
             self.raster_bounds = src.bounds
             self.footprint = box(*self.raster_bounds)
 
-        print("Loading and clipping Overture Parquet data...")
-        roads = gpd.read_parquet(self.vector_path)
+        print("Calculating bounding box for spatial filter...")
+        # 1. Create a temporary GeoDataFrame of just the raster footprint
+        footprint_gdf = gpd.GeoDataFrame({'geometry': [self.footprint]}, crs=self.raster_crs)
+        
+        # 2. Overture data is natively in EPSG:4326 (WGS84). 
+        # Convert our footprint to 4326 to filter the Parquet file during the read process.
+        bbox_4326 = footprint_gdf.to_crs("EPSG:4326").total_bounds # Returns [minx, miny, maxx, maxy]
+
+        print("Reading spatially filtered Overture Parquet data...")
+        # 3. MAGIC HAPPENS HERE: Use the 'bbox' argument. 
+        # GeoPandas will only read road segments inside this box from the disk!
+        roads = gpd.read_parquet(self.vector_path, bbox=tuple(bbox_4326))
+
+        if roads.empty:
+            self.local_roads = roads
+            print("No roads found in this bounding box.")
+            return
+
+        print("Reprojecting local roads...")
+        # 4. Now we only reproject the few thousand roads in Cape Town, not the whole country
         roads = roads.to_crs(self.raster_crs)
+
+        # 5. Exact clip (bbox filtering grabs any geometries intersecting the box, clip trims the overhangs)
         self.local_roads = gpd.clip(roads, self.footprint)
 
         print(f"Found {len(self.local_roads)} road segments in this image footprint.")
