@@ -108,8 +108,6 @@ environments = [
 where = ["src"]
 
 [tool.pyright]
-# Mirror the script-execution sys.path: running cli.py as a script puts its own
-# dir on sys.path, so absolute imports like `processor.*` / `viz` resolve there.
 extraPaths = ["src/sentinel2data"]
 
 [tool.pytest.ini_options]
