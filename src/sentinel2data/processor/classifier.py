@@ -5,9 +5,7 @@ import geopandas as gpd
 import rasterio
 from rasterio.windows import transform as window_transform
 from shapely.geometry import box
-import matplotlib.pyplot as plt
 import jenkspy
-from rasterio.plot import show
 
 class TileClassifier:
     """Reads a road mask COG, classifies internal tiles, and generates metadata."""
