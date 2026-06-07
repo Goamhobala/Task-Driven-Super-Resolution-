@@ -101,9 +101,6 @@ environments = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.pyright]
-extraPaths = ["src/sentinel2data"]
-
 [tool.pytest.ini_options]
 pythonpath = "src"
 testpaths = ["tests"]
