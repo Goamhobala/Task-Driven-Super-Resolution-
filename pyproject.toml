@@ -26,6 +26,7 @@ sentinel2 = [
     "pyarrow>=23.0.1",
     "jenkspy>=0.4.1",
     "pandas>=3.0.2",
+    "typer>=0.24.1",
 ]
 
 samroad = [
@@ -100,6 +101,11 @@ environments = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pyright]
+# Mirror the script-execution sys.path: running cli.py as a script puts its own
+# dir on sys.path, so absolute imports like `processor.*` / `viz` resolve there.
+extraPaths = ["src/sentinel2data"]
+
 [tool.pytest.ini_options]
 pythonpath = "src"
 testpaths = ["tests"]
@@ -114,6 +120,7 @@ dev = [
     "mkdocs-gen-files>=0.6.1",
     "mkdocs-literate-nav>=0.6.3",
     "mkdocstrings[python]>=1.0.4",
+    "typer>=0.24.1",
 ]
 
 # This section tells hatchling to look inside 'src' for packages
