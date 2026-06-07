@@ -7,6 +7,7 @@ from rasterio.windows import transform as window_transform
 from shapely.geometry import box
 import jenkspy
 
+# This should really rather be a parquet metadata generator. 
 class TileClassifier:
     """Reads a road mask COG, classifies internal tiles, and generates metadata."""
     
