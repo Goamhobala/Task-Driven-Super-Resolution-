@@ -1,0 +1,61 @@
+paths:
+  # Relative paths are resolved from the repository root.
+  # Replace geojson with your own area-of-interest file if needed.
+  geojson: dataset/sentinel2/sa_map.geojson
+  points_csv: dataset/sentinel2/sa_observations.csv
+
+  # Where chip_creator writes downloaded Sentinel-2 chips (data_generator.py).
+  # Usually on a large external drive — set it to YOUR path.
+  output_dir: /FILL_IN/your/chip_output
+
+  # For main.py / preprocessor.py: original 256x256 images and masks.
+  img_dir: /FILL_IN/your/images
+  mask_dir: /FILL_IN/your/masks
+
+  # Where preprocessor writes upscaled graph dataset artifacts.
+  graph_output_dir: /FILL_IN/your/graph_output
+
+chip:
+  size: 256
+
+  # 0 = strictly cloud-free. Raise to 1–5 if no scenes are found.
+  cloud_coverage_pct: 0
+
+  # Centre date for the Sentinel-2 scene search (YYYY-MM-DD).
+  search_centre_date: "2025-09-01"
+
+  # Search window: ± this many days around search_centre_date.
+  temporal_tolerance_days: 365
+
+preprocessor:
+  # Baseline node spacing in 256x256 pixel space (auto-scales with scale_factor).
+  node_spacing: 5
+  # Morphological closing kernel size in pixels (applied after upscaling).
+  kernel_size: 10
+  # Upscale factor: 4.0 turns 256x256 into 1024x1024.
+  scale_factor: 4.0
+  # Dead-end branches shorter than this (in 256x256 space) are pruned.
+  min_spur_length: 3
+
+gee:
+  # Google Earth Engine project ID (gcloud project linked to your EE account).
+  project_id: your-gee-project-id
+
+  # Google Drive folder where GEE exports are saved.
+  drive_folder: SA_S1_S2_Road_Tiles_V2
+
+  # Date range for Sentinel-2 scene search.
+  start_date: "2025-01-01"
+  end_date: "2026-01-01"
+
+  # Grid cell size in degrees.
+  grid_step: 2
+
+  # Maximum cloud cover percentage for scene filtering.
+  max_cloud_cover: 1
+
+  # Bounding box for process_grid() (degrees).
+  min_lon: 18
+  max_lon: 20
+  min_lat: -35
+  max_lat: -33
