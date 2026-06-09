@@ -27,6 +27,7 @@ class TileClassifier:
                 
                 # Skip edge tiles if they aren't perfectly square
                 if mask_patch.shape[0] != window.height or mask_patch.shape[1] != window.width:
+                    print("Warning: Skipping non-square tile. Normally the edge tiles")
                     continue
 
                 # Calculate road density purely from pixels (faster than vector math)
