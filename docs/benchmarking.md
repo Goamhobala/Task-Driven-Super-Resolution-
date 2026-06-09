@@ -69,15 +69,15 @@ Out of scope for this module; benchmarking consumes their outputs but does not o
 
 ### Internal modules
 
-| module | role |
-|---|---|
-| `model_loader.py` | Registry mapping `model_name -> (build_fn, predict_fn)`. Loads a checkpoint and returns a `Predictor` exposing a single `.predict(batch)` method. |
-| `data_loader.py` | Iterates `(image, gt_mask, tile_id)` according to the manifest and the requested split and resolution. |
-| `metrics.py` | Pure functions. `confusion_counts` and `derive_metrics` for the pixel metrics; `apls_metric` for the graph metric. No I/O, no state. |
-| `runner.py` | Orchestrator. Holds no state of its own; threads the predictor, data loader, metrics, and store together for one `(model, seed)` evaluation. |
-| `store.py` | Parquet I/O. Append rows, refuse duplicate `run_id`, read both tables back as pandas DataFrames. |
-| `stats.py` | Post-hoc analysis on the joined table. `cross_seed_ci` for per-config training-instability CIs; `bootstrap_paired_diff` and `wilcoxon_paired` for between-model comparisons. |
-| `cli.py` | Typer entrypoint matching the `sentinel2data/cli.py` style. Wires CLI flags into the runner. |
+| module              | role                                                                                                                                                                              |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model_loader.py` | Registry mapping `model_name -> (build_fn, predict_fn)`. Loads a checkpoint and returns a `Predictor` exposing a single `.predict(batch)` method.                           |
+| `data_loader.py`  | Iterates `(image, gt_mask, tile_id)` according to the manifest and the requested split and resolution.                                                                          |
+| `metrics.py`      | Pure functions.`confusion_counts` and `derive_metrics` for the pixel metrics; `apls_metric` for the graph metric. No I/O, no state.                                         |
+| `runner.py`       | Orchestrator. Holds no state of its own; threads the predictor, data loader, metrics, and store together for one `(model, seed)` evaluation.                                    |
+| `store.py`        | Parquet I/O. Append rows, refuse duplicate `run_id`, read both tables back as pandas DataFrames.                                                                                |
+| `stats.py`        | Post-hoc analysis on the joined table.`cross_seed_ci` for per-config training-instability CIs; `bootstrap_paired_diff` and `wilcoxon_paired` for between-model comparisons. |
+| `cli.py`          | Typer entrypoint matching the `sentinel2data/cli.py` style. Wires CLI flags into the runner.                                                                                    |
 
 The split between `runner.py` (orchestration, has side effects) and `metrics.py` / `stats.py` (pure, no I/O) is the key invariant. It lets the statistical and metric code be tested in isolation against synthetic inputs while the runner is exercised separately with fixture data.
 
@@ -99,48 +99,48 @@ Both tables are append-only. Reruns produce new `run_id`s; they do not overwrite
 
 One row per evaluated checkpoint.
 
-| column | type | description |
-|---|---|---|
-| `run_id` | string (UUID) | Primary key. Generated when the run starts. |
-| `run_started_at` | timestamp (UTC) | Set at the start of inference. |
-| `run_finished_at` | timestamp (UTC) | Set when all tiles complete. NaT if the run failed mid-way. |
-| `model_name` | string | Architecture identifier, e.g. `unet_resnet50`, `terramind_v1_base`. Matches the key in the model registry. |
-| `config_hash` | string | First 12 characters of the SHA-256 of the canonicalised training config dict. Two rows with the same `config_hash` came from identical configurations. |
-| `config_yaml` | string | Full training config inline, serialised as YAML. Small (kilobytes), kept for reproducibility. |
-| `seed` | int64 | Random seed used at training time. Several seeds per `config_hash` are expected and used to derive confidence intervals. |
-| `loss_fn` | string | Loss function identifier, e.g. `focal_tversky`, `cldice_bce`, `dice`. Surfaced as its own column to make the loss-function pilot study trivial to query. |
-| `loss_params` | string (JSON) | Parameters for the loss function (e.g. focal `alpha`, `gamma`, Tversky `beta`). JSON string so the structure can vary per loss. |
-| `checkpoint_path` | string | Absolute path to the `.pth` file evaluated by this run. |
-| `train_loss_final` | float64 | Training loss at the final epoch. |
-| `val_loss_final` | float64 | Validation loss at the final epoch. |
-| `val_loss_best` | float64 | Validation loss at the epoch the saved checkpoint was taken from. |
-| `best_epoch` | int64 | Epoch index (0-based) at which `val_loss_best` was recorded. |
-| `dataset_split` | string | Which split was evaluated: `train`, `val`, or `test`. Almost always `test`. |
-| `resolution` | string | Ground-truth resolution at which pixel metrics were computed: `10m` or `2.5m`. One resolution per run; evaluating the same checkpoint at a second resolution produces a new `run_id`. APLS is always computed against the skeletonised 10m mask regardless of this field. |
-| `threshold` | float64 | Sigmoid threshold used to binarise predictions. |
-| `n_tiles` | int64 | Number of tiles in the run. Should equal `len(tile_metrics[tile_metrics.run_id == run_id])`. |
+| column               | type            | description                                                                                                                                                                                                                                                                    |
+| -------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `run_id`           | string (UUID)   | Primary key. Generated when the run starts.                                                                                                                                                                                                                                    |
+| `run_started_at`   | timestamp (UTC) | Set at the start of inference.                                                                                                                                                                                                                                                 |
+| `run_finished_at`  | timestamp (UTC) | Set when all tiles complete. NaT if the run failed mid-way.                                                                                                                                                                                                                    |
+| `model_name`       | string          | Architecture identifier, e.g.`unet_resnet50`, `terramind_v1_base`. Matches the key in the model registry.                                                                                                                                                                  |
+| `config_hash`      | string          | First 12 characters of the SHA-256 of the canonicalised training config dict. Two rows with the same `config_hash` came from identical configurations.                                                                                                                       |
+| `config_yaml`      | string          | Full training config inline, serialised as YAML. Small (kilobytes), kept for reproducibility.                                                                                                                                                                                  |
+| `seed`             | int64           | Random seed used at training time. Several seeds per `config_hash` are expected and used to derive confidence intervals.                                                                                                                                                     |
+| `loss_fn`          | string          | Loss function identifier, e.g.`focal_tversky`, `cldice_bce`, `dice`. Surfaced as its own column to make the loss-function pilot study trivial to query.                                                                                                                  |
+| `loss_params`      | string (JSON)   | Parameters for the loss function (e.g. focal `alpha`, `gamma`, Tversky `beta`). JSON string so the structure can vary per loss.                                                                                                                                          |
+| `checkpoint_path`  | string          | Absolute path to the `.pth` file evaluated by this run.                                                                                                                                                                                                                      |
+| `train_loss_final` | float64         | Training loss at the final epoch.                                                                                                                                                                                                                                              |
+| `val_loss_final`   | float64         | Validation loss at the final epoch.                                                                                                                                                                                                                                            |
+| `val_loss_best`    | float64         | Validation loss at the epoch the saved checkpoint was taken from.                                                                                                                                                                                                              |
+| `best_epoch`       | int64           | Epoch index (0-based) at which `val_loss_best` was recorded.                                                                                                                                                                                                                 |
+| `dataset_split`    | string          | Which split was evaluated:`train`, `val`, or `test`. Almost always `test`.                                                                                                                                                                                             |
+| `resolution`       | string          | Ground-truth resolution at which pixel metrics were computed:`10m` or `2.5m`. One resolution per run; evaluating the same checkpoint at a second resolution produces a new `run_id`. APLS is always computed against the skeletonised 10m mask regardless of this field. |
+| `threshold`        | float64         | Sigmoid threshold used to binarise predictions.                                                                                                                                                                                                                                |
+| `n_tiles`          | int64           | Number of tiles in the run. Should equal `len(tile_metrics[tile_metrics.run_id == run_id])`.                                                                                                                                                                                 |
 
 ## `tile_metrics.parquet`
 
 One row per `(run_id, tile_id)`. Long-form: every tile is its own row regardless of how many models are evaluated.
 
-| column | type | description |
-|---|---|---|
-| `run_id` | string | Foreign key into `runs.parquet`. |
-| `tile_id` | string | Tile identifier (filename stem, matching the entries in `data_split.json`). |
-| `tp` | int64 | True positive pixel count. |
-| `fp` | int64 | False positive pixel count. |
-| `fn` | int64 | False negative pixel count. |
-| `tn` | int64 | True negative pixel count. |
-| `iou` | float64 | Intersection over union, computed from the counts in this row. |
-| `f1` | float64 | F1 / Dice coefficient. |
-| `precision` | float64 | Precision. |
-| `recall` | float64 | Recall. |
-| `accuracy` | float64 | Pixel accuracy. |
-| `apls` | float64 | Average Path Length Similarity, computed on the predicted road graph against the ground-truth graph. **Nullable** — NaN when the graph metric was not computed (cheap pixel-only pass, or graph extraction failed). |
-| `n_pred_nodes` | int64 | Number of nodes in the predicted graph. Helpful for diagnosing low or NaN APLS values. Nullable. |
-| `n_pred_edges` | int64 | Number of edges in the predicted graph. Nullable. |
-| `inference_ms` | float64 | Wall-clock time to run the model forward pass for this tile, in milliseconds. Excludes data loading and metric computation. |
+| column           | type    | description                                                                                                                                                                                                               |
+| ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run_id`       | string  | Foreign key into `runs.parquet`.                                                                                                                                                                                        |
+| `tile_id`      | string  | Tile identifier (filename stem, matching the entries in `data_split.json`).                                                                                                                                             |
+| `tp`           | int64   | True positive pixel count.                                                                                                                                                                                                |
+| `fp`           | int64   | False positive pixel count.                                                                                                                                                                                               |
+| `fn`           | int64   | False negative pixel count.                                                                                                                                                                                               |
+| `tn`           | int64   | True negative pixel count.                                                                                                                                                                                                |
+| `iou`          | float64 | Intersection over union, computed from the counts in this row.                                                                                                                                                            |
+| `f1`           | float64 | F1 / Dice coefficient.                                                                                                                                                                                                    |
+| `precision`    | float64 | Precision.                                                                                                                                                                                                                |
+| `recall`       | float64 | Recall.                                                                                                                                                                                                                   |
+| `accuracy`     | float64 | Pixel accuracy.                                                                                                                                                                                                           |
+| `apls`         | float64 | Average Path Length Similarity, computed on the predicted road graph against the ground-truth graph.**Nullable** — NaN when the graph metric was not computed (cheap pixel-only pass, or graph extraction failed). |
+| `n_pred_nodes` | int64   | Number of nodes in the predicted graph. Helpful for diagnosing low or NaN APLS values. Nullable.                                                                                                                          |
+| `n_pred_edges` | int64   | Number of edges in the predicted graph. Nullable.                                                                                                                                                                         |
+| `inference_ms` | float64 | Wall-clock time to run the model forward pass for this tile, in milliseconds. Excludes data loading and metric computation.                                                                                               |
 
 The raw counts (`tp`, `fp`, `fn`, `tn`) are kept alongside the derived metrics deliberately. Any new pixel metric a downstream analysis wants — Matthews correlation, Cohen's kappa, balanced accuracy — can be recomputed from the counts without rerunning inference.
 
