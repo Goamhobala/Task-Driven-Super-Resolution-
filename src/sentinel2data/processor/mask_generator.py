@@ -1,9 +1,9 @@
-import os
 import numpy as np
 import geopandas as gpd
 import rasterio
 from rasterio import features
-from shapely.geometry import box
+from rasterio.windows import transform as window_transform
+from shapely.geometry import box, GeometryCollection
 from pathlib import Path
 
 
@@ -11,10 +11,11 @@ class RoadMaskGenerator:
     """Derives road artifacts for one satellite COG from Overture road vectors.
     """
 
-    def __init__(self, sat_cog_path, overture_parquet_path, out_mask_path, buffer_m=10):
+    def __init__(self, sat_cog_path, overture_parquet_path, out_mask_path, out_graph_path, buffer_m=10):
         self.sat_cog_path = Path(sat_cog_path)
         self.overture_parquet_path = Path(overture_parquet_path)
         self.out_mask_path = Path(out_mask_path)
+        self.out_graph_path = Path(out_graph_path)
         self.buffer_m = buffer_m
 
         # store metadata and road graphs
@@ -49,6 +50,19 @@ class RoadMaskGenerator:
         print(f"Reprojecting and clipping {len(roads)} road segments...")
         roads = roads.to_crs(sat_crs)
         return gpd.clip(roads, footprint)
+
+    def _clip_roads(self, patch_box, sindex):
+        """Road centrelines intersected with one patch; empty geometry if none."""
+        if sindex is None:
+            return GeometryCollection()
+        candidates = self.roads.iloc[list(sindex.query(patch_box))]
+        if candidates.empty:
+            return GeometryCollection()
+        clipped = candidates.intersection(patch_box)
+        clipped = clipped[~clipped.is_empty]
+        if clipped.empty:
+            return GeometryCollection()
+        return clipped.union_all()
 
 
     def generate_raster_mask(self):
@@ -90,6 +104,46 @@ class RoadMaskGenerator:
         print("Raster mask complete.")
         return self.out_mask_path
 
-    # TODO: Fix output graph parquet file to split road geometry into patch-aligned segments and write out to parquet.
-    def extract_road_graph(self):
-        return self.roads
+    def generate_road_graph(self):
+        """Split the road network into patches aligned to the COG's internal
+        tiling and write one parquet row per patch.
+
+        Iterates the satellite COG's internal block windows in the same
+        row-major order as the metadata generator, so ``patch_index`` lines up
+        with the metadata's per-tile index. Each row stores the road
+        centrelines clipped to that patch (native CRS); empty patches keep an
+        empty geometry so the patch grid stays 1:1 with the metadata.
+
+        Returns the path of the written parquet.
+        """
+        crs = self.sat_meta["crs"]
+        block_w = self.sat_meta["blockxsize"]
+        block_h = self.sat_meta["blockysize"]
+        sindex = self.roads.sindex if not self.roads.empty else None
+
+        print(f"Extracting patch-aligned road graphs (block {block_w}x{block_h})...")
+        records = []
+        with rasterio.open(self.sat_cog_path) as src:
+            for ji, window in src.block_windows(1):
+                ptf = window_transform(window, src.transform)
+                minx = ptf.c
+                maxy = ptf.f
+                maxx = minx + window.width * ptf.a
+                miny = maxy + window.height * ptf.e
+                patch_box = box(minx, miny, maxx, maxy)
+
+                records.append(
+                    {
+                        "patch_row_id": ji[0],
+                        "patch_col_id": ji[1],
+                        "geometry": self._clip_roads(patch_box, sindex),
+                    }
+                )
+
+        gdf = gpd.GeoDataFrame(records, geometry="geometry", crs=crs)
+
+        self.out_graph_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Writing {len(gdf)} patch graphs to {self.out_graph_path}...")
+        gdf.to_parquet(self.out_graph_path)
+        print("Road graph complete.")
+        return self.out_graph_path

@@ -1,8 +1,6 @@
-import os
 from pathlib import Path
 import pandas as pd
 import geopandas as gpd
-import pyarrow.parquet as pq
 import shapely.geometry
 
 from sentinel2data.processor.mask_generator import RoadMaskGenerator
@@ -11,16 +9,17 @@ from sentinel2data.processor.metadata_generator import MetadataGenerator
 METADATA_COLUMNS = [
     # indexing
     "tile_id",
-    "patch_id",
+    "patch_row_id",
+    "patch_col_id"
     "zone_name",
     # paths relative to the dataset dir
     "tile_path",
     "mask_raster_path",
     "mask_graph_path",
 
-    "spatial_resolution",
+    "spatial_resolution", # default 10m currently, will add 20m bands later
     "urbanisation_classification",
-    "road_density",              # TODO: add 20m bands
+    "road_density",              
     "split_set",
 
     "satellite_image_dates",     # TODO: multiple dates needed due to satellite imagery composite
@@ -115,10 +114,11 @@ class DatasetManager:
         self.splits_dir.parent.mkdir(parents=True, exist_ok=True)
 
         # TODO: move this inside the metadata generator. 
-        # The API should be like you pass in the relavent information and when you are ready to get the whole list you call "get_metadata"
+        # The API should be like you pass in the relavent information and when you are ready to get the whole list you call "get_root_metadata"
         metadata_list = [] 
         for image_index, sat_path in enumerate(images):
             mask_path = self.masks_raster_dir / f"{sat_path.stem}_mask.tif"
+            graph_path = self.masks_graph_dir / f"{sat_path.stem}_graphs.parquet"
 
             print("-" * 50)
             print(f"[{image_index}] assigned to {sat_path.stem}")
@@ -127,10 +127,11 @@ class DatasetManager:
                 sat_cog_path=sat_path,
                 overture_parquet_path=self.overture_parquet_path,
                 out_mask_path=mask_path,
+                out_graph_path=graph_path,
                 buffer_m=self.buffer_m,
             )
             mask_gen.generate_raster_mask()
-            road_graph_path = mask_gen.extract_road_graph()
+            road_graph_path = mask_gen.generate_road_graph()
 
             meta_gen = MetadataGenerator(
                 mask_cog_path=mask_path,

@@ -31,14 +31,14 @@ class MetadataGenerator:
         image_name,
         image_path,
         mask_raster_path,
-        road_graph=None,
+        road_graph_path,
     ):
         self.mask_cog_path = mask_cog_path
         self.image_index = image_index
         self.image_name = image_name
         self.image_path = image_path            # relative path stored in parquet
         self.mask_raster_path = mask_raster_path  # relative path stored in parquet
-        self.road_graph = road_graph            # GeoDataFrame (sat CRS) or None
+        self.road_graph = road_graph_path           # relative path stored in parquet
         self.crs = None
 
     # ------------------------------------------------------------------ #
