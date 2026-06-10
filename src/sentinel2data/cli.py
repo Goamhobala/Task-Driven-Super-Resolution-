@@ -1,70 +1,52 @@
-import os
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 import typer
-from processor.mask_generator import RoadMaskGenerator
-from processor.classifier import TileClassifier
-from viz import visualize_classification
+
+from sentinel2data.processor.manager import DatasetManager
+from sentinel2data.viz import visualize_classification
 
 app = typer.Typer(help="S2-ROSA Dataset Pipeline")
 
 DATASET_HELP = "Base path to the S2-ROSA dataset directory"
 DatasetDir = Annotated[Path, typer.Option(help=DATASET_HELP)]
 
-@app.command()
-def mask(
-    dataset_dir: DatasetDir,
-    sat_img: Annotated[str, typer.Option(help="Filename of satellite COG inside imagery/")],
-    parquet: Annotated[Path, typer.Option(help="Absolute path to Overture parquet file")],
-):
-    """Generate the COG road mask and road vector parquet."""
-    sat_path = os.path.join(dataset_dir, "imagery", sat_img)
-    stem = os.path.splitext(sat_img)[0]
-    # Name the outputs similarly to the satellite image
-    mask_out_path = os.path.join(dataset_dir, "masks_raster", f"{stem}_mask.tif")
-    graph_out_path = os.path.join(dataset_dir, "masks_graph", f"{stem}_roads.parquet")
-
-    builder = RoadMaskGenerator(
-        sat_cog_path=sat_path,
-        vector_parquet_path=str(parquet),
-        out_mask_path=mask_out_path,
-        out_graph_path=graph_out_path,
-    )
-    builder.generate()
-
 
 @app.command()
-def classify(
+def build(
     dataset_dir: DatasetDir,
-    mask_img: Annotated[str, typer.Option(help="Filename of mask COG inside masks_raster/")],
+    parquet: Annotated[Path, typer.Option(help="Absolute path to the Overture roads parquet")],
+    buffer_m: Annotated[int, typer.Option(help="Road buffer (metres) used for the mask")] = 10,
 ):
-    """Classify tiles and generate metadata.parquet."""
-    mask_path = os.path.join(dataset_dir, "masks_raster", mask_img)
-    metadata_path = os.path.join(dataset_dir, "metadata", "metadata.parquet")
-
-    classifier = TileClassifier(
-        mask_cog_path=mask_path,
-        out_metadata_path=metadata_path,
+    """Scan imagery/, generate masks_raster/, masks_graph/, metadata.parquet and splits/."""
+    manager = DatasetManager(
+        dataset_dir=dataset_dir,
+        overture_parquet_path=parquet,
+        buffer_m=buffer_m,
     )
-    classifier.classify()
+    manager.build_products()
 
 
 @app.command()
 def visualize(
     dataset_dir: DatasetDir,
-    sat_img: Annotated[str, typer.Option(help="Filename of satellite COG inside imagery/")],
+    zone_name: Annotated[Optional[str], typer.Option(help="Zone (COG stem) to plot")] = None,
+    tile_id: Annotated[Optional[int], typer.Option(help="Tile id to plot")] = None,
+    overlay: Annotated[bool, typer.Option(help="Overlay patches on the satellite image")] = True,
 ):
-    """Visualize classifications over satellite imagery."""
-    sat_path = os.path.join(dataset_dir, "imagery", sat_img)
-    meta_dir = os.path.join(dataset_dir, "metadata")
-    metadata_path = os.path.join(meta_dir, "metadata.parquet")
-    plot_out_name = f"{os.path.splitext(sat_img)[0]}_mask.tif"
-    plot_out_path = os.path.join(meta_dir, plot_out_name)
+    """Plot one tile's patches coloured by urbanisation classification."""
+    if (zone_name is None) == (tile_id is None):
+        raise typer.BadParameter("Provide exactly one of --zone-name or --tile-id.")
+
+    metadata_path = dataset_dir / "metadata.parquet"
+    label = zone_name if zone_name is not None else f"tile{tile_id}"
+    out_plot_path = dataset_dir / "classification_plots" / f"{label}_classification.png"
 
     visualize_classification(
-        sat_cog_path=sat_path,
-        out_plot_path=plot_out_path,
         metadata_path=metadata_path,
+        out_plot_path=out_plot_path,
+        zone_name=zone_name,
+        tile_id=tile_id,
+        dataset_dir=dataset_dir if overlay else None,
     )
 
 

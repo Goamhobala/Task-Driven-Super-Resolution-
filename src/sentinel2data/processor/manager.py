@@ -4,28 +4,7 @@ import geopandas as gpd
 import shapely.geometry
 
 from sentinel2data.processor.mask_generator import RoadMaskGenerator
-from sentinel2data.processor.metadata_generator import MetadataGenerator
-
-METADATA_COLUMNS = [
-    # indexing
-    "tile_id",
-    "patch_row_id",
-    "patch_col_id"
-    "zone_name",
-    # paths relative to the dataset dir
-    "tile_path",
-    "mask_raster_path",
-    "mask_graph_path",
-
-    "spatial_resolution", # default 10m currently, will add 20m bands later
-    "urbanisation_classification",
-    "road_density",              
-    "split_set",
-
-    "satellite_image_dates",     # TODO: multiple dates needed due to satellite imagery composite
-    "crs", 
-    "patch_bounding_geometry"
-]
+from sentinel2data.processor.metadata_generator import MetadataGenerator, METADATA_COLUMNS
 
 IMAGE_EXTS = (".tif", ".tiff")
 COMMON_CRS = "EPSG:4326"
@@ -70,7 +49,8 @@ class DatasetManager:
         
         dummy_data = [{
             "tile_id": 1,
-            "patch_id": 1,
+            "patch_row_id": 0,
+            "patch_col_id": 0,
             "zone_name": "Cape Town",
             "tile_path": "imagery/CapeTown.tif",
             "mask_raster_path": "masks_raster/CapeTown_mask.tif",
@@ -109,19 +89,19 @@ class DatasetManager:
 
         print(f"Found {len(images)} satellite images.")
 
-        self.masks_raster_dir.parent.mkdir(parents=True, exist_ok=True)
-        self.masks_graph_dir.parent.mkdir(parents=True, exist_ok=True)
-        self.splits_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.masks_raster_dir.mkdir(parents=True, exist_ok=True)
+        self.masks_graph_dir.mkdir(parents=True, exist_ok=True)
+        self.splits_dir.mkdir(parents=True, exist_ok=True)
 
-        # TODO: move this inside the metadata generator. 
-        # The API should be like you pass in the relavent information and when you are ready to get the whole list you call "get_root_metadata"
-        metadata_list = [] 
-        for image_index, sat_path in enumerate(images):
+        # MetadataGenerator accumulates every tile's patches; the combined
+        # catalogue is retrieved once at the end via get_root_metadata().
+        meta_gen = MetadataGenerator(dataset_dir=self.dataset_dir, common_crs=COMMON_CRS)
+        for tile_id, sat_path in enumerate(images):
             mask_path = self.masks_raster_dir / f"{sat_path.stem}_mask.tif"
             graph_path = self.masks_graph_dir / f"{sat_path.stem}_graphs.parquet"
 
             print("-" * 50)
-            print(f"[{image_index}] assigned to {sat_path.stem}")
+            print(f"[{tile_id}] assigned to {sat_path.stem}")
 
             mask_gen = RoadMaskGenerator(
                 sat_cog_path=sat_path,
@@ -133,25 +113,18 @@ class DatasetManager:
             mask_gen.generate_raster_mask()
             road_graph_path = mask_gen.generate_road_graph()
 
-            meta_gen = MetadataGenerator(
+            meta_gen.add_tile(
+                tile_id=tile_id,
                 mask_cog_path=mask_path,
-                image_index=image_index,
-                image_name=sat_path.stem,
-                image_path=sat_path.relative_to(self.dataset_dir),
-                mask_raster_path=mask_path.relative_to(self.dataset_dir),
-                road_graph_path=road_graph_path,
+                sat_cog_path=sat_path,
+                mask_graph_path=road_graph_path,
             )
-            gdf = meta_gen.build_records()
-            gdf = gdf.to_crs(COMMON_CRS)
-            metadata_list.append(gdf)
 
-        metadata_gdf = gpd.GeoDataFrame(
-            pd.concat(metadata_list, ignore_index=True), geometry="patch_bounding_geometry", crs=COMMON_CRS
-        )[METADATA_COLUMNS]
-
+        metadata_gdf = meta_gen.get_root_metadata()
         self._write_geoparquet(metadata_gdf)
+        meta_gen.write_splits(self.splits_dir)
         print("-" * 50)
-        print(f"Wrote {len(metadata_gdf)} tiles to {self.metadata_path}")
+        print(f"Wrote {len(metadata_gdf)} patches to {self.metadata_path}")
 
         return self.metadata_path
 
