@@ -13,6 +13,7 @@ EMPTY_LABEL = "Empty"
 # Scaffolded values
 SCAFFOLD_DATES = ["2023-01-01"]   # TODO: real composite dates per tile
 SCAFFOLD_SPLIT = "train"          # TODO: real train/val/test assignment
+SCAFFOLD_BIOME = "Unknown"       # TODO: real biome/zone names per tile
 
 METADATA_COLUMNS = [
     # indexing
@@ -27,6 +28,7 @@ METADATA_COLUMNS = [
     # classification
     "spatial_resolution",
     "urbanisation_classification",
+    "biome",
     "road_density",
     "split_set",
     # additional metadata
@@ -143,6 +145,7 @@ class MetadataGenerator:
                         "mask_graph_path": paths["mask_graph_path"],
                         "spatial_resolution": spatial_resolution,
                         "urbanisation_classification": EMPTY_LABEL,
+                        "biome": SCAFFOLD_BIOME,
                         "road_density": road_density,
                         "split_set": SCAFFOLD_SPLIT,
                         "satellite_image_dates": list(SCAFFOLD_DATES),
