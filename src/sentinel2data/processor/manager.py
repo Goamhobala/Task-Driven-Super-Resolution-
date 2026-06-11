@@ -19,10 +19,15 @@ class DatasetManager:
         3. build per-tile metadata
     """
 
-    def __init__(self, dataset_dir, overture_parquet_path, buffer_m=10):
+    def __init__(self, dataset_dir, overture_parquet_path, buffer_m=10,
+                 val_frac=0.1, test_frac=0.1, split_seed=42):
         self.dataset_dir = Path(dataset_dir)
         self.overture_parquet_path = Path(overture_parquet_path)
         self.buffer_m = buffer_m    # TODO: make the buffer dependent on the hierachy of road sizes
+
+        self.val_frac = val_frac
+        self.test_frac = test_frac
+        self.split_seed = split_seed
 
         self.imagery_dir = self.dataset_dir / "imagery"
         self.masks_raster_dir = self.dataset_dir / "masks_raster"
@@ -120,6 +125,9 @@ class DatasetManager:
                 mask_graph_path=road_graph_path,
             )
 
+        meta_gen.assign_random_split(
+            val_frac=self.val_frac, test_frac=self.test_frac, seed=self.split_seed
+        )
         metadata_gdf = meta_gen.get_root_metadata()
         self._write_geoparquet(metadata_gdf)
         meta_gen.write_splits(self.splits_dir)

@@ -12,7 +12,6 @@ EMPTY_LABEL = "Empty"
 
 # Scaffolded values
 SCAFFOLD_DATES = ["2023-01-01"]   # TODO: real composite dates per tile
-SCAFFOLD_SPLIT = "train"          # TODO: real train/val/test assignment
 SCAFFOLD_BIOME = "Unknown"       # TODO: real biome/zone names per tile
 
 METADATA_COLUMNS = [
@@ -96,6 +95,39 @@ class MetadataGenerator:
             crs=self.common_crs,
         )[METADATA_COLUMNS]
 
+    def assign_random_split(self, val_frac=0.1, test_frac=0.1, seed=42):
+        """Randomly assign each tile (whole COG) to a split.
+        """
+        n_tiles = len(self._tiles)
+        if n_tiles == 0:
+            return
+
+        rng = np.random.default_rng(seed)
+        order = rng.permutation(n_tiles)
+        n_test = int(round(n_tiles * test_frac))
+        n_val = int(round(n_tiles * val_frac))
+
+        split_by_idx = {}
+        for rank, idx in enumerate(order):
+            if rank < n_test:
+                split_by_idx[int(idx)] = "test"
+            elif rank < n_test + n_val:
+                split_by_idx[int(idx)] = "val"
+            else:
+                split_by_idx[int(idx)] = "train"
+
+        counts = {"train": 0, "val": 0, "test": 0}
+        for idx, tile_gdf in enumerate(self._tiles):
+            split_name = split_by_idx[idx]
+            tile_gdf["split_set"] = split_name
+            counts[split_name] += 1
+
+        print(
+            f"Tile-level split (seed={seed}): "
+            f"{counts['train']} train / {counts['val']} val / {counts['test']} test tiles"
+        )
+        return counts
+
     def write_splits(self, splits_dir):
         """Write one ``splits/<split>.csv`` per split_set value.
         """
@@ -147,7 +179,7 @@ class MetadataGenerator:
                         "urbanisation_classification": EMPTY_LABEL,
                         "biome": SCAFFOLD_BIOME,
                         "road_density": road_density,
-                        "split_set": SCAFFOLD_SPLIT,
+                        "split_set": None,  # assigned by assign_random_split
                         "satellite_image_dates": list(SCAFFOLD_DATES),
                         "crs": crs_str,
                         "patch_bounding_geometry": patch_box,
