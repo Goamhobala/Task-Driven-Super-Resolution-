@@ -1,81 +1,111 @@
-import os
-import torch
-from torch.utils.data import DataLoader
-import torch.optim as optim
-import albumentations as A
-import segmentation_models_pytorch as smp
-import wandb
+"""Train the UNet road-segmentation baseline on the S2-ROSA dataset.
 
-from unet.dataset import SentinelRoadsDataset, sentinel2_data_partition
-from unet.model import build_model, train_model
+Local:
+    python train.py /Volumes/MacOSFiles/S2ROSA --epochs 5
+
+Kaggle (dataset symlinked by prep/kaggle_dependencies.py):
+    python train.py --wandb
+"""
+
+import argparse
+
+import lightning.pytorch as pl
+from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.loggers import WandbLogger
+
+from unet.dataset import DEFAULT_BANDS, ROSADataModule
+from unet.model import UNetLightning
+
+# Default location of the dataset symlink created on Kaggle.
+KAGGLE_DATASET_DIR = "/kaggle/working/InstaRoadPrototype/dataset/s2rosa"
+
+
+def _bands(value):
+    return tuple(int(x) for x in value.split(","))
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Train UNet on S2-ROSA")
+    p.add_argument(
+        "dataset_dir",
+        nargs="?",
+        default=KAGGLE_DATASET_DIR,
+        help="Path to the S2-ROSA dataset root (contains metadata.parquet).",
+    )
+    p.add_argument("--epochs", type=int, default=20)
+    p.add_argument("--batch-size", type=int, default=16)
+    p.add_argument("--num-workers", type=int, default=2)
+    p.add_argument("--bands", type=_bands, default=DEFAULT_BANDS, help="e.g. 1,2,3")
+    p.add_argument("--image-size", type=int, default=256)
+    p.add_argument("--encoder", default="resnet34")
+    p.add_argument("--encoder-weights", default="imagenet")
+    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--pos-weight", type=float, default=5.0, help="BCE weight on road class.")
+    p.add_argument("--no-normalize", action="store_true", help="Disable per-image standardization.")
+    p.add_argument("--val-frac", type=float, default=0.1)
+    p.add_argument("--test-frac", type=float, default=0.1)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--output-dir", default="checkpoints")
+    p.add_argument(
+        "--keep-edge-blocks",
+        action="store_true",
+        help="Keep partial edge block windows (default: drop them).",
+    )
+    p.add_argument("--wandb", action="store_true", help="Log to Weights & Biases.")
+    p.add_argument("--fast-dev-run", action="store_true", help="Single-batch smoke run.")
+    return p.parse_args()
+
 
 def main():
-    # Input paths
-    BASE_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2'
-    DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_256/15765738'
-    CHECKPOINT_PATH = '/kaggle/working/unetplusplus_resnet50_roads.pth'
+    args = parse_args()
+    pl.seed_everything(args.seed)
 
-    # IMG_DIR = os.path.join(DATASET_DIR, 'images_1024')
-    # MASK_DIR = os.path.join(DATASET_DIR, 'clean_masks')
-    IMG_DIR = os.path.join(DATASET_DIR, 'images_enhanced_png', 'images_enhanced_png')
-    MASK_DIR = os.path.join(DATASET_DIR, 'masks_png', 'masks_png')
-
-    # Initialize Weights & Biases
-    wandb.init(
-        project="unet_sentinel2_baseline",
-        config={
-            "learning_rate": 0.001,
-            "architecture": "UnetPlusPlus",
-            "encoder": "resnet50",
-            "dataset": "Sentinel-2",
-            "epochs": 5,
-            "batch_size": 16, 
-            "image_size": 256,
-            "loss_function": "DiceLoss"
-        }
+    datamodule = ROSADataModule(
+        dataset_dir=args.dataset_dir,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        bands=args.bands,
+        image_size=args.image_size,
+        val_frac=args.val_frac,
+        test_frac=args.test_frac,
+        seed=args.seed,
+        drop_edge_blocks=not args.keep_edge_blocks,
+        normalize=not args.no_normalize,
     )
 
-    # Load the partitions
-    train_list, val_list, test_list = sentinel2_data_partition(BASE_DIR)
-
-    # Transform
-    transform = A.Compose([A.Resize(256, 256)])
-
-    # Instantiate datasets
-    train_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, train_list, transform=transform)
-    val_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, val_list, transform=transform)
-    test_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, test_list, transform=transform)
-
-    # Create DataLoaders - REDUCED BATCH SIZE TO PREVENT OOM
-    batch_size = wandb.config.batch_size
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
-    # test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
-
-    print(f"Training samples: {len(train_dataset)}, Validation: {len(val_dataset)}, Test: {len(test_dataset)}")
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = build_model().to(device)
-
-    # Define Loss and Optimizer
-    criterion = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
-    optimizer = optim.Adam(model.parameters(), lr=wandb.config.learning_rate)
-
-    # Execute the training loop
-    model = train_model(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader, # Now passing validation loader
-        criterion=criterion,
-        optimizer=optimizer,
-        device=device,
-        num_epochs=wandb.config.epochs,
-        save_path=CHECKPOINT_PATH # Handled internally by train_model now
+    model = UNetLightning(
+        encoder_name=args.encoder,
+        encoder_weights=args.encoder_weights,
+        in_channels=len(args.bands),
+        classes=1,
+        lr=args.lr,
+        pos_weight=args.pos_weight,
     )
 
-    # Close the W&B run
-    wandb.finish()
+    logger = WandbLogger(project="unet_s2rosa_baseline") if args.wandb else False
+    checkpoint = ModelCheckpoint(
+        dirpath=args.output_dir,
+        filename="unet_s2rosa_best",
+        monitor="val_loss",
+        mode="min",
+        save_top_k=1,
+        save_last=True,
+    )
+
+    trainer = pl.Trainer(
+        max_epochs=args.epochs,
+        accelerator="auto",
+        devices="auto",
+        logger=logger,
+        callbacks=[checkpoint],
+        log_every_n_steps=10,
+        fast_dev_run=args.fast_dev_run,
+    )
+    trainer.fit(model, datamodule=datamodule)
+
+    if not args.fast_dev_run:
+        print("Best checkpoint:", checkpoint.best_model_path)
+
 
 if __name__ == "__main__":
     main()

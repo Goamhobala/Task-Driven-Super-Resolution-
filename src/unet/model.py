@@ -1,66 +1,86 @@
-import torch
-import segmentation_models_pytorch as smp
-import wandb 
+"""UNet model + PyTorch Lightning wrapper for binary road segmentation."""
 
-def build_model(encoder_name="resnet50", encoder_weights="imagenet", in_channels=3, classes=1):
-    model = smp.UnetPlusPlus(
+import lightning.pytorch as pl
+import segmentation_models_pytorch as smp
+import torch
+
+
+def build_model(encoder_name="resnet34", encoder_weights="imagenet", in_channels=3, classes=1):
+    """Plain segmentation-models-pytorch UNet (was UnetPlusPlus)."""
+    if encoder_weights in (None, "none", "None", ""):
+        encoder_weights = None
+    return smp.Unet(
         encoder_name=encoder_name,
         encoder_weights=encoder_weights,
         in_channels=in_channels,
-        classes=classes
+        classes=classes,
     )
-    return model
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=50, save_path='best_model.pth'):
-    print("Starting training...")
-    best_val_loss = float('inf')
 
-    for epoch in range(num_epochs):
-        # --- TRAINING PHASE ---
-        model.train()
-        train_loss = 0.0
+def _binary_metrics(logits, masks, eps=1e-6):
+    """IoU and F1 (Dice) for the road class from logits vs. binary masks."""
+    preds = (torch.sigmoid(logits) > 0.5).float()
+    tp = torch.sum(preds * masks)
+    fp = torch.sum(preds * (1 - masks))
+    fn = torch.sum((1 - preds) * masks)
+    iou = tp / (tp + fp + fn + eps)
+    f1 = 2 * tp / (2 * tp + fp + fn + eps)
+    return iou, f1
 
-        for images, masks, _ in train_loader:
-            images, masks = images.to(device), masks.to(device)
 
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, masks)
-            loss.backward()
-            optimizer.step()
+class UNetLightning(pl.LightningModule):
+    """UNet + (Dice + weighted BCE), logging loss/IoU/F1 per train/val/test epoch."""
 
-            train_loss += loss.item()
+    def __init__(
+        self,
+        encoder_name="resnet34",
+        encoder_weights="imagenet",
+        in_channels=3,
+        classes=1,
+        lr=1e-3,
+        pos_weight=5.0,
+    ):
+        super().__init__()
+        self.save_hyperparameters()
+        self.model = build_model(encoder_name, encoder_weights, in_channels, classes)
+        self.dice_loss = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
 
-        avg_train_loss = train_loss / len(train_loader)
+    def forward(self, x):
+        return self.model(x)
 
-        # --- VALIDATION PHASE ---
-        model.eval()
-        val_loss = 0.0
+    def _loss(self, logits, masks):
+        # Dice handles overlap; weighted BCE pushes the sparse road class so the
+        # model can't minimise loss by predicting all-background (roads ~13%).
+        dice = self.dice_loss(logits, masks)
+        pos_weight = torch.tensor(self.hparams.pos_weight, device=logits.device)
+        bce = torch.nn.functional.binary_cross_entropy_with_logits(
+            logits, masks, pos_weight=pos_weight
+        )
+        return dice + bce
+
+    def _shared_step(self, batch, stage):
+        images, masks, _ = batch
+        logits = self(images)
+        loss = self._loss(logits, masks)
+
         with torch.no_grad():
-            for val_images, val_masks, _ in val_loader:
-                val_images, val_masks = val_images.to(device), val_masks.to(device)
+            iou, f1 = _binary_metrics(logits, masks)
 
-                outputs = model(val_images)
-                loss = criterion(outputs, val_masks)
-                val_loss += loss.item()
+        bs = images.size(0)
+        log = dict(on_step=False, on_epoch=True, batch_size=bs)
+        self.log(f"{stage}_loss", loss, prog_bar=True, **log)
+        self.log(f"{stage}_iou", iou, prog_bar=True, **log)
+        self.log(f"{stage}_f1", f1, **log)
+        return loss
 
-        avg_val_loss = val_loss / len(val_loader)
+    def training_step(self, batch, batch_idx):
+        return self._shared_step(batch, "train")
 
-        print(f"Epoch [{epoch+1}/{num_epochs}] | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+    def validation_step(self, batch, batch_idx):
+        return self._shared_step(batch, "val")
 
-        # --- LOGGING TO W&B ---
-        wandb.log({
-            "epoch": epoch + 1,
-            "train_loss": avg_train_loss,
-            "val_loss": avg_val_loss,
-            "learning_rate": optimizer.param_groups[0]['lr']
-        })
+    def test_step(self, batch, batch_idx):
+        return self._shared_step(batch, "test")
 
-        # --- SAVE BEST MODEL ---
-        if avg_val_loss < best_val_loss:
-            print(f"Validation loss improved from {best_val_loss:.4f} to {avg_val_loss:.4f}. Saving model...")
-            best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), save_path)
-
-    print("Fine-tuning complete.")
-    return model
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)

@@ -1,20 +1,24 @@
-import kagglehub
+"""Download the S2-ROSA dataset on Kaggle and symlink it into the repo.
+
+After this runs, ``dataset/s2rosa`` points at the downloaded dataset root, which
+is the default ``--dataset-dir`` used by train.py / inference.py on Kaggle.
+"""
+
 from pathlib import Path
 
-# Prepares Sentinel2 dataset
-# dataset creates a link to dataset folder in instaroadprototype directory. Dataset is stored in sentinel2_1024 folder.
+import kagglehub
 
-# Base dataset path
-dataset_path = Path("/kaggle/working/InstaRoadPrototype/dataset/sentinel2")
+# Repo-local directory that holds dataset symlinks.
+dataset_root = Path("/kaggle/working/InstaRoadPrototype/dataset")
+dataset_root.mkdir(parents=True, exist_ok=True)
 
-# sentinel-2 dataset (upscaled to 1024x1024) from Kaggle
-# sentinel2_dataset = kagglehub.dataset_download("kelvinwei/sentinel2-dataset")
-# linked_sentinel2_dst = dataset_path / "sentinel2_1024"
-# linked_sentinel2_dst.symlink_to(Path(sentinel2_dataset))
-# print("Sentinel-2 Roads Dataset Path:", sentinel2_dataset)
+# S2-ROSA dataset (imagery/, masks_raster/, metadata.parquet, splits/) from Kaggle.
+s2rosa_path = kagglehub.dataset_download("kelvinwei/s2rosa")
 
-# sentinel-2 original dataset
-sentinel2_dataset = kagglehub.dataset_download("sonisuyash/sentinel-2-roads-dataset")
-linked_sentinel2_dst = dataset_path / "sentinel2_256"
-linked_sentinel2_dst.symlink_to(Path(sentinel2_dataset))
-print("Sentinel-2 Roads Dataset Path:", sentinel2_dataset)
+link = dataset_root / "s2rosa"
+if link.is_symlink() or link.exists():
+    link.unlink()
+link.symlink_to(Path(s2rosa_path))
+
+print("S2-ROSA dataset path:", s2rosa_path)
+print("Linked to:", link)
