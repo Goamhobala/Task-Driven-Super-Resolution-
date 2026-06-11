@@ -105,6 +105,9 @@ class ROSADataset(Dataset):
 
         # (C, H, W) -> (H, W, C) for albumentations
         image = img_src.read(self.bands, window=win).astype(np.float32)
+        # Sentinel-2 COGs can store nodata as NaN/inf; left in, these propagate
+        # through per-image standardization and make the loss NaN. Replace with 0.
+        image = np.nan_to_num(image, nan=0.0, posinf=0.0, neginf=0.0)
         image = np.transpose(image, (1, 2, 0))
         mask = (mask_src.read(1, window=win) > 0).astype(np.float32)
 
