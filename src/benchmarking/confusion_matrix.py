@@ -1,7 +1,7 @@
-"""Per-tile confusion matrix and derived pixel metrics for binary segmentation.
+"""Per-chip confusion matrix and derived pixel metrics for binary segmentation.
 
-The counts (tp, fp, fn, tn) are computed PER TILE — reduced over H and W but not
-over the batch — because the benchmarking store keeps one row per tile. IoU, F1,
+The counts (tp, fp, fn, tn) are computed PER chip — reduced over H and W but not
+over the batch — because the benchmarking store keeps one row per chip. IoU, F1,
 precision, recall, and everything downstream (bootstrap / Wilcoxon) are derived
 from these four numbers.
 
@@ -19,7 +19,7 @@ from torch import Tensor
 
 @dataclass
 class ConfusionCounts:
-    """Per-tile confusion-matrix counts. Each field is a 1-D LongTensor of length B."""
+    """Per-chip confusion-matrix counts. Each field is a 1-D LongTensor of length B."""
 
     tp: Tensor
     fp: Tensor
@@ -50,7 +50,7 @@ def confusion_counts(
     from_logits: bool = True,
     ignore_index: int | None = None,
 ) -> ConfusionCounts:
-    """Per-tile (tp, fp, fn, tn) for binary road segmentation.
+    """Per-chip (tp, fp, fn, tn) for binary road segmentation.
 
     Args:
         output: the `.output` field of a terratorch ModelOutput. Logits when
@@ -86,9 +86,9 @@ def confusion_counts(
 
 
 def pixel_metrics_from_counts(c: ConfusionCounts) -> dict[str, Tensor]:
-    """Per-tile IoU, F1, precision, recall from confusion counts.
+    """Per-chip IoU, F1, precision, recall from confusion counts.
 
-    A metric with a zero denominator (e.g. a tile with no road in prediction or
+    A metric with a zero denominator (e.g. a chip with no road in prediction or
     ground truth) is returned as NaN — not 0 or 1. NaN is the honest "undefined
     here" value, and the downstream bootstrap / Wilcoxon already drop NaN pairs,
     so undefined tiles are excluded from comparisons rather than biasing them.

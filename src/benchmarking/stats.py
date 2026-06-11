@@ -1,0 +1,250 @@
+"""Stats — the post-hoc analysis surface for benchmarking results.
+
+This module is the single import point for everything that turns the per-tile
+benchmarking store into numbers you can put in a report:
+
+    * the pixel confusion matrix (re-exported from ``confusion_matrix``) —
+      ``confusion_counts`` and ``pixel_metrics_from_counts`` — so the same
+      module that scores a model also compares models.
+    * ``bootstrap_paired_diff`` — paired-bootstrap CI on the per-tile metric
+      difference between two models.
+    * ``wilcoxon_paired`` — Wilcoxon signed-rank test on that same difference.
+    * ``cross_seed_ci`` — t-interval of a dataset-level metric across seeds for
+      one held-fixed config (training-instability CI).
+
+All three statistical functions consume the long-form joined table described in
+``docs/benchmarking.md``: one row per ``(model_name, tile_id)`` (plus ``seed``
+and the raw counts for the cross-seed micro path). They are pure — no I/O, no
+global state — so they test in isolation against synthetic DataFrames.
+
+Pairing convention (bootstrap + Wilcoxon): the two models are joined on
+``tile_id``; only tiles present for *both* models with a non-NaN metric on each
+side survive. Resampling and the signed-rank test then operate on those paired
+differences, never on the two models independently.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+from scipy import stats as scipy_stats
+
+# Re-export the confusion matrix so `stats` is the one combined surface. Works
+# both as a package (tests: `benchmarking.stats`) and as a sibling script
+# (dummy_pipeline run from inside the benchmarking folder).
+try:  # package context
+    from benchmarking.confusion_matrix import (
+        ConfusionCounts,
+        confusion_counts,
+        pixel_metrics_from_counts,
+    )
+except ImportError:  # flat-script context (same directory on sys.path)
+    from confusion_matrix import (  # type: ignore[no-redef]
+        ConfusionCounts,
+        confusion_counts,
+        pixel_metrics_from_counts,
+    )
+
+__all__ = [
+    "ConfusionCounts",
+    "confusion_counts",
+    "pixel_metrics_from_counts",
+    "bootstrap_paired_diff",
+    "wilcoxon_paired",
+    "cross_seed_ci",
+]
+
+# Pixel metrics that can be re-derived from summed (tp, fp, fn, tn) counts. Only
+# these admit a "micro" (count-pooled) cross-seed aggregation; a graph metric
+# like APLS has no count decomposition and must use macro.
+_MICRO_DERIVABLE = ("iou", "f1", "precision", "recall", "accuracy")
+
+
+def _paired_values(
+    df: pd.DataFrame,
+    model_a: str,
+    model_b: str,
+    metric: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Join two models on ``tile_id`` and return their aligned metric arrays.
+
+    Tiles present for only one model, or NaN on either side, are dropped. Raises
+    ValueError if a model is absent or has duplicate ``(model_name, tile_id)``
+    rows (which usually means un-aggregated multi-seed data).
+    """
+    present = set(df["model_name"].unique())
+    for m in (model_a, model_b):
+        if m not in present:
+            raise ValueError(
+                f"model {m!r} not found in df['model_name'] (have {sorted(present)})"
+            )
+
+    subset = df[df["model_name"].isin([model_a, model_b])]
+    dup = subset.duplicated(subset=["model_name", "tile_id"])
+    if dup.any():
+        offending = subset.loc[dup, ["model_name", "tile_id"]].to_dict("records")
+        raise ValueError(
+            "duplicate (model_name, tile_id) rows — expected exactly one row per "
+            f"pair; aggregate multi-seed data first. Examples: {offending[:3]}"
+        )
+
+    a = df[df["model_name"] == model_a].set_index("tile_id")[metric]
+    b = df[df["model_name"] == model_b].set_index("tile_id")[metric]
+    paired = pd.DataFrame({"a": a, "b": b}).dropna()  # inner-aligns on tile_id
+    return paired["a"].to_numpy(dtype=float), paired["b"].to_numpy(dtype=float)
+
+
+def bootstrap_paired_diff(
+    df: pd.DataFrame,
+    model_a: str,
+    model_b: str,
+    metric: str = "iou",
+    n_boot: int = 1000,
+    rng: np.random.Generator | None = None,
+    confidence: float = 0.95,
+) -> dict:
+    """Paired-bootstrap CI on the per-tile metric difference ``model_a - model_b``.
+
+    Each bootstrap iteration resamples *pairs* (tile-aligned differences) with
+    replacement and takes the mean — so a constant per-tile offset collapses the
+    CI to a point regardless of how the underlying values vary across tiles.
+    That paired invariant is what separates this from resampling the two models
+    independently.
+
+    Returns ``{"diff_mean", "ci_lo", "ci_hi", "n_pairs"}`` where ``diff_mean`` is
+    the *observed* mean difference (not the bootstrap mean), and the interval is
+    the percentile bootstrap CI at ``confidence``.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    a, b = _paired_values(df, model_a, model_b, metric)
+    diffs = a - b
+    n = diffs.size
+
+    boot_means = np.empty(n_boot, dtype=float)
+    for i in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        boot_means[i] = diffs[idx].mean()
+
+    alpha = 1.0 - confidence
+    ci_lo, ci_hi = np.quantile(boot_means, [alpha / 2, 1.0 - alpha / 2])
+    return {
+        "diff_mean": float(diffs.mean()),
+        "ci_lo": float(ci_lo),
+        "ci_hi": float(ci_hi),
+        "n_pairs": int(n),
+    }
+
+
+def wilcoxon_paired(
+    df: pd.DataFrame,
+    model_a: str,
+    model_b: str,
+    metric: str = "iou",
+) -> dict:
+    """Wilcoxon signed-rank test on the paired per-tile difference.
+
+    Tests whether ``model_a - model_b`` is symmetric about zero (the two-sided
+    null of no consistent advantage). Returns ``{"statistic", "p_value",
+    "n_pairs"}``. Pairing/NaN handling matches :func:`bootstrap_paired_diff`.
+    """
+    a, b = _paired_values(df, model_a, model_b, metric)
+    result = scipy_stats.wilcoxon(a, b)
+    return {
+        "statistic": float(result.statistic),
+        "p_value": float(result.pvalue),
+        "n_pairs": int(a.size),
+    }
+
+
+def _micro_metric_from_counts(g: pd.DataFrame, metric: str) -> float:
+    """Pool tp/fp/fn/tn over the group's tiles, then derive one scalar metric."""
+    tp = float(g["tp"].sum())
+    fp = float(g["fp"].sum())
+    fn = float(g["fn"].sum())
+    tn = float(g["tn"].sum())
+    if metric == "iou":
+        den = tp + fp + fn
+    elif metric == "f1":
+        return float("nan") if (2 * tp + fp + fn) == 0 else 2 * tp / (2 * tp + fp + fn)
+    elif metric == "precision":
+        den = tp + fp
+    elif metric == "recall":
+        den = tp + fn
+    elif metric == "accuracy":
+        return float("nan") if (tp + fp + fn + tn) == 0 else (tp + tn) / (tp + fp + fn + tn)
+    else:  # pragma: no cover - guarded by caller
+        raise ValueError(f"metric {metric!r} is not count-derivable")
+    return float("nan") if den == 0 else tp / den
+
+
+def cross_seed_ci(
+    df: pd.DataFrame,
+    config_filters: dict,
+    metric: str = "iou",
+    aggregation: str = "macro",
+    confidence: float = 0.95,
+) -> dict:
+    """t-interval of a dataset-level metric across seeds, for one fixed config.
+
+    ``config_filters`` selects the rows of one configuration (every
+    ``(column, value)`` must match, e.g. ``{"model_name": "A", "loss_fn":
+    "focal"}``). Each seed's per-tile metrics are reduced to a single scalar:
+
+        * ``macro`` — mean of the per-tile ``metric`` values.
+        * ``micro`` — pool tp/fp/fn/tn across the seed's tiles, then derive the
+          metric. Only valid for the count-derivable pixel metrics.
+
+    The spread of those per-seed scalars quantifies training instability. Returns
+    ``{"mean", "std", "ci_lo", "ci_hi", "n_seeds", "per_seed_values"}``. With a
+    single seed, ``std`` and the CI are NaN (undefined, not zero).
+    """
+    if aggregation == "micro" and metric not in _MICRO_DERIVABLE:
+        raise ValueError(
+            f"micro aggregation requires a count-derivable metric "
+            f"{_MICRO_DERIVABLE}; got {metric!r} — use aggregation='macro'"
+        )
+
+    mask = pd.Series(True, index=df.index)
+    for col, val in config_filters.items():
+        mask &= df[col] == val
+    sub = df[mask]
+    if sub.empty:
+        raise ValueError(f"no rows match config_filters {config_filters}")
+
+    per_seed_values: list[float] = []
+    for _seed, g in sub.groupby("seed"):
+        if aggregation == "macro":
+            per_seed_values.append(float(g[metric].mean()))
+        elif aggregation == "micro":
+            per_seed_values.append(_micro_metric_from_counts(g, metric))
+        else:
+            raise ValueError(f"unknown aggregation {aggregation!r} (macro|micro)")
+
+    values = np.asarray(per_seed_values, dtype=float)
+    n_seeds = values.size
+    mean = float(values.mean())
+
+    if n_seeds < 2:
+        return {
+            "mean": mean,
+            "std": float("nan"),
+            "ci_lo": float("nan"),
+            "ci_hi": float("nan"),
+            "n_seeds": int(n_seeds),
+            "per_seed_values": per_seed_values,
+        }
+
+    std = float(values.std(ddof=1))
+    se = std / np.sqrt(n_seeds)
+    t_crit = float(scipy_stats.t.ppf(1.0 - (1.0 - confidence) / 2.0, df=n_seeds - 1))
+    half = t_crit * se
+    return {
+        "mean": mean,
+        "std": std,
+        "ci_lo": mean - half,
+        "ci_hi": mean + half,
+        "n_seeds": int(n_seeds),
+        "per_seed_values": per_seed_values,
+    }
