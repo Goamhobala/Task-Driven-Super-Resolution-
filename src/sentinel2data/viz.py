@@ -46,13 +46,9 @@ def visualize_classification(
     zone_name=None,
     tile_id=None,
     dataset_dir=None,
+    backdrop="satellite",
 ):
     """Plot one tile's patches coloured by urbanisation classification.
-
-    Selects the patches for a single tile by ``zone_name`` or ``tile_id``
-    (one-to-one) and plots their bounding polygons coloured by class. When
-    ``dataset_dir`` is given, the tile's satellite image is drawn underneath
-    and the patches are reprojected onto it.
     """
     print("Loading metadata for visualization...")
     gdf = gpd.read_parquet(metadata_path)
@@ -68,18 +64,31 @@ def visualize_classification(
         raise ValueError(f"No patches found for zone_name={zone_name!r} / tile_id={tile_id!r}.")
 
     zone = patches["zone_name"].iloc[0]
+    backdrop = (backdrop or "none").lower()
     fig, ax = plt.subplots(1, 1, figsize=(12, 12))
 
-    # Optional satellite backdrop: reproject patches to the image's native CRS.
-    if dataset_dir is not None:
-        sat_path = Path(dataset_dir) / patches["tile_path"].iloc[0]
-        print(f"Drawing satellite backdrop from {sat_path}...")
-        with rasterio.open(sat_path) as src:
-            img = src.read([1, 2, 3]).astype(np.float32)
-            transform = src.transform
-            sat_crs = src.crs
-        show(_stretch_rgb(img), transform=transform, ax=ax)
-        patches = patches.to_crs(sat_crs)
+    if backdrop in ("satellite", "mask"):
+        if dataset_dir is None:
+            raise ValueError(f"dataset_dir is required for backdrop={backdrop!r}.")
+
+        if backdrop == "satellite":
+            raster_path = Path(dataset_dir) / patches["tile_path"].iloc[0]
+            print(f"Drawing satellite backdrop from {raster_path}...")
+            with rasterio.open(raster_path) as src:
+                data = _stretch_rgb(src.read([1, 2, 3]).astype(np.float32))
+                transform = src.transform
+                raster_crs = src.crs
+            show(data, transform=transform, ax=ax)
+        else:  # mask
+            raster_path = Path(dataset_dir) / patches["mask_raster_path"].iloc[0]
+            print(f"Drawing binary-mask backdrop from {raster_path}...")
+            with rasterio.open(raster_path) as src:
+                data = src.read(1)
+                transform = src.transform
+                raster_crs = src.crs
+            show(data, transform=transform, ax=ax, cmap="gray")
+
+        patches = patches.to_crs(raster_crs)
         ax.set_xlabel("Easting (meters)")
         ax.set_ylabel("Northing (meters)")
     else:
@@ -98,7 +107,8 @@ def visualize_classification(
         ax=ax,
     )
 
-    ax.set_title(f"Patch classification over {zone}")
+    ax.set_title(f"Patch classification over {zone} ({backdrop})")
+    Path(out_plot_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_plot_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Visualization saved to {out_plot_path}")

@@ -1,10 +1,11 @@
 #!/bin/bash
 #
 # Plot patch classifications for every satellite image in <dataset-dir>/imagery/.
-# One PNG per zone is written to <dataset-dir>/classification_plots/.
+# Two PNGs per zone (satellite + binary-mask backdrop) are written to
+# <dataset-dir>/classification_plots/.
 #
 # Usage:
-#   run_visualize.bash <dataset-dir> [--no-overlay]
+#   run_visualize.bash <dataset-dir>
 #
 # Example:
 #   run_visualize.bash /Volumes/FILES/S2ROSA
@@ -12,14 +13,12 @@
 set -u
 
 # 1. Validate arguments
-if [ "$#" -lt 1 ]; then
-    echo "Usage: $0 <dataset-dir> [--no-overlay]"
+if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 <dataset-dir>"
     exit 1
 fi
 
 DATASET_DIR="$1"
-shift
-EXTRA_ARGS=("$@")   # e.g. --no-overlay
 
 IMAGERY_DIR="$DATASET_DIR/imagery"
 if [ ! -d "$IMAGERY_DIR" ]; then
@@ -54,11 +53,13 @@ for SAT_PATH in "$IMAGERY_DIR"/*.tif "$IMAGERY_DIR"/*.tiff; do
     FOUND=$((FOUND + 1))
     STEM="${SAT_IMG%.*}"
 
-    echo "Visualizing: $STEM"
-    uv run --extra sentinel2 python -m sentinel2data.cli visualize \
-        --dataset-dir "$DATASET_DIR" \
-        --zone-name "$STEM" \
-        ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} || echo " -> FAILED for $STEM"
+    for BACKDROP in satellite mask; do
+        echo "Visualizing: $STEM ($BACKDROP)"
+        uv run --extra sentinel2 python -m sentinel2data.cli visualize \
+            --dataset-dir "$DATASET_DIR" \
+            --zone-name "$STEM" \
+            --backdrop "$BACKDROP" || echo " -> FAILED for $STEM ($BACKDROP)"
+    done
 done
 
 echo "----------------------------------------"

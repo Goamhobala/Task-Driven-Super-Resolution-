@@ -10,11 +10,10 @@ from pathlib import Path
 CLASS_LABELS = ["Rural", "Peri-Urban", "Urban"]
 EMPTY_LABEL = "Empty"
 
-# Scaffolded values for fields not yet available.
+# Scaffolded values
 SCAFFOLD_DATES = ["2023-01-01"]   # TODO: real composite dates per tile
 SCAFFOLD_SPLIT = "train"          # TODO: real train/val/test assignment
 
-# Canonical root metadata schema. One row per patch (internal COG block).
 METADATA_COLUMNS = [
     # indexing
     "tile_id",
@@ -50,26 +49,13 @@ SPLIT_CSV_COLUMNS = [
 
 class MetadataGenerator:
     """Accumulates per-patch metadata across tiles into one root catalogue.
-
-    Each satellite COG is a "tile"; its internal block windows are "patches".
-    Call :meth:`add_tile` once per tile, then :meth:`get_root_metadata` to get
-    the combined GeoDataFrame (reprojected to a single common CRS so patches
-    from different UTM zones share one geometry column).
-
-    Patches are scanned in the mask COG's row-major block order -- the same
-    order ``RoadMaskGenerator.generate_road_graph`` writes its rows in -- and
-    keyed by the block window's ``(patch_row_id, patch_col_id)`` so each row
-    joins to that tile's graph parquet.
     """
 
     def __init__(self, dataset_dir, common_crs="EPSG:4326"):
         self.dataset_dir = Path(dataset_dir)
         self.common_crs = common_crs
-        self._tiles = []  # list of per-tile GeoDataFrames already in common_crs
+        self._tiles = []  # list of per-tile GeoDataFrames
 
-    # ------------------------------------------------------------------ #
-    # Public
-    # ------------------------------------------------------------------ #
     def add_tile(self, tile_id, mask_cog_path, sat_cog_path, mask_graph_path):
         """Scan one tile's patches and stage them into the catalogue."""
         zone_name = Path(sat_cog_path).stem
@@ -110,10 +96,6 @@ class MetadataGenerator:
 
     def write_splits(self, splits_dir):
         """Write one ``splits/<split>.csv`` per split_set value.
-
-        Each CSV lists the indexing + path columns for the patches in that
-        split. Only "train" exists while split_set is scaffolded; val/test
-        CSVs appear automatically once those assignments are made.
         """
         gdf = self.get_root_metadata()
         splits_dir = Path(splits_dir)
@@ -129,9 +111,6 @@ class MetadataGenerator:
             written.append(out_path)
         return written
 
-    # ------------------------------------------------------------------ #
-    # Patch scan
-    # ------------------------------------------------------------------ #
     def _scan_patches(self, tile_id, zone_name, paths, mask_cog_path):
         print(f"Scanning mask blocks: {zone_name}")
         records = []
@@ -181,9 +160,8 @@ class MetadataGenerator:
         except ValueError:
             return str(path)
 
-    # ------------------------------------------------------------------ #
-    # Jenks classification over a tile's patch densities
-    # ------------------------------------------------------------------ #
+    # Jenks Natural Breaks
+    # TODO: understand more deeply 
     def _classify(self, records):
         densities = np.array([r["road_density"] for r in records])
         values = densities[densities > 0]

@@ -107,13 +107,6 @@ class RoadMaskGenerator:
     def generate_road_graph(self):
         """Split the road network into patches aligned to the COG's internal
         tiling and write one parquet row per patch.
-
-        Iterates the satellite COG's internal block windows in the same
-        row-major order as the metadata generator, so ``patch_index`` lines up
-        with the metadata's per-tile index. Each row stores the road
-        centrelines clipped to that patch (native CRS); empty patches keep an
-        empty geometry so the patch grid stays 1:1 with the metadata.
-
         Returns the path of the written parquet.
         """
         crs = self.sat_meta["crs"]
