@@ -25,7 +25,7 @@ echo "Fetching D-LinkNet architecture source files..."
 git clone --depth 1 https://github.com/zlckanata/DeepGlobe-Road-Extraction-Challenge.git
 
 # Move the network definitions module to your active workspace directory
-mv DeepGlobe-Road-Extraction-Challenge/networks .
+mv DeepGlobe-Road-Extraction-Challenge/networks /kaggle/working/InstaRoadPrototype/src/dlinknet/
 
 # Clean up the residual repository metadata files cleanly
 rm -rf DeepGlobe-Road-Extraction-Challenge
