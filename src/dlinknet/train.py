@@ -24,7 +24,7 @@ def main():
             "architecture": "DLinkNet34",
             "encoder": "resnet34",
             "dataset": "Sentinel-2",
-            "epochs": 5,
+            "epochs": 1,
             "batch_size": 16, 
             "image_size": 256
         }
