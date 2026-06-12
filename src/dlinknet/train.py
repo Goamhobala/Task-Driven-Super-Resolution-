@@ -7,7 +7,7 @@ import segmentation_models_pytorch as smp
 import wandb
 
 from unet.dataset import SentinelRoadsDataset, sentinel2_data_partition
-from dlinknet.model import build_dlinknet, train_model  # Updated imports
+from dlinknet.model import build_model, train_model  # Updated imports
 
 def main():
     BASE_DIR = '/kaggle/working/InstaRoadPrototype/dataset/S2IndianRegions'
@@ -30,17 +30,13 @@ def main():
         }
     )
 
-    transform = A.Compose([
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
-        A.RandomRotate90(p=0.5),
-    ])
+    # Images are already 256x256; Resize makes the transform explicit
+    transform = A.Compose([A.Resize(256, 256)])
 
     train_list, val_list, test_list = sentinel2_data_partition(BASE_DIR)
 
     train_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, train_list, transform=transform)
     val_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, val_list, transform=transform)
-    test_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, test_list, transform=transform)
 
     batch_size = wandb.config.batch_size
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
@@ -49,7 +45,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Build the model cleanly
-    model = build_dlinknet().to(device)
+    model = build_model().to(device)
 
     criterion = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
     optimizer = optim.Adam(model.parameters(), lr=wandb.config.learning_rate)

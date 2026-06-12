@@ -3,7 +3,7 @@ import wandb
 # Import directly from the cloned GitHub repository files
 from dlinknet.networks.dinknet import DinkNet34 
 
-def build_dlinknet():
+def build_model():
     # Initializes the DLinkNet34 model from the GitHub source
     return DinkNet34(num_classes=1)
 
@@ -58,5 +58,6 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, n
             print(f"Validation loss improved from {best_val_loss:.4f} to {avg_val_loss:.4f}. Saving model...")
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), save_path)
-
+            
+    print("Fine-tuning complete.")
     return model
