@@ -17,7 +17,7 @@ def main():
     MASK_DIR = os.path.join(DATASET_DIR, 'masks_png', 'masks_png')
 
     CHECKPOINT_PATH = '/kaggle/working/dlinknet34_resnet34_roads.pth' # Changed path
-    PREDICTIONS_PATH = '/kaggle/working/predictions/test_set'
+    PREDICTIONS_PATH = '/kaggle/working/predictions/dlinknet_test_set'
 
     os.makedirs(PREDICTIONS_PATH, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -49,8 +49,6 @@ def main():
     print("\nSaving comparative predictions...")
     save_predictions(model, test_loader, PREDICTIONS_PATH, device, save_comparison=True)
     print("Done! Test predictions saved.")
-
-
 
 if __name__ == "__main__":
     main()
