@@ -26,6 +26,7 @@ git clone --depth 1 https://github.com/zlckanata/DeepGlobe-Road-Extraction-Chall
 
 # Move the network definitions module to your active workspace directory
 mv DeepGlobe-Road-Extraction-Challenge/networks /kaggle/working/InstaRoadPrototype/src/dlinknet/
+touch /kaggle/working/InstaRoadPrototype/src/dlinknet/networks/__init__.py
 
 # Clean up the residual repository metadata files cleanly
 rm -rf DeepGlobe-Road-Extraction-Challenge

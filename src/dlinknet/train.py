@@ -17,6 +17,9 @@ def main():
     IMG_DIR = os.path.join(DATASET_DIR, 'images_enhanced_png', 'images_enhanced_png')
     MASK_DIR = os.path.join(DATASET_DIR, 'masks_png', 'masks_png')
 
+    image_net_mean = (0.485, 0.456, 0.406)
+    image_net_std = (0.229, 0.224, 0.225)
+
     wandb.init(
         project="dlinknet_sentinel2_baseline",
         config={
@@ -31,9 +34,13 @@ def main():
     )
 
     # Images are already 256x256; Resize makes the transform explicit
-    transform = A.Compose([A.Resize(256, 256)])
+    transform = A.Compose([
+        A.Resize(1024, 1024),
+        A.Normalize(mean=image_net_mean, std=image_net_std),
+        ])
 
-    train_list, val_list, test_list = sentinel2_data_partition(BASE_DIR)
+
+    train_list, val_list, _ = sentinel2_data_partition(BASE_DIR)
 
     train_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, train_list, transform=transform)
     val_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, val_list, transform=transform)
