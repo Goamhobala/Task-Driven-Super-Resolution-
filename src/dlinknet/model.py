@@ -1,7 +1,7 @@
 import torch
 import wandb
 # Import directly from the cloned GitHub repository files
-from networks.dinknet import DinkNet34 
+from dlinknet.networks.dinknet import DinkNet34 
 
 def build_dlinknet():
     # Initializes the DLinkNet34 model from the GitHub source
