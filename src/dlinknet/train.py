@@ -27,9 +27,9 @@ def main():
             "architecture": "DLinkNet34",
             "encoder": "resnet34",
             "dataset": "Sentinel-2",
-            "epochs": 1,
-            "batch_size": 16, 
-            "image_size": 256
+            "epochs": 10,
+            "batch_size": 4, 
+            "image_size": 1024
         }
     )
 
@@ -54,7 +54,7 @@ def main():
     # Build the model cleanly
     model = build_model().to(device)
 
-    criterion = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
+    criterion = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=False)
     optimizer = optim.Adam(model.parameters(), lr=wandb.config.learning_rate)
 
     model = train_model(

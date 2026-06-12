@@ -7,7 +7,7 @@ from dlinknet.networks.dinknet import DinkNet34
 def build_model(in_channels=3):
     # designed to receive 1024×1024 images as input
     # outputs preds (after sigmoid) 
-    model = DinkNet34(num_classes=1, in_channels=in_channels) 
+    model = DinkNet34(num_classes=1, num_channels=in_channels) 
     return model
 
 # --- Training Loop ---
