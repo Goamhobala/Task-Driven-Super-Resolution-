@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from unet.dataset import SentinelRoadsDataset, sentinel2_data_partition
 from unet.inference import save_predictions, evaluate_metrics
-from unet.model import build_model # Import the new model architecture
+from dlinknet.model import build_model # Import the new model architecture
 import albumentations as A
 
 def main():
