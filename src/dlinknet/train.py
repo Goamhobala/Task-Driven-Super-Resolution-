@@ -36,7 +36,7 @@ def main():
         A.RandomRotate90(p=0.5),
     ])
 
-    train_list, val_list, test_list = sentinel2_data_partition(DATASET_DIR)
+    train_list, val_list, test_list = sentinel2_data_partition(BASE_DIR)
 
     train_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, train_list, transform=transform)
     val_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, val_list, transform=transform)
