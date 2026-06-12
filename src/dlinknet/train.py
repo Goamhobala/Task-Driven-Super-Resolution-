@@ -10,7 +10,7 @@ from unet.dataset import SentinelRoadsDataset, sentinel2_data_partition
 from dlinknet.model import build_dlinknet, train_model  # Updated imports
 
 def main():
-    BASE_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2'
+    BASE_DIR = '/kaggle/working/InstaRoadPrototype/dataset/S2IndianRegions'
     DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_256/15765738'
     CHECKPOINT_PATH = '/kaggle/working/dlinknet34_resnet34_roads.pth'
 
