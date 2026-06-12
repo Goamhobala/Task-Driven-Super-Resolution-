@@ -1,11 +1,11 @@
 import torch
 import wandb
 # Import directly from the cloned GitHub repository files
-from networks.dlinknet import dlinknet34 
+from networks.dinknet import DinkNet34 
 
 def build_dlinknet():
     # Initializes the DLinkNet34 model from the GitHub source
-    return dlinknet34(num_classes=1)
+    return DinkNet34(num_classes=1)
 
 # --- Training Loop ---
 def train_model(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=50, save_path='best_model.pth'):
