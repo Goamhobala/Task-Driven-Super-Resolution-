@@ -33,7 +33,7 @@ def main():
         }
     )
 
-    # Images are already 256x256; Resize makes the transform explicit
+    # dinknet24 built for 1024, resnet34 need normalisation 
     transform = A.Compose([
         A.Resize(1024, 1024),
         A.Normalize(mean=image_net_mean, std=image_net_std),

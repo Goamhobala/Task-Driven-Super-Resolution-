@@ -15,15 +15,22 @@ def main():
     IMG_DIR = os.path.join(DATASET_DIR, 'images_enhanced_png', 'images_enhanced_png')
     MASK_DIR = os.path.join(DATASET_DIR, 'masks_png', 'masks_png')
 
-    CHECKPOINT_PATH = '/kaggle/working/dlinknet34_resnet34_roads.pth' # Changed path
+    CHECKPOINT_PATH = '/kaggle/working/dlinknet34_resnet34_roads.pth' 
     PREDICTIONS_PATH = '/kaggle/working/predictions/dlinknet_test_set'
+
+    image_net_mean = (0.485, 0.456, 0.406)
+    image_net_std = (0.229, 0.224, 0.225)
 
     os.makedirs(PREDICTIONS_PATH, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Data Setup
     _, _, test_list = sentinel2_data_partition(BASE_DIR)
-    transform = A.Compose([A.Resize(256, 256)])
+    # dinknet24 built for 1024, resnet34 need normalisation 
+    transform = A.Compose([
+        A.Resize(1024, 1024),
+        A.Normalize(mean=image_net_mean, std=image_net_std),
+        ])
 
     test_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, test_list, transform=transform)
     test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2)
