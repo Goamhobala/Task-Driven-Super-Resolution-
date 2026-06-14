@@ -17,3 +17,6 @@ data/
 */*.tiff
 */*.parquet
 */.DS_Store
+
+# Dummy data for testing/benchmarking
+**/dummy_data/
