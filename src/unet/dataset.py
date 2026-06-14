@@ -1,19 +1,7 @@
 """S2-ROSA data loading for the UNet baseline.
-
-The dataset is described entirely by ``metadata.parquet`` at the dataset root.
-Each row is one *patch* = one internal block window of a satellite *tile* COG.
-Pixels are read lazily from the satellite + mask COGs with a window
-reconstructed from ``(patch_row_id, patch_col_id)``; nothing is unpacked to PNG.
-
-Layout expected under ``dataset_dir``::
-
-    metadata.parquet
-    imagery/<zone>.tif            # multi-band Sentinel-2 reflectance COG
-    masks_raster/<zone>_mask.tif  # single-band uint8 road mask COG (0/1)
 """
 
 from pathlib import Path
-
 import albumentations as A
 import lightning.pytorch as pl
 import numpy as np
@@ -23,11 +11,40 @@ import torch
 from rasterio.windows import Window
 from torch.utils.data import DataLoader, Dataset
 
-# 1-based band indices into the imagery COG. Band order is R, G, B, NIR, ...
-# (B4, B3, B2, B8, ...) per processor/graph.py and docs/sentinel2.md.
 DEFAULT_BANDS = (1, 2, 3)  # RGB
 
-# metadata.parquet columns this loader depends on.
+# TODO: currently not used, we currently pick bands by their index in the COG. 
+SATELLITE_BANDS = {
+    # Sentinel-2 Multispectral Instrument (MSI)
+    'B4': 'Red (Visible)',
+    'B3': 'Green (Visible)',
+    'B2': 'Blue (Visible)',
+    'B8': 'Near Infrared (NIR)',
+    'B5': 'Vegetation Red Edge 1',
+    'B6': 'Vegetation Red Edge 2',
+    'B7': 'Vegetation Red Edge 3',
+    'B8A': 'Narrow Near Infrared (NIR)',
+    'B11': 'Shortwave Infrared 1 (SWIR 1)',
+    'B12': 'Shortwave Infrared 2 (SWIR 2)',
+
+    # Sentinel-1 Synthetic Aperture Radar (SAR)
+    'VV_ascending': 'Vertical-transmit, Vertical-receive polarization (Ascending Pass)',
+    'VH_ascending': 'Vertical-transmit, Horizontal-receive cross-polarization (Ascending Pass)',
+    'VV_descending': 'Vertical-transmit, Vertical-receive polarization (Descending Pass)',
+    'VH_descending': 'Vertical-transmit, Horizontal-receive cross-polarization (Descending Pass)',
+
+    # Topography / Terrain Data
+    'elevation': 'Elevation (Height above sea level in meters)',
+    'slope': 'Slope (Terrain steepness in degrees)',
+    'aspect': 'Aspect (Compass direction the terrain faces in degrees)',
+
+    # Urban Masks
+    'esa_urban_10m': 'ESA WorldCover 10m Urban Mask 2020',
+    'gisa_urban_10m': 'GISLab 10m Urban Mask 2019',
+    'wsf_urban_10m': 'World Settlement Footprint 10m Urban Mask 2019 ',
+}
+
+# metadata.parquet columns the loader expects
 TILE_PATH_COL = "tile_path"
 MASK_PATH_COL = "mask_raster_path"
 ROW_COL = "patch_row_id"
@@ -45,7 +62,7 @@ _REQUIRED_COLS = [
 
 
 def read_metadata(dataset_dir):
-    """Read the patch catalogue (geometry column skipped, so plain pandas)."""
+    """Read the patch catalogue"""
     path = Path(dataset_dir) / "metadata.parquet"
     if not path.exists():
         raise FileNotFoundError(
@@ -56,11 +73,11 @@ def read_metadata(dataset_dir):
 
 
 class ROSADataset(Dataset):
-    """One sample per metadata row -> ``(image, mask, filename)``.
+    """One sample per metadata row - `(image, mask, filename)`.
 
-    ``image`` is ``(C, H, W)`` float32 reflectance in ~[0, 1]; ``mask`` is
-    ``(1, H, W)`` float32 binarised to {0, 1}. Both are resized to a fixed
-    ``image_size`` (edge block windows are smaller than a full block).
+    - `image` is `(C, H, W)` 
+    - `mask` is `(1, H, W)`
+    - Both are resized to a fixed `image_size` (edge block windows are smaller than a full block).
     """
 
     def __init__(
@@ -71,9 +88,7 @@ class ROSADataset(Dataset):
         self.bands = list(bands)
         self.normalize = normalize
         self.transform = transform or A.Compose([A.Resize(image_size, image_size)])
-        # Open rasterio datasets lazily and cache per worker process. The cache
-        # starts empty, so it is never pickled across DataLoader workers.
-        self._src_cache = {}
+        self._src_cache = {} # image connection cache
 
     def __len__(self):
         return len(self.frame)
@@ -105,9 +120,7 @@ class ROSADataset(Dataset):
 
         # (C, H, W) -> (H, W, C) for albumentations
         image = img_src.read(self.bands, window=win).astype(np.float32)
-        # Sentinel-2 COGs can store nodata as NaN/inf; left in, these propagate
-        # through per-image standardization and make the loss NaN. Replace with 0.
-        image = np.nan_to_num(image, nan=0.0, posinf=0.0, neginf=0.0)
+        image = np.nan_to_num(image, nan=0.0, posinf=0.0, neginf=0.0) # TODO: check why there is NA in COG
         image = np.transpose(image, (1, 2, 0))
         mask = (mask_src.read(1, window=win) > 0).astype(np.float32)
 
@@ -116,10 +129,7 @@ class ROSADataset(Dataset):
 
         image = np.clip(image, 0.0, 1.0)
         if self.normalize:
-            # Per-image, per-channel standardization. Sentinel-2 reflectance is
-            # ~5x darker than the ImageNet stats the encoder was pretrained on
-            # (mean ~0.09 vs ~0.485); without this the encoder sees out-of-
-            # distribution inputs and the decoder collapses to all-background.
+            # Per-image, per-channel standardization.
             mean = image.mean(axis=(0, 1), keepdims=True)
             std = image.std(axis=(0, 1), keepdims=True) + 1e-6
             image = (image - mean) / std
@@ -132,10 +142,6 @@ class ROSADataset(Dataset):
 
 class ROSADataModule(pl.LightningDataModule):
     """Reads metadata.parquet, partitions patches, serves train/val/test loaders.
-
-    Splits come from the ``split_set`` column. The current dataset is entirely
-    ``train`` (splits are scaffolded), so when val/test are absent we fall back
-    to a deterministic random split controlled by ``val_frac``/``test_frac``.
     """
 
     def __init__(
@@ -166,10 +172,6 @@ class ROSADataModule(pl.LightningDataModule):
 
     def _drop_edge_patches(self, df):
         """Keep only full-size block windows; drop partial edge blocks.
-
-        A tile's last block row/col is smaller than a full block when the COG
-        dimensions aren't multiples of the block size. Each tile COG is opened
-        once to compare every patch's far edge against the raster extent.
         """
         df = df.reset_index(drop=True)
         full = pd.Series(False, index=df.index)
@@ -189,19 +191,11 @@ class ROSADataModule(pl.LightningDataModule):
         split = df[SPLIT_COL].astype(str).str.lower()
         val = df[split.isin(["val", "validation"])]
         test = df[split.isin(["test"])]
-        # No explicit val/test -> deterministic random split over everything.
-        if len(val) == 0 and len(test) == 0:
-            shuffled = df.sample(frac=1.0, random_state=self.seed).reset_index(drop=True)
-            n = len(shuffled)
-            n_test = int(n * self.test_frac)
-            n_val = int(n * self.val_frac)
-            test = shuffled.iloc[:n_test]
-            val = shuffled.iloc[n_test : n_test + n_val]
-            train = shuffled.iloc[n_test + n_val :]
-            print(
-                f"No val/test in split_set; random split -> train {len(train)}, "
-                f"val {len(val)}, test {len(test)} (seed={self.seed})"
-            )
+
+        # check if val/test are empty
+        if len(val) == 0 or len(test) == 0:
+            print("Warning: val/test split not found in metadata.parquet")
+            raise ValueError("val/test split not found in metadata.parquet")
         else:
             train = df[split.isin(["train"])]
         return train, val, test

@@ -1,10 +1,4 @@
 """Train the UNet road-segmentation baseline on the S2-ROSA dataset.
-
-Local:
-    python train.py /Volumes/MacOSFiles/S2ROSA --epochs 5
-
-Kaggle (dataset symlinked by prep/kaggle_dependencies.py):
-    python train.py --wandb
 """
 
 import argparse

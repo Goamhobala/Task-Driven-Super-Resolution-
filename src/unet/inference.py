@@ -1,7 +1,4 @@
 """Evaluate a trained UNet checkpoint on the S2-ROSA test split.
-
-Local:
-    python inference.py /Volumes/MacOSFiles/S2ROSA --checkpoint checkpoints/unet_s2rosa_best.ckpt
 """
 
 import argparse
@@ -65,7 +62,6 @@ def main():
     save_predictions(model, test_loader, args.output_dir, device, save_comparison=True)
     print("Done! Test predictions saved.")
 
-
 def save_predictions(model, dataloader, output_dir, device, save_comparison=False):
     model.eval()
     with torch.no_grad():
@@ -81,20 +77,36 @@ def save_predictions(model, dataloader, output_dir, device, save_comparison=Fals
                 pred_mask = preds[i].squeeze()
 
                 if save_comparison:
-                    # Use the first three bands (RGB) for display.
+                    # Extract the first three bands (C, H, W) -> (H, W, C)
                     img = images_np[i][:3].transpose(1, 2, 0)
                     true_mask = masks_np[i].squeeze()
+                    
+                    # Apply 2nd-98th percentile stretch
+                    img_stretched = np.zeros_like(img)
+                    for c in range(3):
+                        band = img[:, :, c]
+                        lo, hi = np.percentile(band, (2, 98))
+                        if hi > lo:
+                            # Stretch back to [0, 1] for matplotlib
+                            img_stretched[:, :, c] = np.clip((band - lo) / (hi - lo), 0, 1)
+                        else:
+                            # Fallback
+                            img_stretched[:, :, c] = np.clip(band, 0, 1)
 
                     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-                    axes[0].imshow(np.clip(img, 0, 1))
+                    
+                    axes[0].imshow(img_stretched)
                     axes[0].set_title("Original Image")
                     axes[0].axis("off")
+                    
                     axes[1].imshow(true_mask, cmap="gray")
                     axes[1].set_title("True Road Label")
                     axes[1].axis("off")
+                    
                     axes[2].imshow(pred_mask, cmap="gray")
                     axes[2].set_title("Predicted Road")
                     axes[2].axis("off")
+                    
                     plt.tight_layout()
                     plt.savefig(
                         os.path.join(output_dir, f"comp_{filenames[i]}"),
