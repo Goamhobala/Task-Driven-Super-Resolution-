@@ -55,6 +55,12 @@ unet = [
     "albumentations"
 ]
 
+benchmarking = [
+    "geopandas",
+    "awscli",
+    "eotdl"
+    ]
+
 instageo = [
     "instageo[gpu,data,model]",
 ]
