@@ -265,6 +265,23 @@ wheels = [
 ]
 
 [[package]]
+name = "awscli"
+version = "1.44.74"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "botocore", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "colorama", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "docutils", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pyyaml", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "rsa", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "s3transfer", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/62/1e/fb6c039684c52317eb199312c4b374e5c53c267f354508f3250bebf5b18b/awscli-1.44.74.tar.gz", hash = "sha256:c885686313751100194137996cfab449b7cd25e5fea19798acb542afd84427ee", size = 1887254, upload-time = "2026-04-06T19:39:03.695Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/75/24/bfde8cfa41782e36ed2579c36a02341941b347f94c205ea409d5ad0a40e9/awscli-1.44.74-py3-none-any.whl", hash = "sha256:0b680874ee81f58912319cb60225aa7df6898d3b09fb278d539d447c4115ef73", size = 4624956, upload-time = "2026-04-06T19:39:01.137Z" },
+]
+
+[[package]]
 name = "backoff"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -526,6 +543,29 @@ wheels = [
 ]
 
 [[package]]
+name = "ciso8601"
+version = "2.3.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c1/8a/075724aea06c98626109bfd670c27c248c87b9ba33e637f069bf46e8c4c3/ciso8601-2.3.3.tar.gz", hash = "sha256:db5d78d9fb0de8686fbad1c1c2d168ed52efb6e8bf8774ae26226e5034a46dae", size = 31909, upload-time = "2025-08-20T16:31:33.51Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/62/aa/b723a6981cfc42bbe992da23179f5dd1556e9054067985108ec6cbe34dd3/ciso8601-2.3.3-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:e7ef14610446211c4102bf6c67f32619ab341e56db15bad6884385b43c12b064", size = 16111, upload-time = "2025-08-20T16:30:36.781Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/e9/e547ec4dd75f28d8d217488130fa07767bc42fd643d61a18870487133c0e/ciso8601-2.3.3-cp312-cp312-macosx_11_0_universal2.whl", hash = "sha256:523901aec6b0ccdf255c863ef161f476197f177c5cd33f2fbb35955c5f97fdb4", size = 24193, upload-time = "2025-08-20T16:30:38.067Z" },
+    { url = "https://files.pythonhosted.org/packages/14/c8/801b78e30667cb31b4524e9dc26cbc2c03c012f9aa3f5ae21676461dc622/ciso8601-2.3.3-cp312-cp312-macosx_11_0_x86_64.whl", hash = "sha256:45f8254d1fb0a41e20f98e93075db7b56504adddf65e4c8b397671feba4861ca", size = 15917, upload-time = "2025-08-20T16:30:39.375Z" },
+    { url = "https://files.pythonhosted.org/packages/44/6b/dfc56a2a4e572a2a3f8c88a66dea6a9186a8e10da7c36cc84abc31bf795c/ciso8601-2.3.3-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:202ca99077577683e6a84d394ff2677ec19d9f406fbf35734f68be85d2bcd3f1", size = 41324, upload-time = "2025-08-20T16:30:40.321Z" },
+    { url = "https://files.pythonhosted.org/packages/30/54/7563e20a158a4bdf3e8d13c63e02b71f9b73c662edc83cb4d5ab67171a7d/ciso8601-2.3.3-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:c4499cfbe4da092dea95ab81aefc78b98e2d7464518e6e80107cf2b9b1f65fa2", size = 41368, upload-time = "2025-08-20T16:30:43.397Z" },
+    { url = "https://files.pythonhosted.org/packages/01/16/88154fe8247e4dcfdbaed8c6b8ccf32b1dd4389c6c95b1986bf31649eb00/ciso8601-2.3.3-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:8afa073802c926c3244e1e5fcc5818afd3acb90fb7826a90f91ddbda0636ea70", size = 16109, upload-time = "2025-08-20T16:30:45.655Z" },
+    { url = "https://files.pythonhosted.org/packages/be/46/8d46372b3802c7201c20c8b316569f27253aaafba0cdd2cd033985e8b77e/ciso8601-2.3.3-cp313-cp313-macosx_11_0_universal2.whl", hash = "sha256:8a04e518b4adf8e35e030feaecdb4a835d39b9bb44d207e926aea8ce3447ad7c", size = 24189, upload-time = "2025-08-20T16:30:46.958Z" },
+    { url = "https://files.pythonhosted.org/packages/13/80/1890e097cb76e41995de82f29c0289ca590d7135e0be3707e5b78f54350d/ciso8601-2.3.3-cp313-cp313-macosx_11_0_x86_64.whl", hash = "sha256:f79ad8372463ba4265981016d1648bc05f4922bc8044c4243fcbaef7a12ee9f7", size = 15925, upload-time = "2025-08-20T16:30:48.082Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/e9/690a2a6beefd9d982c20adde3f09ff54a23291a699b0df7cf0c59027d9cf/ciso8601-2.3.3-cp313-cp313-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:d5894a33f119b5ac1082df187dc58c74fe13c9c092e19ba36495c2b7cee3540b", size = 41352, upload-time = "2025-08-20T16:30:49.294Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/65/24a888240324188d8350bc24fb58a6d759c0ca43adfa77210f3d60370b56/ciso8601-2.3.3-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:289515aa3a3b86a9c3450bf482f634138b98788332d136751507bfdfe46e6031", size = 41411, upload-time = "2025-08-20T16:30:52.439Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/3a/54ad0ae2257870076b4990545a8f16221470fecea0aa7a4e1f39506db8c5/ciso8601-2.3.3-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:82db4047d74d8b1d129e7a8da578518729912c3bd19cb71541b147e41f426381", size = 16115, upload-time = "2025-08-20T16:30:54.971Z" },
+    { url = "https://files.pythonhosted.org/packages/23/fb/9fe767d44520691e2b706769466852fbdeb44a82dc294c2766bce1049d22/ciso8601-2.3.3-cp314-cp314-macosx_11_0_universal2.whl", hash = "sha256:a553f3fc03a2ed5ca6f5716de0b314fa166461df01b45d8b36043ccac3a5e79f", size = 24214, upload-time = "2025-08-20T16:30:56.359Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/ac/984fd3948f372c46c436a2b48da43f4fb7bc6f156a6f4bc858adaab79d42/ciso8601-2.3.3-cp314-cp314-macosx_11_0_x86_64.whl", hash = "sha256:ff59c26083b7bef6df4f0d96e4b649b484806d3d7bcc2de14ad43147c3aafb04", size = 15929, upload-time = "2025-08-20T16:30:58.352Z" },
+    { url = "https://files.pythonhosted.org/packages/de/3a/5572917d4e0bec2c1ef0eda8652f9dc8d1850d29d3eef9e5e82ffe5d6791/ciso8601-2.3.3-cp314-cp314-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:99a1fa5a730790431d0bfcd1f3a6387f60cddc6853d8dcc5c2e140cd4d67a928", size = 41578, upload-time = "2025-08-20T16:30:59.351Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/93/efd40db0d6b512be1cbe4e7e750882c2e88f580e17f35b3e9cc9c23004b5/ciso8601-2.3.3-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:32e06a35eb251cfc4bbe01a858c598da0a160e4ad7f42ff52477157ceaf48061", size = 41443, upload-time = "2025-08-20T16:31:02.357Z" },
+]
+
+[[package]]
 name = "click"
 version = "8.3.2"
 source = { registry = "https://pypi.org/simple" }
@@ -579,6 +619,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b5/40/76b82b95be5432600305a60b0d8e37c8f393bcc70ecda90f9e58017fd89b/codecarbon-3.2.6.tar.gz", hash = "sha256:44643ddb571fcf5de36c1a35e7fd9f0cc8bd2bb124cb97bdbd2dd6f07ea6bfc9", size = 419178, upload-time = "2026-03-30T12:52:38.19Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/a3/7fa0c02b2efbd6e4ffac1d264d3bdc5eee94405e791bc22a377c31d173e9/codecarbon-3.2.6-py3-none-any.whl", hash = "sha256:7ab6a5b7983af6767948d0c423a111c6bdfb9d5a8df71fc848e9839a4da62ef3", size = 380789, upload-time = "2026-03-30T12:52:36.297Z" },
+]
+
+[[package]]
+name = "colorama"
+version = "0.4.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
 ]
 
 [[package]]
@@ -851,6 +900,15 @@ wheels = [
 ]
 
 [[package]]
+name = "docutils"
+version = "0.19"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/6b/5c/330ea8d383eb2ce973df34d1239b3b21e91cd8c865d21ff82902d952f91f/docutils-0.19.tar.gz", hash = "sha256:33995a6753c30b7f577febfc2c50411fec6aac7f7ffeb7c4cfe5991072dcf9e6", size = 2056383, upload-time = "2022-07-05T20:17:31.045Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/69/e391bd51bc08ed9141ecd899a0ddb61ab6465309f1eb470905c0c8868081/docutils-0.19-py3-none-any.whl", hash = "sha256:5e1de4d849fee02c63b040a4a3fd567f4ab104defd8a5511fbbc24a8a017efbc", size = 570472, upload-time = "2022-07-05T20:17:26.388Z" },
+]
+
+[[package]]
 name = "donfig"
 version = "0.8.1.post1"
 source = { registry = "https://pypi.org/simple" }
@@ -907,6 +965,26 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/2c/77/850bef8d72ffb9219f0b1aac23fbc1bf7d038ee6ea666f331fa273031aa2/einops-0.8.2.tar.gz", hash = "sha256:609da665570e5e265e27283aab09e7f279ade90c4f01bcfca111f3d3e13f2827", size = 56261, upload-time = "2026-01-26T04:13:17.638Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2a/09/f8d8f8f31e4483c10a906437b4ce31bdf3d6d417b73fe33f1a8b59e34228/einops-0.8.2-py3-none-any.whl", hash = "sha256:54058201ac7087911181bfec4af6091bb59380360f069276601256a76af08193", size = 65638, upload-time = "2026-01-26T04:13:18.546Z" },
+]
+
+[[package]]
+name = "eotdl"
+version = "2026.3.26"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "geopandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pydantic", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pyjwt", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pystac", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "python-frontmatter", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "requests", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "stac-geoparquet", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "tqdm", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "typer", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a4/7d/65ef5fe0a08d61655d820975b7a9eb9765902a53045dec940d905ab95c8d/eotdl-2026.3.26.tar.gz", hash = "sha256:92160566ef133b75668fb264391c7a5ace0363eb876b03c4854b54f1f67cf6fe", size = 3636336, upload-time = "2026-03-26T12:31:25.202Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b2/f1/0f84a769d3a1d0a4fd75ae612f4857e24c0bec65ab4b269467a31f090359/eotdl-2026.3.26-py3-none-any.whl", hash = "sha256:7525ae80da1741c14b96e659f2d9052469d81f25ffc85c0f5e35f136298074f0", size = 107609, upload-time = "2026-03-26T12:31:23.077Z" },
 ]
 
 [[package]]
@@ -1567,6 +1645,11 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+benchmarking = [
+    { name = "awscli", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "eotdl", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "geopandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
 instageo = [
     { name = "instageo", extra = ["data", "gpu", "model"], marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -1652,8 +1735,11 @@ requires-dist = [
     { name = "absl-py", marker = "extra == 'utilities'", specifier = ">=2.4.0" },
     { name = "addict", marker = "extra == 'samroad'" },
     { name = "albumentations", marker = "extra == 'terra'", specifier = ">=2.0.8" },
-    { name = "albumentations", marker = "extra == 'unet'", specifier = ">=2.0.8" },
+    { name = "albumentations", marker = "extra == 'unet'" },
+    { name = "awscli", marker = "extra == 'benchmarking'" },
     { name = "earthengine-api", marker = "extra == 'sentinel2'", specifier = ">=1.7.22" },
+    { name = "eotdl", marker = "extra == 'benchmarking'" },
+    { name = "geopandas", marker = "extra == 'benchmarking'" },
     { name = "geopandas", marker = "extra == 'sentinel2'", specifier = ">=1.1.3" },
     { name = "geopandas", marker = "extra == 'utilities'", specifier = ">=1.1.2" },
     { name = "huggingface-hub", marker = "extra == 'terra'" },
@@ -1715,7 +1801,7 @@ requires-dist = [
     { name = "wandb", marker = "extra == 'terra'" },
     { name = "wandb", marker = "extra == 'unet'" },
 ]
-provides-extras = ["sentinel2", "samroad", "unet", "instageo", "terra", "utilities"]
+provides-extras = ["sentinel2", "samroad", "unet", "benchmarking", "instageo", "terra", "utilities"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2959,6 +3045,26 @@ wheels = [
 ]
 
 [[package]]
+name = "orjson"
+version = "3.11.9"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/0c/964746fcafbd16f8ff53219ad9f6b412b34f345c75f384ad434ceaadb538/orjson-3.11.9.tar.gz", hash = "sha256:4fef17e1f8722c11587a6ef18e35902450221da0028e65dbaaa543619e68e48f", size = 5599163, upload-time = "2026-05-06T15:11:08.309Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/16/6d/11867a3ffa3a3608d84a4de51ef4dd0896d6b5cc9132fbe1daf593e677bc/orjson-3.11.9-cp312-cp312-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl", hash = "sha256:9ef6fe90aadef185c7b128859f40beb24720b4ecea95379fc9000931179c3a49", size = 228515, upload-time = "2026-05-06T15:09:57.265Z" },
+    { url = "https://files.pythonhosted.org/packages/24/75/05912954c8b288f34fcf5cd4b9b071cb4f6e77b9961e175e56ebb258089f/orjson-3.11.9-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:e5c9b8f28e726e97d97696c826bc7bea5d71cecd63576dba92924a32c1961291", size = 128409, upload-time = "2026-05-06T15:09:59.063Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/a4/82b7a2fe5d8a67a59ed831b24d59a3d46ea7d207b66e1602d376541d94a6/orjson-3.11.9-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:be4fa4f0af7fa18951f7ab3fc2148e223af211bf03f59e1c6034ec3f97f21d61", size = 134014, upload-time = "2026-05-06T15:10:08.213Z" },
+    { url = "https://files.pythonhosted.org/packages/df/e5/4d2d8af06f788329b4f78f8cc3679bb395392fcaa1e4d8d3c33e85308fa4/orjson-3.11.9-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:71e63adb0e1f1ed5d9e168f50a91ceb93ae6420731d222dc7da5c69409aa47aa", size = 136943, upload-time = "2026-05-06T15:10:14.405Z" },
+    { url = "https://files.pythonhosted.org/packages/32/33/93fcc25907235c344ae73122f8a4e01d2d393ef062b4af7d2e2487a32c37/orjson-3.11.9-cp313-cp313-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl", hash = "sha256:4bab1b2d6141fe7b32ae71dac905666ece4f94936efbfb13d55bb7739a3a6021", size = 228458, upload-time = "2026-05-06T15:10:20.079Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/27/b1e6dadb3c080313c03fdd8067b85e6a0460c7d8d6a1c3984ef77b904e4d/orjson-3.11.9-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:844417969855fc7a41be124aafe83dc424592a7f77cd4501900c67307122b92c", size = 128368, upload-time = "2026-05-06T15:10:21.549Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/08/dca0082dd2a194acb93e5457e73455388e2e2ca464a2672449a9ddbb679d/orjson-3.11.9-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4e39364e726a8fff737309aff059ff67d8a8c8d5b677be7bb49a8b3e84b7e218", size = 134033, upload-time = "2026-05-06T15:10:31.152Z" },
+    { url = "https://files.pythonhosted.org/packages/04/83/45fbb6d962e260807f99441db9613cee868ceda4baceda59b3720a563f97/orjson-3.11.9-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:9f78cf8fec5bd627f4082b8dfeac7871b43d7f3274904492a43dab39f18a19a0", size = 136915, upload-time = "2026-05-06T15:10:38.013Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/eb/5da01e356015aee6ecfa1187ced87aef51364e306f5e695dd52719bf0e78/orjson-3.11.9-cp314-cp314-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl", hash = "sha256:b6ef1979adc4bc243523f1a2ba91418030a8e29b0a99cbe7e0e2d6807d4dce6e", size = 228465, upload-time = "2026-05-06T15:10:44.097Z" },
+    { url = "https://files.pythonhosted.org/packages/64/62/3e0e0c14c957133bcd855395c62b55ed4e3b0af23ffea11b032cb1dcbdb1/orjson-3.11.9-cp314-cp314-macosx_15_0_arm64.whl", hash = "sha256:f36b7f32c7c0db4a719f1fc5824db4a9c6f8bd1a354debb91faf26ebf3a4c71e", size = 128364, upload-time = "2026-05-06T15:10:45.839Z" },
+    { url = "https://files.pythonhosted.org/packages/76/3e/c0b690253f0b82d86e99949af13533363acfb5432ecb5d53dd5b3bce9c34/orjson-3.11.9-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:aaea64f3f467d22e70eeed68bdccb3bc4f83f650446c4a03c59f2cba28a108db", size = 134030, upload-time = "2026-05-06T15:10:54.988Z" },
+    { url = "https://files.pythonhosted.org/packages/97/4e/00503f64204bf859b37213a63927028f30fb6268cd8677fb0a5ad48155e1/orjson-3.11.9-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:5f63aaf97afd9f6dec5b1a68e1b8da12bfccb4cb9a9a65c3e0b6c847849e7586", size = 136921, upload-time = "2026-05-06T15:11:02.176Z" },
+]
+
+[[package]]
 name = "packaging"
 version = "26.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3660,6 +3766,18 @@ wheels = [
 ]
 
 [[package]]
+name = "python-frontmatter"
+version = "1.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyyaml", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9d/e8/79cbe69864d44f3b48e70ebee0a872a7d5a4e7150c9f8577ed7a5beefff0/python_frontmatter-1.3.0.tar.gz", hash = "sha256:acc73e477a568dc2a25c9e130c6c68ae8daa8c204c8f7e813db47d6a7280dcf2", size = 8322, upload-time = "2026-05-20T19:21:44.164Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a6/a3/17c284b4f4d8ad50f0f9ba70ad8fcc35c777aeafcdbbffdd91bbdc5ab379/python_frontmatter-1.3.0-py3-none-any.whl", hash = "sha256:9f7dd9260bec99044219159a329f64f039087f9d1a2124c9442556f2fe6f82ec", size = 10562, upload-time = "2026-05-20T19:21:43.323Z" },
+]
+
+[[package]]
 name = "pytorch-lightning"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4040,6 +4158,18 @@ wheels = [
 ]
 
 [[package]]
+name = "rsa"
+version = "4.7.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyasn1", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/db/b5/475c45a58650b0580421746504b680cd2db4e81bc941e94ca53785250269/rsa-4.7.2.tar.gz", hash = "sha256:9d689e6ca1b3038bc82bf8d23e944b6b6037bc02301a574935b2dd946e0353b9", size = 39711, upload-time = "2021-02-24T10:55:05.846Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e9/93/0c0f002031f18b53af7a6166103c02b9c0667be528944137cc954ec921b3/rsa-4.7.2-py3-none-any.whl", hash = "sha256:78f9a9bf4e7be0c5ded4583326e7461e3a3c5aae24073648b4bdfa797d78c9d2", size = 34505, upload-time = "2021-02-24T10:55:03.55Z" },
+]
+
+[[package]]
 name = "rtree"
 version = "1.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4414,6 +4544,28 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/56/64/46da3957f8f9af03179eca946d786c56f22b9458cedf472850e02948a8c1/sparse-0.18.0.tar.gz", hash = "sha256:57f92661eb0ec0c764b450c72f3c0d869ea7f32e5e4ca0a335f9d6a7d79bbff4", size = 791987, upload-time = "2026-02-19T06:17:55.376Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/20/a9/804ac7423f5dda316d3a982f3ab071c971fb877f8961dad9f6a97d12d2ee/sparse-0.18.0-py2.py3-none-any.whl", hash = "sha256:6f4a127d5aae88eca41ea8106bbd5a7830f83d068b37291df597a43511212069", size = 151931, upload-time = "2026-02-19T06:17:53.11Z" },
+]
+
+[[package]]
+name = "stac-geoparquet"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "ciso8601", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "geopandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "orjson", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "packaging", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "psutil", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pyarrow", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pyproj", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pystac", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "shapely", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "types-psutil", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b0/cf/448634f10d81f03e4578ff3ec40df91ac009b097a96b16501dcb752516b0/stac_geoparquet-0.8.0.tar.gz", hash = "sha256:9ff32134629b70a6071044bafe9f0f6bdfe6f9e11b0da70642430c798f686e19", size = 2019639, upload-time = "2026-05-20T13:42:46.244Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/84/4a/86978f5a141cfe76495855742d4509805392d3dacf1843f69e64cd16db30/stac_geoparquet-0.8.0-py3-none-any.whl", hash = "sha256:8046d683bccb4e06339e5a51afb3596295c9a69470b3d12b07b3ba14c64bf9bd", size = 31742, upload-time = "2026-05-20T13:42:44.443Z" },
 ]
 
 [[package]]
@@ -4886,6 +5038,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f5/24/cb09efec5cc954f7f9b930bf8279447d24618bb6758d4f6adf2574c41780/typer-0.24.1.tar.gz", hash = "sha256:e39b4732d65fbdcde189ae76cf7cd48aeae72919dea1fdfc16593be016256b45", size = 118613, upload-time = "2026-02-21T16:54:40.609Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/91/48db081e7a63bb37284f9fbcefda7c44c277b18b0e13fbc36ea2335b71e6/typer-0.24.1-py3-none-any.whl", hash = "sha256:112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e", size = 56085, upload-time = "2026-02-21T16:54:41.616Z" },
+]
+
+[[package]]
+name = "types-psutil"
+version = "7.2.2.20260518"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cb/f1/6901857281d4e8d792492e1495eef6f4f01318a3b6a066486d81000a4511/types_psutil-7.2.2.20260518.tar.gz", hash = "sha256:9f825f631463a5b4d26f19f63aebc9ec25f01140d655026f3ad8a67841f9b331", size = 26660, upload-time = "2026-05-18T06:05:09.389Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/eb/f726339668879819599c74c2e1f0cab760912a4159046942bdae2ad37bd6/types_psutil-7.2.2.20260518-py3-none-any.whl", hash = "sha256:6a3d697665754a60d7b5a41d5a2cff12b53f5e0676d77810cd28ba5e14cb4049", size = 32820, upload-time = "2026-05-18T06:05:08.321Z" },
 ]
 
 [[package]]

@@ -22,7 +22,7 @@ DatasetDir = Annotated[Path, typer.Option(help=DATASET_HELP)]
 def build(
     dataset_dir: DatasetDir,
     parquet: Annotated[Path, typer.Option(help="Absolute path to the Overture roads parquet")],
-    buffer_m: Annotated[int, typer.Option(help="Road buffer (metres) used for the mask")] = 10,
+    buffer_m: Annotated[int, typer.Option(help="Fallback road buffer (metres) for classes without a per-class width")] = 10,
 ):
     """Scan imagery/, generate masks_raster/, masks_graph/, metadata.parquet and splits/."""
     manager = DatasetManager(
