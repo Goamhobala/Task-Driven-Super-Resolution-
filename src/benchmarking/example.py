@@ -31,10 +31,11 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
 from stats import bootstrap_paired_diff, wilcoxon_paired
+PARQUET = Path(__file__).parent / "tile_metrics_dummy.parquet"
 
-PARQUET = "./tile_metrics_dummy.parquet"
 METRIC = "f1"
 MODEL_A, MODEL_B = "dummy_a", "dummy_b"
 
