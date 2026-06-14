@@ -96,7 +96,7 @@ class CONFIG:
     # ---- output ----
     SAVE_PARQUET = True
     APPEND_PARQUET = True              # read-concat-write so multiple runs accrue
-    OUT_PARQUET = "./tile_metrics_dummy.parquet"
+    OUT_PARQUET = str(_HERE / "dummy_data" / "tile_metrics_dummy.parquet")
 # ===========================================================================
 #
 # NOTE on num_classes: your pixel_metrics expects a binary road channel. The
@@ -237,7 +237,7 @@ def run_chip_inference(predictor: Predictor, loader: DataLoader, cfg) -> pd.Data
         metrics = pixel_metrics_from_counts(counts)
         for j, cid in enumerate(chip_ids):
             rows.append({
-                "tile_id": cid,                                 # unit of comparison for stats
+                "chip_id": cid,                                 # unit of comparison for stats
                 "tp": counts.tp[j].item(), "fp": counts.fp[j].item(),
                 "fn": counts.fn[j].item(), "tn": counts.tn[j].item(),
                 "iou": metrics["iou"][j].item(), "f1": metrics["f1"][j].item(),
@@ -291,10 +291,15 @@ def score_in_chips(prob: torch.Tensor, mask: torch.Tensor, tile_stem: str, cfg) 
 
     This is the seam between INFERENCE (whole-tile, overlapping, blended by
     tiled_inference) and EVALUATION UNITS (non-overlapping chips). The stats
-    module resamples/pairs over these rows, so a chip is its bootstrap unit —
-    `tile_id` here is a per-chip id `{tile}_r{row}_c{col}`, mirroring the dataset's
-    (patch_row_id, patch_col_id) grid. Adjacent chips from one image are spatially
-    autocorrelated; with a real multi-tile dataset you'd resample over tiles.
+    module resamples/pairs over these rows, so a chip is its bootstrap unit.
+
+    Two keys per row:
+      * `chip_id` = `{tile}_r{row}_c{col}` — the unique unit of evaluation, and a
+        foreign key into the dataset's per-patch metadata catalogue.
+      * `tile_id` = the parent image stem — denormalised so chips roll up to tiles
+        (or resample over tiles) without joining the catalogue.
+    Adjacent chips from one image are spatially autocorrelated; with a real
+    multi-tile dataset you'd resample over `tile_id` instead of `chip_id`.
     """
     prob = prob.squeeze(0) if prob.dim() == 3 else prob       # [H, W]
     h, w = mask.shape
@@ -312,7 +317,8 @@ def score_in_chips(prob: torch.Tensor, mask: torch.Tensor, tile_stem: str, cfg) 
             )
             m = pixel_metrics_from_counts(counts)
             rows.append({
-                "tile_id": f"{tile_stem}_r{ri}_c{ci}",
+                "chip_id": f"{tile_stem}_r{ri}_c{ci}",        # unit of comparison
+                "tile_id": tile_stem,                          # parent image (FK)
                 "patch_row_id": ri, "patch_col_id": ci,
                 "tp": counts.tp[0].item(), "fp": counts.fp[0].item(),
                 "fn": counts.fn[0].item(), "tn": counts.tn[0].item(),

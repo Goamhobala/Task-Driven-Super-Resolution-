@@ -13,14 +13,15 @@ benchmarking store into numbers you can put in a report:
       one held-fixed config (training-instability CI).
 
 All three statistical functions consume the long-form joined table described in
-``docs/benchmarking.md``: one row per ``(model_name, tile_id)`` (plus ``seed``
+``docs/benchmarking.md``: one row per ``(model_name, chip_id)`` (plus ``seed``
 and the raw counts for the cross-seed micro path). They are pure — no I/O, no
 global state — so they test in isolation against synthetic DataFrames.
 
 Pairing convention (bootstrap + Wilcoxon): the two models are joined on
-``tile_id``; only tiles present for *both* models with a non-NaN metric on each
+``chip_id``; only chips present for *both* models with a non-NaN metric on each
 side survive. Resampling and the signed-rank test then operate on those paired
-differences, never on the two models independently.
+differences, never on the two models independently. ``chip_id`` is the unit, so
+these resample chips; a parent ``tile_id`` rides along for tile-level rollups.
 """
 
 from __future__ import annotations
@@ -66,11 +67,15 @@ def _paired_values(
     model_b: str,
     metric: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Join two models on ``tile_id`` and return their aligned metric arrays.
+    """Join two models on ``chip_id`` and return their aligned metric arrays.
 
-    Tiles present for only one model, or NaN on either side, are dropped. Raises
-    ValueError if a model is absent or has duplicate ``(model_name, tile_id)``
+    Chips present for only one model, or NaN on either side, are dropped. Raises
+    ValueError if a model is absent or has duplicate ``(model_name, chip_id)``
     rows (which usually means un-aggregated multi-seed data).
+
+    ``chip_id`` is the unit of comparison: resampling/ranking these rows resamples
+    chips. To compare at tile granularity instead, pre-aggregate the caller's
+    table to one row per ``(model_name, tile_id)`` and rename it to ``chip_id``.
     """
     present = set(df["model_name"].unique())
     for m in (model_a, model_b):
@@ -80,17 +85,17 @@ def _paired_values(
             )
 
     subset = df[df["model_name"].isin([model_a, model_b])]
-    dup = subset.duplicated(subset=["model_name", "tile_id"])
+    dup = subset.duplicated(subset=["model_name", "chip_id"])
     if dup.any():
-        offending = subset.loc[dup, ["model_name", "tile_id"]].to_dict("records")
+        offending = subset.loc[dup, ["model_name", "chip_id"]].to_dict("records")
         raise ValueError(
-            "duplicate (model_name, tile_id) rows — expected exactly one row per "
+            "duplicate (model_name, chip_id) rows — expected exactly one row per "
             f"pair; aggregate multi-seed data first. Examples: {offending[:3]}"
         )
 
-    a = df[df["model_name"] == model_a].set_index("tile_id")[metric]
-    b = df[df["model_name"] == model_b].set_index("tile_id")[metric]
-    paired = pd.DataFrame({"a": a, "b": b}).dropna()  # inner-aligns on tile_id
+    a = df[df["model_name"] == model_a].set_index("chip_id")[metric]
+    b = df[df["model_name"] == model_b].set_index("chip_id")[metric]
+    paired = pd.DataFrame({"a": a, "b": b}).dropna()  # inner-aligns on chip_id
     return paired["a"].to_numpy(dtype=float), paired["b"].to_numpy(dtype=float)
 
 
@@ -103,11 +108,11 @@ def bootstrap_paired_diff(
     rng: np.random.Generator | None = None,
     confidence: float = 0.95,
 ) -> dict:
-    """Paired-bootstrap CI on the per-tile metric difference ``model_a - model_b``.
+    """Paired-bootstrap CI on the per-chip metric difference ``model_a - model_b``.
 
-    Each bootstrap iteration resamples *pairs* (tile-aligned differences) with
-    replacement and takes the mean — so a constant per-tile offset collapses the
-    CI to a point regardless of how the underlying values vary across tiles.
+    Each bootstrap iteration resamples *pairs* (chip-aligned differences) with
+    replacement and takes the mean — so a constant per-chip offset collapses the
+    CI to a point regardless of how the underlying values vary across chips.
     That paired invariant is what separates this from resampling the two models
     independently.
 
@@ -143,7 +148,7 @@ def wilcoxon_paired(
     model_b: str,
     metric: str = "iou",
 ) -> dict:
-    """Wilcoxon signed-rank test on the paired per-tile difference.
+    """Wilcoxon signed-rank test on the paired per-chip difference.
 
     Tests whether ``model_a - model_b`` is symmetric about zero (the two-sided
     null of no consistent advantage). Returns ``{"statistic", "p_value",

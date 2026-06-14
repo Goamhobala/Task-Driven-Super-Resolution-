@@ -5,11 +5,11 @@ across seeds?" The analysis has three steps:
 
   1. Collapse the multi-seed runs to ONE value per (model, chip) by averaging the
      per-chip F1 across seeds. This is also the pre-aggregation the paired tests
-     require: they expect exactly one row per (model_name, tile_id), so the
+     require: they expect exactly one row per (model_name, chip_id), so the
      multiple seeds have to be reduced first.
 
   2. Paired bootstrap CI + Wilcoxon signed-rank test on those seed-averaged F1s.
-     Both pair on tile_id, so they ask whether the two models differ on the SAME
+     Both pair on chip_id, so they ask whether the two models differ on the SAME
      chips rather than on aggregate.
 
   3. Per-chip mean and std of F1 across seeds -> training stability. A large
@@ -41,12 +41,12 @@ MODEL_A, MODEL_B = "dummy_a", "dummy_b"
 
 
 def per_chip_seed_mean(df: pd.DataFrame, metric: str) -> pd.DataFrame:
-    """Average the metric across seeds -> one row per (model_name, tile_id).
+    """Average the metric across seeds -> one row per (model_name, chip_id).
 
     This is the long-form table the paired tests consume: each chip appears once
     per model, carrying that model's seed-averaged score on the chip.
     """
-    return df.groupby(["model_name", "tile_id"], as_index=False)[metric].mean()
+    return df.groupby(["model_name", "chip_id"], as_index=False)[metric].mean()
 
 
 def training_stability(df: pd.DataFrame, metric: str) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -57,7 +57,7 @@ def training_stability(df: pd.DataFrame, metric: str) -> tuple[pd.DataFrame, pd.
     in the same place regardless of the seed.
     """
     per_chip = (
-        df.groupby(["model_name", "tile_id"])[metric]
+        df.groupby(["model_name", "chip_id"])[metric]
         .agg(seed_mean="mean", seed_std="std")
         .reset_index()
     )
@@ -72,12 +72,20 @@ def training_stability(df: pd.DataFrame, metric: str) -> tuple[pd.DataFrame, pd.
 def main() -> None:
     df = pd.read_parquet(PARQUET)
     n_seeds = df.groupby("model_name")["seed"].nunique()
-    print(f"loaded {len(df)} rows from {PARQUET}")
+    print(f"loaded {len(df)} rows from {PARQUET.name}")
     print("seeds per model:")
     print(n_seeds.to_string(), "\n")
 
     # 1. average per-chip F1 across seeds -> one row per (model, chip)
     avg = per_chip_seed_mean(df, METRIC)
+
+    # Make the bootstrap UNIT explicit: we resample chips, not tiles. With one
+    # image these chips all share a tile_id; a real dataset spreads them across
+    # many tiles and you would resample over tile_id instead.
+    n_chips = avg["chip_id"].nunique()
+    n_tiles = df["tile_id"].nunique()
+    print(f"pairing on {n_chips} chips across {n_tiles} tile(s) "
+          f"(chip is the bootstrap unit, tile_id is the parent image)\n")
 
     # 2. paired comparison on the seed-averaged per-chip F1
     boot = bootstrap_paired_diff(

@@ -4,7 +4,7 @@ Contracts under test:
 
     bootstrap_paired_diff(df, model_a, model_b, metric="iou", n_boot=1000, rng)
         Returns {"diff_mean", "ci_lo", "ci_hi", "n_pairs"}.
-        Pairs are constructed by joining on tile_id. Each bootstrap iteration
+        Pairs are constructed by joining on chip_id. Each bootstrap iteration
         resamples PAIRS (not the two models independently), which is the
         invariant the killer test below pins down.
         
@@ -31,8 +31,8 @@ Contracts under test:
         configuration is held fixed.
 
 The first two functions expect long-form input with columns at least:
-    ("model_name", "tile_id", <metric>)
-and exactly one row per (model_name, tile_id). Multi-seed data must be
+    ("model_name", "chip_id", <metric>)
+and exactly one row per (model_name, chip_id). Multi-seed data must be
 pre-aggregated by the caller for those two.
 cross_seed_ci additionally requires a "seed" column (and tp/fp/fn/tn for micro).
 """
@@ -50,15 +50,15 @@ from benchmarking.stats import (
 )
 
 
-def make_long_df(per_model: dict[str, list[float]], tile_ids=None, metric="iou") -> pd.DataFrame:
-    """Build a long-form (model_name, tile_id, <metric>) DataFrame."""
-    if tile_ids is None:
+def make_long_df(per_model: dict[str, list[float]], chip_ids=None, metric="iou") -> pd.DataFrame:
+    """Build a long-form (model_name, chip_id, <metric>) DataFrame."""
+    if chip_ids is None:
         n = len(next(iter(per_model.values())))
-        tile_ids = [f"tile_{i:03d}" for i in range(n)]
+        chip_ids = [f"chip_{i:03d}" for i in range(n)]
     rows = []
     for model, values in per_model.items():
-        for tid, v in zip(tile_ids, values):
-            rows.append({"model_name": model, "tile_id": tid, metric: v})
+        for cid, v in zip(chip_ids, values):
+            rows.append({"model_name": model, "chip_id": cid, metric: v})
     return pd.DataFrame(rows)
 
 
@@ -152,11 +152,11 @@ class TestBootstrapPairedDiff:
     def test_drops_unpaired_tiles(self):
         """A tile present for one model only is excluded from the analysis."""
         df = pd.DataFrame([
-            {"model_name": "A", "tile_id": "t1", "iou": 0.5},
-            {"model_name": "A", "tile_id": "t2", "iou": 0.6},
-            {"model_name": "A", "tile_id": "t3", "iou": 0.7},  # no B counterpart
-            {"model_name": "B", "tile_id": "t1", "iou": 0.4},
-            {"model_name": "B", "tile_id": "t2", "iou": 0.5},
+            {"model_name": "A", "chip_id": "t1", "iou": 0.5},
+            {"model_name": "A", "chip_id": "t2", "iou": 0.6},
+            {"model_name": "A", "chip_id": "t3", "iou": 0.7},  # no B counterpart
+            {"model_name": "B", "chip_id": "t1", "iou": 0.4},
+            {"model_name": "B", "chip_id": "t2", "iou": 0.5},
         ])
         out = bootstrap_paired_diff(df, "A", "B", n_boot=10, rng=np.random.default_rng(0))
         assert out["n_pairs"] == 2
@@ -164,22 +164,22 @@ class TestBootstrapPairedDiff:
     def test_drops_nan_pairs(self):
         """A pair with NaN on either side is dropped before resampling."""
         df = pd.DataFrame([
-            {"model_name": "A", "tile_id": "t1", "iou": 0.5},
-            {"model_name": "A", "tile_id": "t2", "iou": float("nan")},
-            {"model_name": "A", "tile_id": "t3", "iou": 0.7},
-            {"model_name": "B", "tile_id": "t1", "iou": 0.4},
-            {"model_name": "B", "tile_id": "t2", "iou": 0.5},
-            {"model_name": "B", "tile_id": "t3", "iou": 0.6},
+            {"model_name": "A", "chip_id": "t1", "iou": 0.5},
+            {"model_name": "A", "chip_id": "t2", "iou": float("nan")},
+            {"model_name": "A", "chip_id": "t3", "iou": 0.7},
+            {"model_name": "B", "chip_id": "t1", "iou": 0.4},
+            {"model_name": "B", "chip_id": "t2", "iou": 0.5},
+            {"model_name": "B", "chip_id": "t3", "iou": 0.6},
         ])
         out = bootstrap_paired_diff(df, "A", "B", n_boot=10, rng=np.random.default_rng(0))
         assert out["n_pairs"] == 2
 
     def test_metric_parameter_selects_column(self):
         df = pd.DataFrame([
-            {"model_name": "A", "tile_id": "t1", "iou": 0.5, "f1": 0.7},
-            {"model_name": "A", "tile_id": "t2", "iou": 0.6, "f1": 0.8},
-            {"model_name": "B", "tile_id": "t1", "iou": 0.4, "f1": 0.6},
-            {"model_name": "B", "tile_id": "t2", "iou": 0.5, "f1": 0.7},
+            {"model_name": "A", "chip_id": "t1", "iou": 0.5, "f1": 0.7},
+            {"model_name": "A", "chip_id": "t2", "iou": 0.6, "f1": 0.8},
+            {"model_name": "B", "chip_id": "t1", "iou": 0.4, "f1": 0.6},
+            {"model_name": "B", "chip_id": "t2", "iou": 0.5, "f1": 0.7},
         ])
         out_iou = bootstrap_paired_diff(df, "A", "B", metric="iou", n_boot=10, rng=np.random.default_rng(0))
         out_f1 = bootstrap_paired_diff(df, "A", "B", metric="f1", n_boot=10, rng=np.random.default_rng(0))
@@ -192,12 +192,12 @@ class TestBootstrapPairedDiff:
             bootstrap_paired_diff(df, "A", "C", n_boot=10, rng=np.random.default_rng(0))
 
     def test_raises_on_duplicate_model_tile_rows(self):
-        """Contract: one row per (model_name, tile_id). Duplicates likely indicate
+        """Contract: one row per (model_name, chip_id). Duplicates likely indicate
         multi-seed data that should be aggregated by the caller first."""
         df = pd.DataFrame([
-            {"model_name": "A", "tile_id": "t1", "iou": 0.5},
-            {"model_name": "A", "tile_id": "t1", "iou": 0.6},
-            {"model_name": "B", "tile_id": "t1", "iou": 0.4},
+            {"model_name": "A", "chip_id": "t1", "iou": 0.5},
+            {"model_name": "A", "chip_id": "t1", "iou": 0.6},
+            {"model_name": "B", "chip_id": "t1", "iou": 0.4},
         ])
         with pytest.raises(ValueError, match="duplicate"):
             bootstrap_paired_diff(df, "A", "B", n_boot=10, rng=np.random.default_rng(0))
@@ -247,11 +247,11 @@ class TestWilcoxonPaired:
 
     def test_drops_unpaired_tiles(self):
         df = pd.DataFrame([
-            {"model_name": "A", "tile_id": f"t{i}", "iou": 0.5 + i * 0.02} for i in range(10)
+            {"model_name": "A", "chip_id": f"t{i}", "iou": 0.5 + i * 0.02} for i in range(10)
         ] + [
-            {"model_name": "A", "tile_id": "t_extra", "iou": 0.99},  # no B counterpart
+            {"model_name": "A", "chip_id": "t_extra", "iou": 0.99},  # no B counterpart
         ] + [
-            {"model_name": "B", "tile_id": f"t{i}", "iou": 0.4 + i * 0.02} for i in range(10)
+            {"model_name": "B", "chip_id": f"t{i}", "iou": 0.4 + i * 0.02} for i in range(10)
         ])
         out = wilcoxon_paired(df, "A", "B")
         assert out["n_pairs"] == 10

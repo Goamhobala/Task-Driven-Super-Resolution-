@@ -1,0 +1,62 @@
+name: Cloud Build
+
+on:
+  push:
+    branches: [ "chore-singularity-container-for-hpc" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free Up Server Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: false
+
+      - name: Install Apptainer
+        uses: eWaterCycle/setup-apptainer@v2
+        with:
+          apptainer-version: 1.3.6
+
+      - name: Set Image Name (Lowercase)
+        run: echo "IMAGE_NAME=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ env.IMAGE_NAME }}:latest
+
+      - name: Convert Docker image into an Apptainer (.sif)
+        run: |
+          export APPTAINER_DOCKER_USERNAME=${{ github.actor }}
+          export APPTAINER_DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }}
+          apptainer build instaroad.sif docker://ghcr.io/${{ env.IMAGE_NAME }}:latest
+
+      - name: Upload SIF file as an Artifact (For Download)
+        uses: actions/upload-artifact@v4
+        with:
+          name: instaroad-container
+          path: instaroad.sif
+          retention-days: 3
