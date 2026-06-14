@@ -57,11 +57,6 @@ def parse_args():
     p.add_argument(
         "--max-cogs", type=int, default=None, help="Cap the number of tiles predicted."
     )
-    p.add_argument(
-        "--cog-prob",
-        action="store_true",
-        help="Write a float32 probability COG instead of a binary {0,1} road mask.",
-    )
     return p.parse_args()
 
 
@@ -107,7 +102,6 @@ def main():
             threshold=args.threshold,
             zones=args.cog_zones,
             max_cogs=args.max_cogs,
-            write_prob=args.cog_prob,
         )
         print("Done! Whole-COG predictions saved.")
 
@@ -241,27 +235,29 @@ def predict_cog(
     return prob, profile
 
 
-def write_prediction_cog(prob, profile, out_path, threshold=0.5, write_prob=False):
-    """Write the stitched prediction as a Cloud-Optimized GeoTIFF.
+def write_prediction_cog(prob, profile, out_path, threshold=0.5):
+    """Write the stitched prediction as a 2-band Cloud-Optimized GeoTIFF.
 
-    ``write_prob`` -> float32 probabilities; otherwise a binary {0, 1} uint8 road mask
-    (matching the ground-truth mask COG, nodata=0).
+    GeoTIFF bands share one dtype, so both are float32:
+      - band 1 = binary {0.0, 1.0} road mask (``prob > threshold``)
+      - band 2 = road probability [0, 1]
+    nodata is left unset (0 is a valid value in both bands).
     """
     cog_profile = profile.copy()
     # The COG driver manages tiling/overviews itself; drop conflicting source keys.
     for key in ("blockxsize", "blockysize", "tiled", "interleave"):
         cog_profile.pop(key, None)
 
-    if write_prob:
-        data = prob.astype(np.float32)
-        cog_profile.update(driver="COG", dtype="float32", count=1, nodata=None, compress="DEFLATE")
-    else:
-        data = (prob > threshold).astype(np.uint8)
-        cog_profile.update(driver="COG", dtype="uint8", count=1, nodata=0, compress="DEFLATE")
+    prob = prob.astype(np.float32)
+    binary = (prob > threshold).astype(np.float32)
+    data = np.stack([binary, prob])  # (2, H, W)
+    cog_profile.update(driver="COG", dtype="float32", count=2, nodata=None, compress="DEFLATE")
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with rasterio.open(out_path, "w", **cog_profile) as dst:
-        dst.write(data, 1)
+        dst.write(data)
+        dst.set_band_description(1, "road_mask_binary")
+        dst.set_band_description(2, "road_probability")
 
 
 def save_cog_comparison(tile_path, mask_path, prob, out_path, threshold=0.5):
@@ -298,7 +294,6 @@ def run_cog_inference(
     threshold=0.5,
     zones=None,
     max_cogs=None,
-    write_prob=False,
 ):
     """Predict whole tiles end-to-end: write a prediction COG + comparison PNG per tile."""
     os.makedirs(output_dir, exist_ok=True)
@@ -324,7 +319,7 @@ def run_cog_inference(
         )
         cog_out = os.path.join(output_dir, f"{zone}_pred.tif")
         comp_out = os.path.join(output_dir, f"{zone}_comparison.png")
-        write_prediction_cog(prob, profile, cog_out, threshold=threshold, write_prob=write_prob)
+        write_prediction_cog(prob, profile, cog_out, threshold=threshold)
         save_cog_comparison(tile_path, mask_path, prob, comp_out, threshold=threshold)
         print(f"    -> {cog_out}")
         print(f"    -> {comp_out}")
