@@ -1,18 +1,20 @@
 import os
 import torch
 from torch.utils.data import DataLoader
-import torch.optim as optim
 import albumentations as A
-import segmentation_models_pytorch as smp
+import lightning as L
+from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 import wandb
 
 from unet.dataset import SentinelRoadsDataset, sentinel2_data_partition
-from dlinknet.model import build_model, train_model  # Updated imports
+from dlinknet.model import build_model, LightningWrapper
+
 
 def main():
     BASE_DIR = '/kaggle/working/InstaRoadPrototype/dataset/S2IndianRegions'
     DATASET_DIR = '/kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_256/15765738'
-    CHECKPOINT_PATH = '/kaggle/working/dlinknet34_resnet34_roads.pth'
+    CHECKPOINT_DIR = '/kaggle/working/checkpoints'
 
     IMG_DIR = os.path.join(DATASET_DIR, 'images_enhanced_png', 'images_enhanced_png')
     MASK_DIR = os.path.join(DATASET_DIR, 'masks_png', 'masks_png')
@@ -20,56 +22,57 @@ def main():
     image_net_mean = (0.485, 0.456, 0.406)
     image_net_std = (0.229, 0.224, 0.225)
 
-    wandb.init(
-        project="dlinknet_sentinel2_baseline",
-        config={
-            "learning_rate": 0.001,
-            "architecture": "DLinkNet34",
-            "encoder": "resnet34",
-            "dataset": "Sentinel-2",
-            "epochs": 10,
-            "batch_size": 4, 
-            "image_size": 1024
-        }
-    )
+    config = {
+        "learning_rate": 0.001,
+        "architecture": "DLinkNet34",
+        "encoder": "resnet34",
+        "dataset": "Sentinel-2",
+        "epochs": 5,
+        "batch_size": 4,
+        "image_size": 1024,
+    }
 
-    # dinknet24 built for 1024, resnet34 need normalisation 
+    wandb_logger = WandbLogger(project="dlinknet_sentinel2_baseline", config=config)
+
     transform = A.Compose([
         A.Resize(1024, 1024),
         A.Normalize(mean=image_net_mean, std=image_net_std),
-        ])
-
+    ])
 
     train_list, val_list, _ = sentinel2_data_partition(BASE_DIR)
-
     train_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, train_list, transform=transform)
     val_dataset = SentinelRoadsDataset(IMG_DIR, MASK_DIR, val_list, transform=transform)
 
-    batch_size = wandb.config.batch_size
+    batch_size = config["batch_size"]
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    base_model = build_model()
+    lightning_model = LightningWrapper(base_model, learning_rate=config["learning_rate"])
 
-    # Build the model cleanly
-    model = build_model().to(device)
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=CHECKPOINT_DIR,
+        filename="dlinknet34_resnet34_roads-{epoch:02d}-{val_loss:.4f}",
+        monitor="val_loss",
+        mode="min",
+        save_top_k=1,
+    )
+    lr_monitor = LearningRateMonitor(logging_interval="epoch")
 
-    criterion = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=False)
-    optimizer = optim.Adam(model.parameters(), lr=wandb.config.learning_rate)
-
-    model = train_model(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        criterion=criterion,
-        optimizer=optimizer,
-        device=device,
-        num_epochs=wandb.config.epochs,
-        save_path=CHECKPOINT_PATH
+    trainer = L.Trainer(
+        max_epochs=config["epochs"],
+        accelerator="auto",
+        devices="auto",
+        logger=wandb_logger,
+        callbacks=[checkpoint_callback, lr_monitor],
+        log_every_n_steps=10,
     )
 
+    trainer.fit(lightning_model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+    print(f"Training Complete. Best model saved at: {checkpoint_callback.best_model_path}")
     wandb.finish()
-    print("Training Complete. Best model saved.")
+
 
 if __name__ == "__main__":
     main()

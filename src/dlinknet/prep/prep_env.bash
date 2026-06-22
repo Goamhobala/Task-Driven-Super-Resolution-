@@ -15,7 +15,7 @@ echo "Installing python dependencies..."
 pip install uv
 # terra  — terratorch, huggingface-hub, wandb, smp, albumentations, etc.
 # unet   — needed because terramind.dataset re-exports from unet.dataset
-uv pip install --system -e "InstaRoadPrototype[terra,unet]"
+uv pip install --system -e "InstaRoadPrototype[terra,unet, dlinknet]"
 
 echo "Preparing Kaggle dataset"
 uv run /kaggle/working/InstaRoadPrototype/src/dlinknet/prep/kaggle_dependencies.py
