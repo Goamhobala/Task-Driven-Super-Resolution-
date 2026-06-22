@@ -12,3 +12,11 @@ wheels/
 
 data/
 .DS_Store
+
+*/*.tif
+*/*.tiff
+*/*.parquet
+*/.DS_Store
+
+# Dummy data for testing/benchmarking
+**/dummy_data/

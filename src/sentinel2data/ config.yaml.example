@@ -1,0 +1,10 @@
+paths:
+  geojson: dataset/sentinel2/sa_map.geojson   
+  points_csv: dataset/sentinel2/sa_observations.csv
+  output_dir: /FILL/IN/YOUR/PATH
+
+chip:
+  size: 256
+  cloud_coverage_pct: 0
+  search_centre_date: "2025-09-01"
+  temporal_tolerance_days: 365
