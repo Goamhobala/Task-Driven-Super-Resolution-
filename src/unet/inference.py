@@ -1,27 +1,38 @@
-"""Evaluate a trained UNet checkpoint on the S2-ROSA test split.
+"""Evaluate a trained UNet checkpoint on the tiled S2-ROSA dataset.
+
+Sliding-window inference: a torchgeo ``GridGeoSampler`` slides ``image_size``
+windows over each tile COG, the model predicts each patch, and the predictions
+are stitched back into a full-tile road map (overlapping patches are averaged
+when ``--stride < image_size``). Each stitched tile is written as a 2-band COG
+(binary mask + probability) plus a 3-panel comparison PNG.
+
+Metrics are computed over the split with a dense ``GridGeoSampler`` loader (the
+same patches the model would train on), reusing ``unet.geo_dataset``.
+
+    python -m unet.inference <dataset_dir> --checkpoint ckpt.ckpt --split test
+    # overlap-averaged seams:  --stride 128
 """
+from __future__ import annotations
 
 import argparse
-import math
 import os
 from pathlib import Path
 
-import albumentations as A
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
 import torch
-from PIL import Image
-from rasterio.windows import Window
+from torch.utils.data import DataLoader
+from torchgeo.datasets import stack_samples
+from torchgeo.samplers import GridGeoSampler
 
-from unet.dataset import (
-    DEFAULT_BANDS,
-    MASK_PATH_COL,
-    ROSADataModule,
-    TILE_PATH_COL,
-    ZONE_COL,
-    read_metadata,
+from sentinel2data.torchgeo_dataset import (
+    WGS84,
+    S2RosaImage,
+    _split_paths,
+    build_dataset,
 )
+from unet.geo_dataset import DEFAULT_BANDS, _band_names, _collate, _make_transform
 from unet.model import UNetLightning
 
 KAGGLE_DATASET_DIR = "/kaggle/working/InstaRoadPrototype/dataset/s2rosa"
@@ -32,133 +43,184 @@ def _bands(value):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Evaluate UNet on the S2-ROSA test split")
+    p = argparse.ArgumentParser(description="Evaluate UNet on the tiled S2-ROSA dataset")
     p.add_argument("dataset_dir", nargs="?", default=KAGGLE_DATASET_DIR)
     p.add_argument("--checkpoint", default="checkpoints/unet_s2rosa_best.ckpt")
-    p.add_argument("--output-dir", default="predictions/test_set")
+    p.add_argument("--output-dir", default="predictions/tiled")
+    p.add_argument("--split", default="test")
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--num-workers", type=int, default=2)
-    p.add_argument("--bands", type=_bands, default=DEFAULT_BANDS)
-    p.add_argument("--image-size", type=int, default=256)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--bands", type=_bands, default=DEFAULT_BANDS, help="e.g. 1,2,3")
+    p.add_argument("--image-size", type=int, default=256, help="Sliding window edge (px).")
     p.add_argument(
-        "--predict-cog",
-        action="store_true",
-        help="Run whole-tile inference and write prediction COGs + comparison figures.",
+        "--stride",
+        type=int,
+        default=None,
+        help="Sliding window stride (px); default = image-size (no overlap).",
     )
-    p.add_argument("--cog-output-dir", default="predictions/cog")
+    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--no-normalize", action="store_true")
+    p.add_argument("--no-metrics", action="store_true", help="Skip the metrics pass.")
     p.add_argument(
-        "--cog-zones",
+        "--zones",
         type=lambda s: [z for z in s.split(",") if z],
         default=None,
-        help="Comma-separated zone_name list to predict (default: every tile).",
+        help="Comma-separated zone_name prefixes to predict (default: every tile).",
     )
-    p.add_argument(
-        "--max-cogs", type=int, default=None, help="Cap the number of tiles predicted."
-    )
+    p.add_argument("--max-tiles", type=int, default=None, help="Cap tiles predicted.")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    os.makedirs(args.output_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    datamodule = ROSADataModule(
-        dataset_dir=args.dataset_dir,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        bands=args.bands,
-        image_size=args.image_size,
-        seed=args.seed,
-    )
-    datamodule.setup("test")
-    test_loader = datamodule.test_dataloader()
+    band_names = _band_names(args.bands)
+    normalize = not args.no_normalize
 
     print(f"Loading checkpoint {args.checkpoint}...")
     model = UNetLightning.load_from_checkpoint(args.checkpoint, map_location=device)
     model.to(device).eval()
 
-    print("\nEvaluating model on test set...")
-    metrics = evaluate_metrics(model, test_loader, device)
-    print("Test set metrics:")
-    for name, value in metrics.items():
-        print(f"  - {name}: {value}")
-
-    print("\nSaving comparative predictions...")
-    save_predictions(model, test_loader, args.output_dir, device, save_comparison=True)
-    print("Done! Test predictions saved.")
-
-    if args.predict_cog:
-        print("\nRunning whole-COG inference...")
-        run_cog_inference(
-            model,
-            args.dataset_dir,
-            args.cog_output_dir,
-            device,
-            bands=args.bands,
-            image_size=args.image_size,
-            threshold=args.threshold,
-            zones=args.cog_zones,
-            max_cogs=args.max_cogs,
+    if not args.no_metrics:
+        print(f"\nEvaluating on the {args.split!r} split (dense grid)...")
+        loader = _eval_loader(
+            args.dataset_dir, args.split, band_names, args.image_size,
+            args.batch_size, args.num_workers, normalize,
         )
-        print("Done! Whole-COG predictions saved.")
+        metrics = evaluate_metrics(model, loader, device, threshold=args.threshold)
+        print("Metrics:")
+        for name, value in metrics.items():
+            print(f"  - {name}: {value}")
 
-def save_predictions(model, dataloader, output_dir, device, save_comparison=False):
+    print("\nSliding-window tile inference...")
+    run_tiled_inference(
+        model,
+        args.dataset_dir,
+        args.split,
+        args.output_dir,
+        device,
+        bands=band_names,
+        patch_size=args.image_size,
+        stride=args.stride or args.image_size,
+        threshold=args.threshold,
+        normalize=normalize,
+        batch_size=args.batch_size,
+        zones=args.zones,
+        max_tiles=args.max_tiles,
+    )
+    print("Done.")
+
+
+# -- metrics loader --------------------------------------------------------
+def _eval_loader(dataset_dir, split, band_names, patch_size, batch_size, num_workers, normalize):
+    """Dense GridGeoSampler loader over a split, yielding (image, mask, names)."""
+    ds = build_dataset(dataset_dir, split=split, bands=band_names, crs=WGS84)
+    ds.transforms = _make_transform(normalize)
+    sampler = GridGeoSampler(ds, size=patch_size, stride=patch_size)
+    return DataLoader(
+        ds,
+        sampler=sampler,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        collate_fn=_collate,
+    )
+
+
+# -- sliding-window stitch -------------------------------------------------
+def predict_tile_sliding(
+    model, image_path, device, bands, patch_size=256, stride=256,
+    normalize=True, batch_size=16,
+):
+    """Slide a GridGeoSampler over one tile COG and stitch a full-size road map.
+
+    Runs in the tile's **native CRS** (no warp) so patch geo-origins map to exact
+    integer pixel offsets. Overlapping patches (stride < patch_size) are averaged.
+
+    Returns ``(prob, profile)`` - a ``(H, W)`` float32 probability map aligned to
+    the source raster + its rasterio profile (CRS/transform preserved).
+    """
+    imds = S2RosaImage(paths=[str(image_path)], bands=list(bands), crs=None)
+    imds.transforms = _make_transform(normalize)  # same prep as training
+    sampler = GridGeoSampler(imds, size=patch_size, stride=stride)
+    loader = DataLoader(imds, sampler=sampler, batch_size=batch_size, collate_fn=stack_samples)
+
+    with rasterio.open(image_path) as src:
+        height, width = src.height, src.width
+        transform = src.transform
+        profile = src.profile.copy()
+
+    prob = np.zeros((height, width), dtype=np.float32)
+    count = np.zeros((height, width), dtype=np.float32)
+
     model.eval()
     with torch.no_grad():
-        for images, masks, filenames in dataloader:
-            images = images.to(device)
-            outputs = model(images)
+        for batch in loader:
+            images = batch["image"].to(device)
+            out = torch.sigmoid(model(images))[:, 0].cpu().numpy()  # (B, ps, ps)
+            tfs = batch["transform"].cpu().numpy()                  # (B, 9) flat affine
+            for pred, tf in zip(out, tfs):
+                # patch affine = [a, b, c(xmin), d, e, f(ymax), 0, 0, 1]
+                col = int(round((tf[2] - transform.c) / transform.a))
+                row = int(round((tf[5] - transform.f) / transform.e))
+                ph, pw = pred.shape
+                # Clip in case a snapped edge patch overhangs the raster.
+                ph = min(ph, height - row)
+                pw = min(pw, width - col)
+                prob[row : row + ph, col : col + pw] += pred[:ph, :pw]
+                count[row : row + ph, col : col + pw] += 1.0
 
-            preds = (torch.sigmoid(outputs) > 0.5).float().cpu().numpy()
-            images_np = images.cpu().numpy()
-            masks_np = masks.cpu().numpy()
+    count[count == 0] = 1.0
+    return prob / count, profile
 
-            for i in range(len(filenames)):
-                pred_mask = preds[i].squeeze()
 
-                if save_comparison:
-                    # Extract the first three bands (C, H, W) -> (H, W, C)
-                    img = images_np[i][:3].transpose(1, 2, 0)
-                    true_mask = masks_np[i].squeeze()
-                    
-                    # Apply 2nd-98th percentile stretch
-                    img_stretched = np.zeros_like(img)
-                    for c in range(3):
-                        band = img[:, :, c]
-                        lo, hi = np.percentile(band, (2, 98))
-                        if hi > lo:
-                            # Stretch back to [0, 1] for matplotlib
-                            img_stretched[:, :, c] = np.clip((band - lo) / (hi - lo), 0, 1)
-                        else:
-                            # Fallback
-                            img_stretched[:, :, c] = np.clip(band, 0, 1)
+def run_tiled_inference(
+    model, dataset_dir, split, output_dir, device, bands=DEFAULT_BANDS,
+    patch_size=256, stride=256, threshold=0.5, normalize=True, batch_size=16,
+    zones=None, max_tiles=None,
+):
+    """Stitch + write a prediction COG and comparison PNG for every split tile."""
+    os.makedirs(output_dir, exist_ok=True)
+    img_paths, msk_paths = _split_paths(dataset_dir, split)
+    pairs = list(zip(img_paths, msk_paths))
+    if zones:
+        pairs = [(i, m) for i, m in pairs if any(Path(i).stem.startswith(z) for z in zones)]
+    if max_tiles:
+        pairs = pairs[:max_tiles]
+    if not pairs:
+        print("No tiles matched the selection; nothing to do.")
+        return
 
-                    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-                    
-                    axes[0].imshow(img_stretched)
-                    axes[0].set_title("Original Image")
-                    axes[0].axis("off")
-                    
-                    axes[1].imshow(true_mask, cmap="gray")
-                    axes[1].set_title("True Road Label")
-                    axes[1].axis("off")
-                    
-                    axes[2].imshow(pred_mask, cmap="gray")
-                    axes[2].set_title("Predicted Road")
-                    axes[2].axis("off")
-                    
-                    plt.tight_layout()
-                    plt.savefig(
-                        os.path.join(output_dir, f"comp_{filenames[i]}"),
-                        bbox_inches="tight",
-                    )
-                    plt.close(fig)
-                else:
-                    pred_uint8 = (pred_mask * 255).astype(np.uint8)
-                    Image.fromarray(pred_uint8).save(os.path.join(output_dir, filenames[i]))
+    for image_path, mask_path in pairs:
+        name = Path(image_path).stem
+        print(f"  {name}: sliding window ({patch_size}px / stride {stride})...")
+        prob, profile = predict_tile_sliding(
+            model, image_path, device, bands, patch_size=patch_size,
+            stride=stride, normalize=normalize, batch_size=batch_size,
+        )
+        cog_out = os.path.join(output_dir, f"{name}_pred.tif")
+        comp_out = os.path.join(output_dir, f"{name}_comparison.png")
+        write_prediction_cog(prob, profile, cog_out, threshold=threshold)
+        save_cog_comparison(image_path, mask_path, prob, comp_out, threshold=threshold)
+        print(f"    -> {cog_out}\n    -> {comp_out}")
+
+
+# -- writers ---------------------------------------------------------------
+def write_prediction_cog(prob, profile, out_path, threshold=0.5):
+    """Write the stitched prediction as a 2-band COG (band1 binary, band2 prob)."""
+    cog_profile = profile.copy()
+    for key in ("blockxsize", "blockysize", "tiled", "interleave", "predictor"):
+        cog_profile.pop(key, None)
+
+    prob = prob.astype(np.float32)
+    binary = (prob > threshold).astype(np.float32)
+    data = np.stack([binary, prob])  # (2, H, W)
+    cog_profile.update(driver="COG", dtype="float32", count=2, nodata=None, compress="DEFLATE")
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with rasterio.open(out_path, "w", **cog_profile) as dst:
+        dst.write(data)
+        dst.set_band_description(1, "road_mask_binary")
+        dst.set_band_description(2, "road_probability")
 
 
 def _stretch_rgb(img, percentile_range=(2, 98)):
@@ -172,92 +234,6 @@ def _stretch_rgb(img, percentile_range=(2, 98)):
             if hi > lo:
                 out[i] = np.clip((np.clip(band, lo, hi) - lo) / (hi - lo), 0, 1)
     return (np.transpose(out, (1, 2, 0)) * 255).astype(np.uint8)
-
-
-def predict_cog(
-    model, tile_path, device, bands=DEFAULT_BANDS, image_size=256, normalize=True, batch_size=16
-):
-    """Run the model over every block window of a tile COG and stitch a full-size map.
-
-    Preprocessing mirrors ``ROSADataset`` exactly (per-window resize + clip + per-image
-    standardization) so each window matches the training input distribution.
-
-    Returns ``(prob, profile)`` - a ``(H, W)`` float32 road-probability array aligned to
-    the source raster, plus the source rasterio profile (CRS/transform preserved).
-    """
-    bands = list(bands)
-    resize = A.Resize(image_size, image_size)
-    model.eval()
-    with rasterio.open(tile_path) as src:
-        height, width = src.height, src.width
-        block_h, block_w = src.block_shapes[0]
-        profile = src.profile.copy()
-        prob = np.zeros((height, width), dtype=np.float32)
-
-        windows = [
-            Window(
-                c * block_w,
-                r * block_h,
-                min(block_w, width - c * block_w),
-                min(block_h, height - r * block_h),
-            )
-            for r in range(math.ceil(height / block_h))
-            for c in range(math.ceil(width / block_w))
-        ]
-
-        with torch.no_grad():
-            for start in range(0, len(windows), batch_size):
-                batch_wins = windows[start : start + batch_size]
-                tensors = []
-                for win in batch_wins:
-                    image = src.read(bands, window=win).astype(np.float32)
-                    image = np.nan_to_num(image, nan=0.0, posinf=0.0, neginf=0.0)
-                    image = np.transpose(image, (1, 2, 0))  # (C, H, W) -> (H, W, C)
-                    image = resize(image=image)["image"]
-                    image = np.clip(image, 0.0, 1.0)
-                    if normalize:
-                        # Per-image, per-channel standardization (matches ROSADataset).
-                        mean = image.mean(axis=(0, 1), keepdims=True)
-                        std = image.std(axis=(0, 1), keepdims=True) + 1e-6
-                        image = (image - mean) / std
-                    tensors.append(image.transpose(2, 0, 1))
-
-                batch = torch.from_numpy(np.ascontiguousarray(np.stack(tensors))).to(device)
-                out = torch.sigmoid(model(batch))[:, 0].cpu().numpy()  # (B, image_size, image_size)
-
-                for pred, win in zip(out, batch_wins):
-                    h, w = int(win.height), int(win.width)
-                    if (h, w) != (image_size, image_size):
-                        # Edge block: resize the prediction back to the window's true size.
-                        pred = A.Resize(h, w)(image=pred)["image"]
-                    r0, c0 = int(win.row_off), int(win.col_off)
-                    prob[r0 : r0 + h, c0 : c0 + w] = pred
-    return prob, profile
-
-
-def write_prediction_cog(prob, profile, out_path, threshold=0.5):
-    """Write the stitched prediction as a 2-band Cloud-Optimized GeoTIFF.
-
-    GeoTIFF bands share one dtype, so both are float32:
-      - band 1 = binary {0.0, 1.0} road mask (``prob > threshold``)
-      - band 2 = road probability [0, 1]
-    nodata is left unset (0 is a valid value in both bands).
-    """
-    cog_profile = profile.copy()
-    # The COG driver manages tiling/overviews itself; drop conflicting source keys.
-    for key in ("blockxsize", "blockysize", "tiled", "interleave"):
-        cog_profile.pop(key, None)
-
-    prob = prob.astype(np.float32)
-    binary = (prob > threshold).astype(np.float32)
-    data = np.stack([binary, prob])  # (2, H, W)
-    cog_profile.update(driver="COG", dtype="float32", count=2, nodata=None, compress="DEFLATE")
-
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with rasterio.open(out_path, "w", **cog_profile) as dst:
-        dst.write(data)
-        dst.set_band_description(1, "road_mask_binary")
-        dst.set_band_description(2, "road_probability")
 
 
 def save_cog_comparison(tile_path, mask_path, prob, out_path, threshold=0.5):
@@ -284,49 +260,8 @@ def save_cog_comparison(tile_path, mask_path, prob, out_path, threshold=0.5):
     plt.close(fig)
 
 
-def run_cog_inference(
-    model,
-    dataset_dir,
-    output_dir,
-    device,
-    bands=DEFAULT_BANDS,
-    image_size=256,
-    threshold=0.5,
-    zones=None,
-    max_cogs=None,
-):
-    """Predict whole tiles end-to-end: write a prediction COG + comparison PNG per tile."""
-    os.makedirs(output_dir, exist_ok=True)
-    base = Path(dataset_dir)
-    df = read_metadata(dataset_dir)
-    tiles = df.drop_duplicates(subset=[TILE_PATH_COL])[[ZONE_COL, TILE_PATH_COL, MASK_PATH_COL]]
-    if zones:
-        tiles = tiles[tiles[ZONE_COL].isin(zones)]
-    if max_cogs:
-        tiles = tiles.head(max_cogs)
-
-    if tiles.empty:
-        print("No tiles matched the COG selection; nothing to do.")
-        return
-
-    for _, row in tiles.iterrows():
-        zone = row[ZONE_COL]
-        tile_path = str(base / row[TILE_PATH_COL])
-        mask_path = str(base / row[MASK_PATH_COL])
-        print(f"  zone {zone}: predicting whole tile...")
-        prob, profile = predict_cog(
-            model, tile_path, device, bands=bands, image_size=image_size
-        )
-        cog_out = os.path.join(output_dir, f"{zone}_pred.tif")
-        comp_out = os.path.join(output_dir, f"{zone}_comparison.png")
-        write_prediction_cog(prob, profile, cog_out, threshold=threshold)
-        save_cog_comparison(tile_path, mask_path, prob, comp_out, threshold=threshold)
-        print(f"    -> {cog_out}")
-        print(f"    -> {comp_out}")
-
-
 def evaluate_metrics(model, dataloader, device, threshold=0.5):
-    """IoU/F1/precision/recall/accuracy for the road class over the test set."""
+    """IoU/F1/precision/recall/accuracy for the road class over a loader."""
     model.eval()
     total_tp = total_fp = total_fn = total_tn = 0.0
 
