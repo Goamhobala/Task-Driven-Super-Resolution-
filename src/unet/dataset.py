@@ -51,6 +51,7 @@ ROW_COL = "patch_row_id"
 COL_COL = "patch_col_id"
 ZONE_COL = "zone_name"
 SPLIT_COL = "split_set"
+ROAD_DENSITY_COL = "road_density"  # road_px / total_px, precomputed by MetadataGenerator
 _REQUIRED_COLS = [
     TILE_PATH_COL,
     MASK_PATH_COL,
@@ -58,6 +59,7 @@ _REQUIRED_COLS = [
     COL_COL,
     ZONE_COL,
     SPLIT_COL,
+    ROAD_DENSITY_COL,
 ]
 
 
@@ -155,6 +157,8 @@ class ROSADataModule(pl.LightningDataModule):
         test_frac=0.1,
         seed=42,
         drop_edge_blocks=True,
+        drop_empty_patches=True,
+        min_road_density=0.0,
         normalize=True,
     ):
         super().__init__()
@@ -167,6 +171,8 @@ class ROSADataModule(pl.LightningDataModule):
         self.test_frac = test_frac
         self.seed = seed
         self.drop_edge_blocks = drop_edge_blocks
+        self.drop_empty_patches = drop_empty_patches
+        self.min_road_density = min_road_density
         self.normalize = normalize
         self.train_ds = self.val_ds = self.test_ds = None
 
@@ -187,6 +193,20 @@ class ROSADataModule(pl.LightningDataModule):
         print(f"Edge-block filter: kept {len(kept)}/{len(df)} full-size patches")
         return kept
 
+    def _drop_empty_patches(self, df, split_name):
+        """Drop road-free patches using the precomputed ``road_density`` column.
+
+        Keeps patches with ``road_density > min_road_density`` (default 0.0 drops
+        only patches with zero road pixels). Applied to the train split only so
+        val/test keep the real road/no-road distribution.
+        """
+        kept = df[df[ROAD_DENSITY_COL] > self.min_road_density].reset_index(drop=True)
+        print(
+            f"Empty-patch filter [{split_name}]: kept {len(kept)}/{len(df)} patches "
+            f"(road_density > {self.min_road_density})"
+        )
+        return kept
+
     def _partition(self, df):
         split = df[SPLIT_COL].astype(str).str.lower()
         val = df[split.isin(["val", "validation"])]
@@ -205,6 +225,8 @@ class ROSADataModule(pl.LightningDataModule):
         if self.drop_edge_blocks:
             df = self._drop_edge_patches(df)
         train, val, test = self._partition(df)
+        if self.drop_empty_patches:
+            train = self._drop_empty_patches(train, "train")
 
         def make(frame):
             return ROSADataset(

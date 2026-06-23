@@ -45,6 +45,17 @@ def parse_args():
         action="store_true",
         help="Keep partial edge block windows (default: drop them).",
     )
+    p.add_argument(
+        "--keep-empty-patches",
+        action="store_true",
+        help="Keep road-free patches in the train split (default: drop them).",
+    )
+    p.add_argument(
+        "--min-road-density",
+        type=float,
+        default=0.0,
+        help="Drop train patches with road_density <= this (default: 0.0, drops only empty).",
+    )
     p.add_argument("--wandb", action="store_true", help="Log to Weights & Biases.")
     p.add_argument("--fast-dev-run", action="store_true", help="Single-batch smoke run.")
     return p.parse_args()
@@ -64,6 +75,8 @@ def main():
         test_frac=args.test_frac,
         seed=args.seed,
         drop_edge_blocks=not args.keep_edge_blocks,
+        drop_empty_patches=not args.keep_empty_patches,
+        min_road_density=args.min_road_density,
         normalize=not args.no_normalize,
     )
 
