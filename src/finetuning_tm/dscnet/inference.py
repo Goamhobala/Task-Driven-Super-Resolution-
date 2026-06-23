@@ -1,13 +1,10 @@
 import os
-import numpy as np
-from PIL import Image
-import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 import albumentations as A
 import lightning as L
 
 from unet.dataset import SentinelRoadsDataset, sentinel2_data_partition
-from finetuning_tm.dscnet.lightning_utils import LightningWrapper, PredictionSaverCallback
+from utils.lightning_utils import LightningWrapper, PredictionSaverCallback
 from dscnet.model import build_model
 
 def main():

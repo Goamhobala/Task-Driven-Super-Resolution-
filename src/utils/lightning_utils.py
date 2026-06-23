@@ -66,12 +66,12 @@ class LightningWrapper(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss = self._shared_step(batch)
-        self.log("train_loss", loss, on_epoch=True, prog_bar=True, batch_size=batch[0].size(0))
+        self.log("train_loss", loss, on_epoch=True, on_step=False, prog_bar=True, batch_size=batch[0].size(0))
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss = self._shared_step(batch)
-        self.log("val_loss", loss, on_epoch=True, prog_bar=True, batch_size=batch[0].size(0))
+        self.log("val_loss", loss, on_epoch=True, on_step=False, prog_bar=True, batch_size=batch[0].size(0))
         return loss
 
     # --- replaces evaluate_metrics() ---

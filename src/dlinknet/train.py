@@ -1,5 +1,4 @@
 import os
-import torch
 from torch.utils.data import DataLoader
 import albumentations as A
 import lightning as L

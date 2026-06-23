@@ -1,47 +1,11 @@
 import os
-import numpy as np
-from PIL import Image
-import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 import albumentations as A
 import lightning as L
 
 from unet.dataset import SentinelRoadsDataset, sentinel2_data_partition
-from dlinknet.model import build_model, LightningWrapper
-
-
-class PredictionSaverCallback(L.Callback):
-    """Writes comparison plots (or raw masks) per batch instead of buffering them."""
-    def __init__(self, output_dir, save_comparison=True, threshold=0.5):
-        super().__init__()
-        self.output_dir = output_dir
-        self.save_comparison = save_comparison
-        self.threshold = threshold
-        os.makedirs(output_dir, exist_ok=True)
-
-    def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
-        images, masks, filenames = batch
-        preds = (outputs > self.threshold).float().cpu().numpy()
-        images_np = images.cpu().numpy()
-        masks_np = masks.cpu().numpy()
-
-        for i in range(len(filenames)):
-            pred_mask = preds[i].squeeze()
-
-            if self.save_comparison:
-                img = images_np[i].transpose(1, 2, 0)
-                true_mask = masks_np[i].squeeze()
-
-                fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-                axes[0].imshow(img); axes[0].set_title("Original Image"); axes[0].axis("off")
-                axes[1].imshow(true_mask, cmap="gray"); axes[1].set_title("True Road Label"); axes[1].axis("off")
-                axes[2].imshow(pred_mask, cmap="gray"); axes[2].set_title("Predicted Road"); axes[2].axis("off")
-                plt.tight_layout()
-                fig.savefig(os.path.join(self.output_dir, f"comp_{filenames[i]}"), bbox_inches="tight")
-                plt.close(fig)
-            else:
-                pred_mask_uint8 = (pred_mask * 255).astype(np.uint8)
-                Image.fromarray(pred_mask_uint8).save(os.path.join(self.output_dir, filenames[i]))
+from src.utils.lightning_utils import LightningWrapper, PredictionSaverCallback
+from dlinknet.model import build_model
 
 
 def main():
