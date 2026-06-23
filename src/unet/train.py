@@ -8,9 +8,11 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 
 from unet.dataset import DEFAULT_BANDS, ROSADataModule
+from unet.geo_dataset import ROSAGeoDataModule
 from unet.model import UNetLightning
 
-# Default location of the dataset symlink created on Kaggle.
+# Default location of the dataset symlink created on Kaggle (kelvinwei/s2rosa-v2,
+# the tiled COG dataset; see unet/prep/kaggle_dependencies.py).
 KAGGLE_DATASET_DIR = "/kaggle/working/InstaRoadPrototype/dataset/s2rosa"
 
 
@@ -36,14 +38,26 @@ def parse_args():
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--pos-weight", type=float, default=5.0, help="BCE weight on road class.")
     p.add_argument("--no-normalize", action="store_true", help="Disable per-image standardization.")
-    p.add_argument("--val-frac", type=float, default=0.1)
-    p.add_argument("--test-frac", type=float, default=0.1)
+    p.add_argument("--val-frac", type=float, default=0.1, help="Legacy loader only.")
+    p.add_argument("--test-frac", type=float, default=0.1, help="Legacy loader only.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output-dir", default="checkpoints")
     p.add_argument(
         "--keep-edge-blocks",
         action="store_true",
-        help="Keep partial edge block windows (default: drop them).",
+        help="Legacy loader only: keep partial edge block windows.",
+    )
+    p.add_argument(
+        "--legacy-loader",
+        action="store_true",
+        help="Use the per-patch ROSADataModule (block-windowed COGs) instead of "
+        "the default tiled torchgeo loader (kelvinwei/s2rosa-v2).",
+    )
+    p.add_argument(
+        "--length",
+        type=int,
+        default=None,
+        help="Tiled loader: train patches per epoch (default 100 * n_tiles).",
     )
     p.add_argument(
         "--keep-empty-patches",
@@ -65,20 +79,30 @@ def main():
     args = parse_args()
     pl.seed_everything(args.seed)
 
-    datamodule = ROSADataModule(
-        dataset_dir=args.dataset_dir,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        bands=args.bands,
-        image_size=args.image_size,
-        val_frac=args.val_frac,
-        test_frac=args.test_frac,
-        seed=args.seed,
-        drop_edge_blocks=not args.keep_edge_blocks,
-        drop_empty_patches=not args.keep_empty_patches,
-        min_road_density=args.min_road_density,
-        normalize=not args.no_normalize,
-    )
+    if args.legacy_loader:
+        datamodule = ROSADataModule(
+            dataset_dir=args.dataset_dir,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            bands=args.bands,
+            image_size=args.image_size,
+            val_frac=args.val_frac,
+            test_frac=args.test_frac,
+            seed=args.seed,
+            drop_edge_blocks=not args.keep_edge_blocks,
+            normalize=not args.no_normalize,
+        )
+    else:
+        # Tiled torchgeo loader: splits come from the dataset's splits/*.csv.
+        datamodule = ROSAGeoDataModule(
+            dataset_dir=args.dataset_dir,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            bands=args.bands,
+            image_size=args.image_size,
+            length=args.length,
+            normalize=not args.no_normalize,
+        )
 
     model = UNetLightning(
         encoder_name=args.encoder,

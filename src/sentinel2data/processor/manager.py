@@ -19,10 +19,10 @@ class DatasetManager:
         3. build per-tile metadata
     """
 
-    def __init__(self, dataset_dir, overture_parquet_path, buffer_m=5,
+    def __init__(self, dataset_dir, roads_parquet_path, buffer_m=5,
                  val_frac=0.1, test_frac=0.1, split_seed=42):
         self.dataset_dir = Path(dataset_dir)
-        self.overture_parquet_path = Path(overture_parquet_path)
+        self.roads_parquet_path = Path(roads_parquet_path)
 
         self.buffer_m = buffer_m # Fallback
 
@@ -111,7 +111,7 @@ class DatasetManager:
 
             mask_gen = RoadMaskGenerator(
                 sat_cog_path=sat_path,
-                overture_parquet_path=self.overture_parquet_path,
+                roads_parquet_path=self.roads_parquet_path,
                 out_mask_path=mask_path,
                 out_graph_path=graph_path,
                 default_buffer_m=self.buffer_m,
