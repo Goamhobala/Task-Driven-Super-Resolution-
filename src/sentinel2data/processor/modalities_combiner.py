@@ -34,11 +34,16 @@ def _load(path):
 
 def align_site(s2_10m_path, s2_20m_path, s1_path):
     ref = _load(s2_10m_path)  # (4, H, W), e.g. 4 x 2500 x 2500 — the reference grid
+    if s2_20m_path is not None:
+        s2_20m = _load(s2_20m_path).rio.reproject_match(ref, resampling=Resampling.cubic)
+    if s1_path is not None:
+        s1     = _load(s1_path).rio.reproject_match(ref, resampling=Resampling.bilinear)
 
-    s2_20m = _load(s2_20m_path).rio.reproject_match(ref, resampling=Resampling.cubic)
-    s1     = _load(s1_path).rio.reproject_match(ref, resampling=Resampling.bilinear)
-
-    layers = [ref, s2_20m, s1]
+    layers = [ref]
+    if s2_20m_path is not None:
+        layers.append(s2_20m)
+    if s1_path is not None:
+        layers.append(s1)
     # if topo_path is not None:
     #     layers.append(_load(topo_path).rio.reproject_match(ref, resampling=Resampling.bilinear))
 
@@ -51,13 +56,15 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--base", default=".")
     p.add_argument("--site", default="Thohoyandou")
+    p.add_argument("--with_20m", default=None)
+    p.add_argument("--with_s1", default=None)
     args = p.parse_args()
     base, site = args.base, args.site
 
     arr, transform, crs = align_site(
         f"{base}/{site}_S2_10m.tif",
-        f"{base}/{site}_S2_20m.tif",
-        f"{base}/{site}_S1.tif",
+        f"{base}/{site}_S2_20m.tif" if args.with_20m else None,
+        f"{base}/{site}_S1.tif" if args.with_s1 else None,
         # topo_path=f"{base}/{site}_topo.tif",  # set None to skip
     )
     print(f"{site}: stacked shape {arr.shape}  dtype {arr.dtype}")
