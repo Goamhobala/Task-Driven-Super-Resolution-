@@ -7,6 +7,7 @@ from rasterio.windows import transform as window_transform
 from shapely.geometry import box
 from pathlib import Path
 
+# Overture Buffer Value Classes (RoadMaskGenerator).
 ROAD_CLASS_BUFFER_M = {
     "motorway": 15.0,
     "trunk": 12.0,
@@ -26,29 +27,188 @@ ROAD_CLASS_BUFFER_M = {
     "bridleway": 2.0,
 }
 
+ROAD_TIER_BUFFER_M = {"major": 12.0, "medium": 7.0}
 DEFAULT_BUFFER_M = 5.0
+
+CDNGI_ROADS_LAYER = "TRAN_ROADS_EXP"
+CDNGI_CLASS_MAP = {
+    "National Freeway": "major",
+    "On/OffRamp": "major",
+    "National Road": "major",
+    "Arterial Road": "major",
+    "Main Road": "major",
+    "Secondary Road": "medium",
+}
+
+OVERTURE_MAJOR_MEDIUM = ("motorway", "trunk", "primary", "secondary")
+OVERTURE_CLASS_MAP = {
+    "motorway": "major",
+    "trunk": "major",
+    "primary": "major",
+    "secondary": "medium",
+}
+
+ROAD_VECTOR_COLUMNS = ("source", "source_class", "class", "province", "geometry")
+
+
+class RoadVectorExtractor:
+    """Extract major + medium scale roads from CDNGI (GeoPackage) and/or Overture
+    (GeoParquet) into one normalized GeoParquet (or GeoPackage).
+
+    Both sources are filtered to their large/medium classes and reprojected to
+    EPSG:4326. Each source's native class is remapped onto two simplified,
+    intuitive tiers -- major, medium (see ``CDNGI_CLASS_MAP`` /
+    ``OVERTURE_CLASS_MAP``) -- carried in the ``class`` column; buffer widths
+    per tier live in ``ROAD_TIER_BUFFER_M``.
+
+    This is a plain stacked union (rows tagged by ``source``); it does NOT
+    deduplicate roads that both datasets digitize. Overlap conflation is a
+    separate step.
+    """
+
+    def __init__(
+        self,
+        out_path,
+        cdngi_path=None,
+        overture_path=None,
+        cdngi_layer=CDNGI_ROADS_LAYER,
+    ):
+        if cdngi_path is None and overture_path is None:
+            raise ValueError("Provide at least one of cdngi_path or overture_path.")
+        self.out_path = Path(out_path)
+        self.cdngi_path = Path(cdngi_path) if cdngi_path is not None else None
+        self.overture_path = Path(overture_path) if overture_path is not None else None
+        self.cdngi_layer = cdngi_layer
+
+    def _cdngi_gpkg_paths(self):
+        """Resolve cdngi_path to a sorted list of .gpkg files (file or directory)."""
+        if self.cdngi_path.is_dir():
+            return sorted(self.cdngi_path.rglob("*.gpkg"))
+        return [self.cdngi_path]
+
+    def _load_cdngi(self):
+        """Read major+medium roads from one or many CDNGI GeoPackages, normalized."""
+        keys = list(CDNGI_CLASS_MAP)
+        where = "FEAT_TYPE IN ({})".format(", ".join(f"'{k}'" for k in keys))
+
+        parts = []
+        for gpkg in self._cdngi_gpkg_paths():
+            province = gpkg.stem.split("_")[0]
+            print(f"Reading CDNGI {gpkg.name} (province {province})...")
+            gdf = gpd.read_file(
+                gpkg, layer=self.cdngi_layer, columns=["FEAT_TYPE"], where=where
+            )
+            if gdf.empty:
+                continue
+            gdf = gdf.to_crs("EPSG:4326")
+            out = gpd.GeoDataFrame(
+                {
+                    "source": "cdngi",
+                    "source_class": gdf["FEAT_TYPE"].to_numpy(),
+                    "class": gdf["FEAT_TYPE"].map(CDNGI_CLASS_MAP).to_numpy(),
+                    "province": province,
+                    "geometry": gdf.geometry.to_numpy(),
+                },
+                crs="EPSG:4326",
+            )
+            parts.append(out)
+
+        if not parts:
+            return None
+        combined = gpd.GeoDataFrame(
+            pd.concat(parts, ignore_index=True), geometry="geometry", crs="EPSG:4326"
+        )
+        print(f"CDNGI: {len(combined)} major+medium road segments.")
+        return combined
+
+    def _load_overture(self):
+        """Read major+medium roads from an Overture roads GeoParquet, normalized.
+
+        Uses Arrow predicate pushdown so only matching rows are materialized."""
+        print(f"Reading Overture {self.overture_path.name} (predicate pushdown)...")
+        filters = [
+            ("subtype", "==", "road"),
+            ("class", "in", list(OVERTURE_MAJOR_MEDIUM)),
+        ]
+        gdf = gpd.read_parquet(
+            self.overture_path,
+            columns=["subtype", "class", "subclass", "geometry"],
+            filters=filters,
+        )
+        if gdf.empty:
+            return None
+        gdf = gdf.to_crs("EPSG:4326")
+        out = gpd.GeoDataFrame(
+            {
+                "source": "overture",
+                "source_class": gdf["class"].to_numpy(),
+                "class": gdf["class"].map(OVERTURE_CLASS_MAP).to_numpy(),
+                "province": None,
+                "geometry": gdf.geometry.to_numpy(),
+            },
+            crs="EPSG:4326",
+        )
+        print(f"Overture: {len(out)} major+medium road segments.")
+        return out
+
+    def build(self):
+        """Load the requested sources, stack, and write the combined layer.
+        Returns the output path."""
+        parts = []
+        if self.cdngi_path is not None:
+            cdngi = self._load_cdngi()
+            if cdngi is not None:
+                parts.append(cdngi)
+        if self.overture_path is not None:
+            overture = self._load_overture()
+            if overture is not None:
+                parts.append(overture)
+
+        if not parts:
+            raise ValueError("No road features extracted from the given sources.")
+
+        combined = gpd.GeoDataFrame(
+            pd.concat(parts, ignore_index=True),
+            geometry="geometry",
+            crs="EPSG:4326",
+        )[list(ROAD_VECTOR_COLUMNS)]
+
+        by_class = combined.groupby("class").size().to_dict()
+        print(f"Combined: {len(combined)} segments by class: {by_class}")
+
+        self.out_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Writing combined roads to {self.out_path}...")
+        if self.out_path.suffix.lower() == ".gpkg":
+            combined.to_file(self.out_path, driver="GPKG", layer="roads_major_medium")
+        else:
+            # Per-row covering bbox so downstream readers can spatially filter
+            # (RoadMaskGenerator reads a per-COG bbox window).
+            combined.to_parquet(self.out_path, write_covering_bbox=True)
+        print("Road vector extraction complete.")
+        return self.out_path
 
 
 class RoadMaskGenerator:
-    """Derives road artifacts for one satellite COG from Overture road vectors.
+    """Derives road artifacts for one satellite COG from a combined road-vector
+    GeoParquet (see ``RoadVectorExtractor``; ``class`` holds major/medium tiers).
     """
 
     def __init__(
         self,
         sat_cog_path,
-        overture_parquet_path,
+        roads_parquet_path,
         out_mask_path,
         out_graph_path,
         class_buffer_m=None,
         default_buffer_m=DEFAULT_BUFFER_M,
     ):
         self.sat_cog_path = Path(sat_cog_path)
-        self.overture_parquet_path = Path(overture_parquet_path)
+        self.roads_parquet_path = Path(roads_parquet_path)
         self.out_mask_path = Path(out_mask_path)
         self.out_graph_path = Path(out_graph_path)
-        
+
         self.class_buffer_m = dict(
-            ROAD_CLASS_BUFFER_M if class_buffer_m is None else class_buffer_m
+            ROAD_TIER_BUFFER_M if class_buffer_m is None else class_buffer_m
         )
         self.default_buffer_m = default_buffer_m
 
@@ -72,14 +232,17 @@ class RoadMaskGenerator:
         footprint = box(*self.sat_meta["bounds"])
 
         footprint_gdf = gpd.GeoDataFrame({"geometry": [footprint]}, crs=sat_crs)
-        bbox_4326 = footprint_gdf.to_crs("EPSG:4326").total_bounds
+        minx, miny, maxx, maxy = footprint_gdf.to_crs("EPSG:4326").total_bounds
 
-        print("Filtering Overture parquet data...")
-        roads = gpd.read_parquet(self.overture_parquet_path, bbox=tuple(bbox_4326))
-
-        # Keep road segments only - drop rail and water 
-        if "subtype" in roads.columns:
-            roads = roads[roads["subtype"] == "road"]
+        print("Filtering road parquet to COG footprint...")
+        try:
+            roads = gpd.read_parquet(
+                self.roads_parquet_path, bbox=(minx, miny, maxx, maxy)
+            )
+        except (ValueError, KeyError):
+            # Parquet lacks a covering bbox column: read all, filter in memory.
+            roads = gpd.read_parquet(self.roads_parquet_path)
+            roads = roads.cx[minx:maxx, miny:maxy]
 
         if roads.empty:
             print("Warning: no roads found in footprint.")
@@ -110,8 +273,9 @@ class RoadMaskGenerator:
 
 
     def _road_buffer_distances(self, roads):
-        """Per-row buffer radius (metres) from each road's Overture ``class``,
-        falling back to ``default_buffer_m`` for unmapped or missing classes."""
+        """Per-row buffer radius (metres) from each road's ``class`` tier
+        (major/medium), falling back to ``default_buffer_m`` for unmapped or
+        missing classes."""
         if "class" in roads.columns:
             dist = roads["class"].map(self.class_buffer_m).fillna(self.default_buffer_m)
         else:
@@ -121,7 +285,7 @@ class RoadMaskGenerator:
     def generate_raster_mask(self):
         """Rasterize the buffered roads into a binary, internally-tiled,
         LZW-compressed mask COG aligned to the satellite imagery. Each road is
-        buffered by a width that depends on its Overture class."""
+        buffered by a width that depends on its ``class`` tier."""
         sat_meta = self.sat_meta["meta"]
         roads = self.roads
 

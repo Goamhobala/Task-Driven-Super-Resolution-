@@ -4,6 +4,7 @@ from typing import Annotated, Optional
 import typer
 
 from sentinel2data.processor.manager import DatasetManager
+from sentinel2data.processor.mask_generator import RoadVectorExtractor
 from sentinel2data.viz import visualize_classification
 
 
@@ -21,16 +22,37 @@ DatasetDir = Annotated[Path, typer.Option(help=DATASET_HELP)]
 @app.command()
 def build(
     dataset_dir: DatasetDir,
-    parquet: Annotated[Path, typer.Option(help="Absolute path to the Overture roads parquet")],
-    buffer_m: Annotated[int, typer.Option(help="Fallback road buffer (metres) for classes without a per-class width")] = 10,
+    roads: Annotated[Path, typer.Option(help="Combined roads GeoParquet from the `roads` command")],
+    buffer_m: Annotated[int, typer.Option(help="Fallback road buffer (metres) for classes without a per-tier width")] = 10,
 ):
     """Scan imagery/, generate masks_raster/, masks_graph/, metadata.parquet and splits/."""
     manager = DatasetManager(
         dataset_dir=dataset_dir,
-        overture_parquet_path=parquet,
+        roads_parquet_path=roads,
         buffer_m=buffer_m,
     )
     manager.build_products()
+
+
+@app.command()
+def roads(
+    out: Annotated[Path, typer.Option(help="Output path (.parquet GeoParquet or .gpkg)")],
+    cdngi: Annotated[
+        Optional[Path],
+        typer.Option(help="CDNGI GeoPackage file, or a directory of province *.gpkg"),
+    ] = None,
+    overture: Annotated[
+        Optional[Path], typer.Option(help="Overture roads GeoParquet")
+    ] = None,
+):
+    """Extract major + medium scale roads from CDNGI and/or Overture into one layer."""
+    if cdngi is None and overture is None:
+        raise typer.BadParameter("Provide at least one of --cdngi or --overture.")
+
+    extractor = RoadVectorExtractor(
+        out_path=out, cdngi_path=cdngi, overture_path=overture
+    )
+    extractor.build()
 
 
 @app.command()

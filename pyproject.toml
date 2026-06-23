@@ -27,6 +27,7 @@ sentinel2 = [
     "jenkspy>=0.4.1",
     "pandas>=3.0.2",
     "typer>=0.24.1",
+    "pyogrio>=0.12.1",
 ]
 
 samroad = [
