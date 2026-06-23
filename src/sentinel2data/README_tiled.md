@@ -69,3 +69,17 @@ batch = next(iter(train))   # {'image': Bx3x256x256 f32, 'mask': Bx256x256 long,
   the first tile's CRS, so cross-UTM patches are not strictly pixel-aligned.
 
 Smoke test: `PYTHONPATH=src python -m sentinel2data.torchgeo_dataset <dir> --split train [--all-bands]`.
+
+## Consumer — UNet baseline (`src/unet`)
+
+`src/unet/geo_dataset.py` `ROSAGeoDataModule` adapts this loader to the UNet
+model's `(image, mask, filename)` tuple (per-image standardisation; mask →
+`(B,1,H,W)` float; `bands` stay 1-based COG indices). `train.py` uses it by
+**default** (Kaggle dataset `kelvinwei/s2rosa-v2`); `--legacy-loader` restores
+the old per-patch `ROSADataModule`.
+
+```bash
+PYTHONPATH=src python -m unet.train <dataset_dir> --bands 1,2,3 --epochs 20
+# splits come from the dataset's splits/*.csv; --length sets train patches/epoch
+```
+
