@@ -13,7 +13,7 @@ dataset_root = Path("/kaggle/working/InstaRoadPrototype/dataset")
 dataset_root.mkdir(parents=True, exist_ok=True)
 
 # S2-ROSA dataset (imagery/, masks_raster/, metadata.parquet, splits/) from Kaggle.
-s2rosa_path = kagglehub.dataset_download("kelvinwei/s2rosa")
+s2rosa_path = kagglehub.dataset_download("kelvinwei/s2rosa-v2")
 
 link = dataset_root / "s2rosa"
 if link.is_symlink() or link.exists():

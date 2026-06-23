@@ -1702,6 +1702,15 @@ terra = [
     { name = "torchvision", version = "0.26.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "wandb", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
+torchgeo = [
+    { name = "geopandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "lightning", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pyarrow", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "rasterio", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin')" },
+    { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchgeo", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
 unet = [
     { name = "albumentations", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "kagglehub", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1742,6 +1751,7 @@ requires-dist = [
     { name = "eotdl", marker = "extra == 'benchmarking'" },
     { name = "geopandas", marker = "extra == 'benchmarking'" },
     { name = "geopandas", marker = "extra == 'sentinel2'", specifier = ">=1.1.3" },
+    { name = "geopandas", marker = "extra == 'torchgeo'", specifier = ">=1.1.3" },
     { name = "geopandas", marker = "extra == 'utilities'", specifier = ">=1.1.2" },
     { name = "huggingface-hub", marker = "extra == 'terra'" },
     { name = "igraph", marker = "extra == 'samroad'" },
@@ -1750,6 +1760,7 @@ requires-dist = [
     { name = "jenkspy", marker = "extra == 'sentinel2'", specifier = ">=0.4.1" },
     { name = "kagglehub", marker = "extra == 'unet'" },
     { name = "lightning", marker = "extra == 'samroad'" },
+    { name = "lightning", marker = "extra == 'torchgeo'", specifier = ">=2.0" },
     { name = "lightning", marker = "extra == 'unet'", specifier = ">=2.0" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "matplotlib", marker = "extra == 'terra'", specifier = ">=3.10.8" },
@@ -1767,10 +1778,12 @@ requires-dist = [
     { name = "pandas", marker = "extra == 'sentinel2'", specifier = ">=3.0.2" },
     { name = "pandas", marker = "extra == 'unet'", specifier = ">=2.0" },
     { name = "pyarrow", marker = "extra == 'sentinel2'", specifier = ">=23.0.1" },
+    { name = "pyarrow", marker = "extra == 'torchgeo'" },
     { name = "pyarrow", marker = "extra == 'unet'" },
     { name = "pyogrio", marker = "extra == 'sentinel2'", specifier = ">=0.12.1" },
     { name = "pyyaml", marker = "extra == 'samroad'" },
     { name = "rasterio", marker = "extra == 'sentinel2'", specifier = ">=1.5.0" },
+    { name = "rasterio", marker = "extra == 'torchgeo'", specifier = ">=1.5.0" },
     { name = "rasterio", marker = "extra == 'unet'", specifier = ">=1.5.0" },
     { name = "rasterio", marker = "extra == 'utilities'", specifier = ">=1.5.0" },
     { name = "rtree", marker = "extra == 'samroad'" },
@@ -1786,10 +1799,13 @@ requires-dist = [
     { name = "terratorch", marker = "extra == 'terra'", git = "https://github.com/terrastackai/terratorch.git" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'samroad'", specifier = ">=2.1.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'terra'", specifier = ">=2.1.0", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'torchgeo'", specifier = ">=2.1.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'unet'", specifier = ">=2.1.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'samroad'", specifier = ">=2.1.0" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'terra'", specifier = ">=2.1.0" },
+    { name = "torch", marker = "sys_platform != 'linux' and extra == 'torchgeo'", specifier = ">=2.1.0" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'unet'", specifier = ">=2.1.0" },
+    { name = "torchgeo", marker = "extra == 'torchgeo'", specifier = ">=0.9.0" },
     { name = "torchmetrics", marker = "extra == 'samroad'" },
     { name = "torchmetrics", marker = "extra == 'unet'" },
     { name = "torchvision", marker = "sys_platform == 'linux' and extra == 'samroad'", specifier = ">=0.25.0", index = "https://download.pytorch.org/whl/cu128" },
@@ -1803,7 +1819,7 @@ requires-dist = [
     { name = "wandb", marker = "extra == 'terra'" },
     { name = "wandb", marker = "extra == 'unet'" },
 ]
-provides-extras = ["sentinel2", "samroad", "unet", "benchmarking", "instageo", "terra", "utilities"]
+provides-extras = ["sentinel2", "samroad", "unet", "torchgeo", "benchmarking", "instageo", "terra", "utilities"]
 
 [package.metadata.requires-dev]
 dev = [
