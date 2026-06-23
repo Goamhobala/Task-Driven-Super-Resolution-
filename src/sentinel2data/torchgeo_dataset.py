@@ -21,6 +21,7 @@ from pathlib import Path
 import pandas as pd
 import rasterio
 import torch
+from rasterio.io import MemoryFile
 from torch.utils.data import DataLoader
 
 from torchgeo.datasets import IntersectionDataset, RasterDataset, stack_samples
@@ -72,16 +73,59 @@ def _split_paths(dataset_dir, split):
 
 WGS84 = "EPSG:4326"
 
+# Holds in-RAM MemoryFile copies alive (their /vsimem paths are valid only while
+# the object lives). Keyed by source path so each tile is cached once.
+_RAM_CACHE: dict[str, MemoryFile] = {}
 
-def build_dataset(dataset_dir, split="train", bands=RGB_BANDS, crs=WGS84):
+
+def _cache_to_ram(paths):
+    """Copy each raster into an uncompressed, internally-tiled in-RAM GeoTIFF.
+
+    Returns the ``/vsimem`` paths. Subsequent windowed reads are pure memory
+    slices (no disk seek, no decompression), which keeps the GPU fed when the
+    bottleneck is per-patch COG I/O. ``/vsimem`` is process-local, so this only
+    helps with ``num_workers=0`` (single process)."""
+    names = []
+    for p in paths:
+        key = str(p)
+        mf = _RAM_CACHE.get(key)
+        if mf is None:
+            with rasterio.open(p) as src:
+                profile = src.profile.copy()
+                data = src.read()
+            profile.update(
+                driver="GTiff",
+                compress=None,
+                tiled=True,
+                blockxsize=min(256, profile["width"]),
+                blockysize=min(256, profile["height"]),
+            )
+            profile.pop("predictor", None)
+            mf = MemoryFile()
+            with mf.open(**profile) as dst:
+                dst.write(data)
+            _RAM_CACHE[key] = mf
+        names.append(mf.name)
+    return names
+
+
+def build_dataset(dataset_dir, split="train", bands=RGB_BANDS, crs=WGS84, cache_ram=False):
     """Build the intersected image&mask torchgeo dataset for one split.
 
     ``bands`` selects which of :data:`S2_BANDS` to read (default RGB); pass
     ``S2_BANDS`` for all 20. ``crs`` is the common working CRS every tile is
     reprojected to (default EPSG:4326 / WGS84, so all UTM zones share one grid);
     pass ``crs=None`` to keep the native CRS of the first tile instead (no warp,
-    but mixes UTM zones onto that one zone's CRS)."""
+    but mixes UTM zones onto that one zone's CRS).
+
+    ``cache_ram=True`` loads every tile into uncompressed RAM GeoTIFFs first
+    (~10.5 GB for the full 20-band set, ~1.6 GB RGB-equivalent over ~500 tiles);
+    use only with ``num_workers=0``. Combine with ``crs=None`` to also drop the
+    per-patch warp so reads are pure memory slices."""
     img_paths, msk_paths = _split_paths(dataset_dir, split)
+    if cache_ram:
+        img_paths = _cache_to_ram(img_paths)
+        msk_paths = _cache_to_ram(msk_paths)
     if crs is None:
         with rasterio.open(img_paths[0]) as src:
             crs = src.crs
@@ -101,15 +145,20 @@ def get_dataloader(
     length=None,
     stride=None,
     crs=WGS84,
+    cache_ram=False,
 ):
     """DataLoader of 256x256 patches sampled from the split's tiles.
 
     train -> ``RandomGeoSampler`` (``length`` patches/epoch, default 100*n_tiles);
     val/test -> ``GridGeoSampler`` (dense, ``stride`` defaults to ``patch_size``).
     ``crs`` defaults to EPSG:4326 (all tiles reprojected to WGS84); ``crs=None``
-    keeps the first tile's native CRS.
+    keeps the first tile's native CRS. ``cache_ram=True`` preloads tiles into RAM
+    (forces ``num_workers=0``; see :func:`build_dataset`).
     """
-    dataset = build_dataset(dataset_dir, split=split, bands=bands, crs=crs)
+    if cache_ram and num_workers != 0:
+        print("cache_ram: /vsimem is process-local; forcing num_workers=0.")
+        num_workers = 0
+    dataset = build_dataset(dataset_dir, split=split, bands=bands, crs=crs, cache_ram=cache_ram)
 
     if split == "train":
         if length is None:
