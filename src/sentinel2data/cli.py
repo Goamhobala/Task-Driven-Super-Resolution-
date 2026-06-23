@@ -5,6 +5,7 @@ import typer
 
 from sentinel2data.processor.manager import DatasetManager
 from sentinel2data.processor.mask_generator import RoadVectorExtractor
+from sentinel2data.processor.tiler import DatasetTiler
 from sentinel2data.viz import visualize_classification
 
 
@@ -32,6 +33,33 @@ def build(
         buffer_m=buffer_m,
     )
     manager.build_products()
+
+
+@app.command()
+def tile(
+    imagery_dir: Annotated[Path, typer.Option(help="Directory of source satellite COGs")],
+    output_dir: Annotated[Path, typer.Option(help="Output tiled-dataset directory")],
+    roads: Annotated[Path, typer.Option(help="Combined roads GeoParquet from the `roads` command")],
+    biome_parquet: Annotated[
+        Optional[Path],
+        typer.Option(help="NVM2024 biome GeoParquet (scripts/biome.py convert); tiles tagged 'Unknown' if omitted"),
+    ] = None,
+    tile_size: Annotated[int, typer.Option(help="Tile edge in pixels (kept tiles are exactly this)")] = 512,
+    patch_size: Annotated[int, typer.Option(help="Sampler patch edge; tile_size must be a multiple")] = 256,
+    buffer_m: Annotated[int, typer.Option(help="Fallback road buffer (metres) for classes without a per-tier width")] = 5,
+):
+    """Tile source COGs into road-bearing tile_size COGs (drops empty + partial edge
+    tiles), tag biomes, and write a per-tile metadata.parquet + splits/."""
+    tiler = DatasetTiler(
+        imagery_dir=imagery_dir,
+        output_dir=output_dir,
+        roads_parquet_path=roads,
+        biome_parquet_path=biome_parquet,
+        tile_size=tile_size,
+        patch_size=patch_size,
+        buffer_m=buffer_m,
+    )
+    tiler.build()
 
 
 @app.command()
