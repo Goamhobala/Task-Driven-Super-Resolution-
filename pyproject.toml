@@ -52,7 +52,7 @@ samroad = [
 
 unet = [
     "segmentation-models-pytorch",
-    "albumentations"
+    "albumentations",
 ]
 
 benchmarking = [
@@ -79,6 +79,11 @@ terra = [
     "torch>=2.1.0",
     "torchvision>=0.25.0",
     "wandb",
+]
+
+dlinknet = [
+    "lightning>=2.0",
+    "torchmetrics>=1.0",
 ]
 
 utilities = [
