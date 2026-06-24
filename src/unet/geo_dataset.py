@@ -77,15 +77,10 @@ class ROSAGeoDataModule(pl.LightningDataModule):
         length=None,
         normalize=True,
         crs=WGS84,
-        cache_ram=False,
     ):
         super().__init__()
         self.dataset_dir = Path(dataset_dir)
         self.batch_size = batch_size
-        self.cache_ram = cache_ram
-        if cache_ram and num_workers != 0:
-            print("cache_ram: /vsimem is process-local; forcing num_workers=0.")
-            num_workers = 0
         self.num_workers = num_workers
         self.band_names = _band_names(bands)
         self.image_size = image_size
@@ -96,7 +91,6 @@ class ROSAGeoDataModule(pl.LightningDataModule):
     def _dataset(self, split):
         ds = build_dataset(
             self.dataset_dir, split=split, bands=self.band_names, crs=self.crs,
-            cache_ram=self.cache_ram,
         )
         ds.transforms = self.transform  # applied per merged sample in __getitem__
         return ds

@@ -1,11 +1,5 @@
 # Tiled S2-ROSA dataset (torchgeo)
 
-A second producer/consumer flow alongside the per-patch `build` pipeline. It
-cuts big satellite COGs into small **road-bearing 512×512 COG tiles** and
-serves 256×256 patches through a **torchgeo** sampler.
-
-## Producer — `tile`
-
 ```bash
 PYTHONPATH=src python -m sentinel2data.cli tile \
   --imagery-dir  /data/S2ROSA/imagery \
@@ -82,4 +76,3 @@ the old per-patch `ROSADataModule`.
 PYTHONPATH=src python -m unet.train <dataset_dir> --bands 1,2,3 --epochs 20
 # splits come from the dataset's splits/*.csv; --length sets train patches/epoch
 ```
-

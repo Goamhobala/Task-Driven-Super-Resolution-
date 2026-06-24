@@ -60,13 +60,6 @@ def parse_args():
         help="Tiled loader: train patches per epoch (default 100 * n_tiles).",
     )
     p.add_argument(
-        "--cache-ram",
-        action="store_true",
-        help="Tiled loader: preload all tiles into RAM (forces num_workers=0; "
-        "fixes GPU starvation from per-patch COG I/O). Pair with reflectance "
-        "bands you need -- ~10.5 GB for all 20 bands over ~500 tiles.",
-    )
-    p.add_argument(
         "--keep-empty-patches",
         action="store_true",
         help="Keep road-free patches in the train split (default: drop them).",
@@ -109,7 +102,6 @@ def main():
             image_size=args.image_size,
             length=args.length,
             normalize=not args.no_normalize,
-            cache_ram=args.cache_ram,
         )
 
     model = UNetLightning(
