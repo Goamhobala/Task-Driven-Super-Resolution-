@@ -51,7 +51,7 @@ def main():
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=CHECKPOINT_DIR,
-        filename="dlinknet34_resnet34_roads-{epoch:02d}-{val_loss:.4f}",
+        filename="dlinknet34_resnet34",
         monitor="val_loss",
         mode="min",
         save_top_k=1,
