@@ -16,7 +16,7 @@ model:
 
 
 data:
-  class_path: sentinel_datamodule.SentinelDataModule
+  class_path: src.utils.lightning_dataset.SentinelDataModule
   init_args:
     base_dir: /kaggle/working/InstaRoadPrototype/dataset/S2IndianRegions
     dataset_dir: /kaggle/working/InstaRoadPrototype/dataset/sentinel2/sentinel2_256/15765738
