@@ -1642,6 +1642,7 @@ dependencies = [
     { name = "mkdocs-literate-nav", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "mkdocstrings", extra = ["python"], marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "scikit-image", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
 [package.optional-dependencies]
@@ -1713,6 +1714,7 @@ torchgeo = [
 ]
 unet = [
     { name = "albumentations", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "geopandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "kagglehub", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "lightning", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1721,6 +1723,7 @@ unet = [
     { name = "segmentation-models-pytorch", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin')" },
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchgeo", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "torchmetrics", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "torchvision", version = "0.26.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin')" },
     { name = "torchvision", version = "0.26.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -1752,6 +1755,7 @@ requires-dist = [
     { name = "geopandas", marker = "extra == 'benchmarking'" },
     { name = "geopandas", marker = "extra == 'sentinel2'", specifier = ">=1.1.3" },
     { name = "geopandas", marker = "extra == 'torchgeo'", specifier = ">=1.1.3" },
+    { name = "geopandas", marker = "extra == 'unet'", specifier = ">=1.1.3" },
     { name = "geopandas", marker = "extra == 'utilities'", specifier = ">=1.1.2" },
     { name = "huggingface-hub", marker = "extra == 'terra'" },
     { name = "igraph", marker = "extra == 'samroad'" },
@@ -1787,6 +1791,7 @@ requires-dist = [
     { name = "rasterio", marker = "extra == 'unet'", specifier = ">=1.5.0" },
     { name = "rasterio", marker = "extra == 'utilities'", specifier = ">=1.5.0" },
     { name = "rtree", marker = "extra == 'samroad'" },
+    { name = "scikit-image", specifier = ">=0.26.0" },
     { name = "scikit-image", marker = "extra == 'samroad'" },
     { name = "scikit-image", marker = "extra == 'sentinel2'" },
     { name = "scikit-learn", marker = "extra == 'samroad'" },
@@ -1806,6 +1811,7 @@ requires-dist = [
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'torchgeo'", specifier = ">=2.1.0" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'unet'", specifier = ">=2.1.0" },
     { name = "torchgeo", marker = "extra == 'torchgeo'", specifier = ">=0.9.0" },
+    { name = "torchgeo", marker = "extra == 'unet'", specifier = ">=0.9.0" },
     { name = "torchmetrics", marker = "extra == 'samroad'" },
     { name = "torchmetrics", marker = "extra == 'unet'" },
     { name = "torchvision", marker = "sys_platform == 'linux' and extra == 'samroad'", specifier = ">=0.25.0", index = "https://download.pytorch.org/whl/cu128" },

@@ -3,16 +3,26 @@ from pathlib import Path
 from typing import Annotated, Optional
 import typer
 
-from sentinel2data.processor.manager import DatasetManager
-from sentinel2data.processor.mask_generator import RoadVectorExtractor
-from sentinel2data.processor.tiler import DatasetTiler
-from sentinel2data.viz import visualize_classification
+from sentinel2data.generator import (
+    RoadVectorExtractor,
+    make_v1rosa_pipeline,
+    make_v2rosa_pipeline,
+)
+from sentinel2data.viz import visualize_classification, visualize_rosav2
 
 
 class Backdrop(str, Enum):
     satellite = "satellite"
     mask = "mask"
     none = "none"
+
+
+class Variant(str, Enum):
+    """The dataset format to generate."""
+
+    V1ROSA = "V1ROSA"  # patch-window index (masks generated in place, one row / block)
+    V2ROSA = "V2ROSA"  # cut tiles (physical NxN image+mask COGs, one row / tile)
+
 
 app = typer.Typer(help="S2-ROSA Dataset Pipeline")
 
@@ -21,45 +31,54 @@ DatasetDir = Annotated[Path, typer.Option(help=DATASET_HELP)]
 
 
 @app.command()
-def build(
-    dataset_dir: DatasetDir,
+def generate(
+    variant: Annotated[
+        Variant,
+        typer.Option(help="Dataset variant: V1ROSA (patch-window index) or V2ROSA (cut tiles)"),
+    ],
     roads: Annotated[Path, typer.Option(help="Combined roads GeoParquet from the `roads` command")],
-    buffer_m: Annotated[int, typer.Option(help="Fallback road buffer (metres) for classes without a per-tier width")] = 10,
-):
-    """Scan imagery/, generate masks_raster/, masks_graph/, metadata.parquet and splits/."""
-    manager = DatasetManager(
-        dataset_dir=dataset_dir,
-        roads_parquet_path=roads,
-        buffer_m=buffer_m,
-    )
-    manager.build_products()
-
-
-@app.command()
-def tile(
-    imagery_dir: Annotated[Path, typer.Option(help="Directory of source satellite COGs")],
-    output_dir: Annotated[Path, typer.Option(help="Output tiled-dataset directory")],
-    roads: Annotated[Path, typer.Option(help="Combined roads GeoParquet from the `roads` command")],
+    dataset_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="[V1ROSA] dataset root; scans <dir>/imagery, writes masks + metadata in place"),
+    ] = None,
+    imagery_dir: Annotated[
+        Optional[Path], typer.Option(help="[V2ROSA] directory of source satellite COGs")
+    ] = None,
+    output_dir: Annotated[
+        Optional[Path], typer.Option(help="[V2ROSA] output tiled-dataset directory")
+    ] = None,
     biome_parquet: Annotated[
         Optional[Path],
-        typer.Option(help="NVM2024 biome GeoParquet (scripts/biome.py convert); tiles tagged 'Unknown' if omitted"),
+        typer.Option(help="[V2ROSA] NVM2024 biome GeoParquet (scripts/biome.py convert); tiles tagged 'Unknown' if omitted"),
     ] = None,
-    tile_size: Annotated[int, typer.Option(help="Tile edge in pixels (kept tiles are exactly this)")] = 512,
-    patch_size: Annotated[int, typer.Option(help="Sampler patch edge; tile_size must be a multiple")] = 256,
-    buffer_m: Annotated[int, typer.Option(help="Fallback road buffer (metres) for classes without a per-tier width")] = 5,
+    tile_size: Annotated[int, typer.Option(help="[V2ROSA] tile edge in pixels (kept tiles are exactly this)")] = 512,
+    patch_size: Annotated[int, typer.Option(help="[V2ROSA] sampler patch edge; tile_size must be a multiple")] = 256,
+    buffer_m: Annotated[
+        Optional[int],
+        typer.Option(help="Fallback road buffer (metres); default 10 for V1ROSA, 5 for V2ROSA"),
+    ] = None,
 ):
-    """Tile source COGs into road-bearing tile_size COGs (drops empty + partial edge
-    tiles), tag biomes, and write a per-tile metadata.parquet + splits/."""
-    tiler = DatasetTiler(
-        imagery_dir=imagery_dir,
-        output_dir=output_dir,
-        roads_parquet_path=roads,
-        biome_parquet_path=biome_parquet,
-        tile_size=tile_size,
-        patch_size=patch_size,
-        buffer_m=buffer_m,
-    )
-    tiler.build()
+    """Generate a dataset variant: --variant V1ROSA (in-place patch index) or V2ROSA (cut tiles)."""
+    if variant is Variant.V1ROSA:
+        if dataset_dir is None:
+            raise typer.BadParameter("V1ROSA requires --dataset-dir.")
+        make_v1rosa_pipeline(
+            dataset_dir=dataset_dir,
+            roads_parquet_path=roads,
+            buffer_m=10 if buffer_m is None else buffer_m,
+        ).run()
+    else:  # V2ROSA
+        if imagery_dir is None or output_dir is None:
+            raise typer.BadParameter("V2ROSA requires --imagery-dir and --output-dir.")
+        make_v2rosa_pipeline(
+            imagery_dir=imagery_dir,
+            output_dir=output_dir,
+            roads_parquet_path=roads,
+            biome_parquet_path=biome_parquet,
+            tile_size=tile_size,
+            patch_size=patch_size,
+            buffer_m=5 if buffer_m is None else buffer_m,
+        ).run()
 
 
 @app.command()
@@ -73,14 +92,13 @@ def roads(
         Optional[Path], typer.Option(help="Overture roads GeoParquet")
     ] = None,
 ):
-    """Extract major + medium scale roads from CDNGI and/or Overture into one layer."""
-    if cdngi is None and overture is None:
-        raise typer.BadParameter("Provide at least one of --cdngi or --overture.")
+    """Extract major + medium scale roads from CDNGI or Overture (exactly one) into one layer."""
+    if (cdngi is None) == (overture is None):
+        raise typer.BadParameter("Provide exactly one of --cdngi or --overture.")
 
-    extractor = RoadVectorExtractor(
+    RoadVectorExtractor.from_paths(
         out_path=out, cdngi_path=cdngi, overture_path=overture
-    )
-    extractor.build()
+    ).build()
 
 
 @app.command()
@@ -110,6 +128,22 @@ def visualize(
         dataset_dir=dataset_dir,
         backdrop=backdrop.value,
     )
+
+
+@app.command()
+def visualize_v2(
+    dataset_dir: DatasetDir,
+    out_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="Output folder (default <dataset_dir>/visualisation)"),
+    ] = None,
+    limit: Annotated[
+        Optional[int], typer.Option(help="Max images rendered per split (default: all)")
+    ] = None,
+):
+    """Render side-by-side RGB | RGB-enhanced | road-mask PNGs for a ROSAV2 dataset
+    into <dataset_dir>/visualisation/{train,val,test}/."""
+    visualize_rosav2(dataset_dir=dataset_dir, out_dir=out_dir, limit=limit)
 
 
 if __name__ == "__main__":

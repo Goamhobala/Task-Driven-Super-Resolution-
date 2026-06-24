@@ -1,6 +1,7 @@
 """torchgeo data loading for the tiled S2-ROSA dataset.
 
-The :class:`~sentinel2data.processor.tiler.DatasetTiler` writes self-contained,
+The cut-tiles pipeline (``sentinel2data.generator.make_v2rosa_pipeline``, i.e.
+``V2ROSAProcessor``) writes self-contained,
 georeferenced 512x512 image + mask COGs under ``images/`` and ``masks/`` and a
 per-tile ``metadata.parquet`` with a ``split_set`` column. Here those tiles are
 wrapped as torchgeo ``RasterDataset``s, intersected, and sampled into 256x256
@@ -35,6 +36,10 @@ S2_BANDS = (
 )
 RGB_BANDS = ("B4", "B3", "B2")
 
+# S2-ROSA-V2 imagery appends 3 CLAHE+gamma enhanced-RGB bands (B4,B3,B2 -> bands 21-23).
+ENHANCED_RGB_BANDS = ("B4_clahe", "B3_clahe", "B2_clahe")
+S2_V2_BANDS = S2_BANDS + ENHANCED_RGB_BANDS
+
 
 class S2RosaImage(RasterDataset):
     """20-band S2-ROSA image tiles (float reflectance / terrain / SAR)."""
@@ -42,6 +47,15 @@ class S2RosaImage(RasterDataset):
     filename_glob = "*.tif"
     is_image = True
     all_bands = S2_BANDS
+    rgb_bands = RGB_BANDS
+
+
+class S2RosaV2Image(RasterDataset):
+    """23-band S2-ROSA-V2 image tiles (20 source bands + 3 enhanced-RGB bands)."""
+
+    filename_glob = "*.tif"
+    is_image = True
+    all_bands = S2_V2_BANDS
     rgb_bands = RGB_BANDS
 
 
