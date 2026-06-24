@@ -41,7 +41,7 @@ class PredictionSaverCallback(L.Callback):
                 Image.fromarray(pred_mask_uint8).save(os.path.join(self.output_dir, filenames[i]))
 
 class LightningWrapper(L.LightningModule):
-    def __init__(self, model, learning_rate=1e-3, threshold=0.5):
+    def __init__(self, model: torch.nn.Module, learning_rate=1e-3, threshold=0.5):
         super().__init__()
         self.model = model
         self.learning_rate = learning_rate
