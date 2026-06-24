@@ -88,6 +88,18 @@ dlinknet = [
     "torchmetrics>=1.0",
 ]
 
+baseline = [
+    "segmentation-models-pytorch",
+    "albumentations",
+    "rasterio>=1.5.0",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "scipy>=1.11",
+    "wandb",
+    "torch>=2.1.0",
+    "terratorch",
+]
+
 utilities = [
     "absl-py>=2.4.0",
     "geopandas>=1.1.2",

@@ -25,7 +25,19 @@ There are 3 ways to query a job.
 
 But essentially, you get allocated a `/scratch` space and a `/home` and a home directory. Use scratch to store your data and large files. But just note that it's not backed up. So store your important stuff in home
 
+## Sending Files
 
+For files:
+
+```
+scp /Volumes/MAC_KIOXIA/Data/image1.png  /Volumes/MAC_KIOXIA/Data/image2.png yhxjin001@hpc.uct.ac.za:../../scratch/yhxjin001/InstaRoad
+```
+
+For entire folder:
+
+```
+scp -r /Volumes/MAC_KIOXIA/Data/imagery yhxjin001@hpc.uct.ac.za:../../scratch/yhxjin001/InstaRoad
+```
 
 ## Apptainer
 
