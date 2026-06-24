@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 
+
 class PredictionSaverCallback(L.Callback):
     """Writes comparison plots (or raw masks) per batch instead of buffering them."""
     def __init__(self, output_dir, save_comparison=True, threshold=0.5):
@@ -39,6 +40,7 @@ class PredictionSaverCallback(L.Callback):
             else:
                 pred_mask_uint8 = (pred_mask * 255).astype(np.uint8)
                 Image.fromarray(pred_mask_uint8).save(os.path.join(self.output_dir, filenames[i]))
+
 
 class LightningWrapper(L.LightningModule):
     def __init__(self, model: torch.nn.Module, learning_rate=1e-3, threshold=0.5):

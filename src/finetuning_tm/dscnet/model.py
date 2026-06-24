@@ -1,4 +1,4 @@
-from dlinknet.networks.dinknet import DinkNet34
+from finetuning_tm.dscnet. 
 
 
 def build_model(in_channels=3):
