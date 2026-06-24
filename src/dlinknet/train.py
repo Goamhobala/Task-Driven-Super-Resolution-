@@ -7,7 +7,8 @@ from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 import wandb
 
 from unet.dataset import SentinelRoadsDataset, sentinel2_data_partition
-from dlinknet.model import build_model, LightningWrapper
+from dlinknet.model import build_model
+from src.utils.lightning_utils import LightningWrapper
 
 
 def main():
