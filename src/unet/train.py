@@ -7,8 +7,8 @@ import lightning.pytorch as pl
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 
-from unet.dataset import DEFAULT_BANDS, ROSADataModule
-from unet.geo_dataset import ROSAGeoDataModule
+from unet.dataset import ROSADataModule
+from unet.geo_dataset import DEFAULT_BANDS, ROSAGeoDataModule
 from unet.model import UNetLightning
 
 # Default location of the dataset symlink created on Kaggle (kelvinwei/s2rosa-v2,
@@ -31,7 +31,13 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--num-workers", type=int, default=2)
-    p.add_argument("--bands", type=_bands, default=DEFAULT_BANDS, help="e.g. 1,2,3")
+    p.add_argument(
+        "--bands",
+        type=_bands,
+        default=DEFAULT_BANDS,
+        help="1-based band indices into the 23-band V2 imagery (default 21,22,23 = "
+        "enhanced RGB; pass 1,2,3 for raw RGB).",
+    )
     p.add_argument("--image-size", type=int, default=256)
     p.add_argument("--encoder", default="resnet34")
     p.add_argument("--encoder-weights", default="imagenet")
@@ -50,8 +56,9 @@ def parse_args():
     p.add_argument(
         "--legacy-loader",
         action="store_true",
-        help="Use the per-patch ROSADataModule (block-windowed COGs) instead of "
-        "the default tiled torchgeo loader (kelvinwei/s2rosa-v2).",
+        help="Use the per-patch ROSADataModule (V1 block-windowed COGs) instead of "
+        "the default V2 torchgeo loader. V1-only: needs the V1 metadata schema and "
+        "20-band bands (e.g. --bands 1,2,3).",
     )
     p.add_argument(
         "--length",

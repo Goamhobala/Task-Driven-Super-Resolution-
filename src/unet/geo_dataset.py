@@ -1,18 +1,20 @@
-"""torchgeo-backed S2-ROSA loading for the UNet baseline (the *tiled* dataset).
+"""torchgeo-backed S2-ROSA-V2 loading for the UNet baseline.
 
-The tiled producer (``sentinel2data.processor.tiler.DatasetTiler``, Kaggle
-dataset ``kelvinwei/s2rosa-v2``) writes georeferenced 512x512 image + mask COGs
-and a per-tile catalogue. This module wraps them with
+The S2-ROSA-V2 producer (``sentinel2data.generator.make_v2rosa_pipeline``, Kaggle
+dataset ``kelvinwei/s2rosa-v2``) writes split-segregated imagery -- raw 512x512
+GTiff train tiles + whole-zone val/test COGs -- each with 20 source bands plus 3
+appended CLAHE+gamma enhanced-RGB bands (23 total), a raster mask, and a per-image
+road-graph parquet. This module wraps the imagery+mask with
 ``sentinel2data.torchgeo_dataset`` and adapts the torchgeo sample dict to the
 ``(image, mask, filename)`` tuple ``unet.model.UNetLightning`` consumes:
 
   * train -> ``RandomGeoSampler``; val/test -> ``GridGeoSampler`` (dense).
-  * image is per-channel standardised per patch (same fix as the per-patch
-    loader: raw reflectance is ~5x too dark for the ImageNet encoder).
+  * image is per-channel standardised per patch.
   * mask ``(B, H, W)`` long -> ``(B, 1, H, W)`` float {0, 1}.
 
-Drop-in alternative to ``unet.dataset.ROSADataModule``; ``bands`` stays 1-based
-COG indices (e.g. ``(1, 2, 3)`` = RGB) for parity with that loader and the CLI.
+``bands`` are 1-based indices into the 23-band imagery; the default is the enhanced
+RGB triplet (:data:`ENHANCED_RGB`, bands 21-23). Pass :data:`RAW_RGB` ((1, 2, 3))
+for the unprocessed source RGB.
 """
 from __future__ import annotations
 
@@ -24,14 +26,22 @@ from torch.utils.data import DataLoader
 from torchgeo.datasets import stack_samples
 from torchgeo.samplers import GridGeoSampler, RandomGeoSampler
 
-from sentinel2data.torchgeo_dataset import S2_BANDS, WGS84, build_dataset
+from sentinel2data.torchgeo_dataset import (
+    S2_V2_BANDS,
+    S2RosaV2Image,
+    WGS84,
+    build_dataset,
+)
 
-DEFAULT_BANDS = (1, 2, 3)  # 1-based COG indices (RGB); matches unet.dataset
+# 1-based band indices into the 23-band S2-ROSA-V2 imagery.
+RAW_RGB = (1, 2, 3)           # source B4, B3, B2
+ENHANCED_RGB = (21, 22, 23)   # appended CLAHE+gamma B4, B3, B2
+DEFAULT_BANDS = ENHANCED_RGB  # feed the enhanced RGB to the ImageNet encoder
 
 
 def _band_names(bands):
-    """Map 1-based COG band indices to the torchgeo band names."""
-    return tuple(S2_BANDS[i - 1] for i in bands)
+    """Map 1-based band indices to the 23-band V2 torchgeo band names."""
+    return tuple(S2_V2_BANDS[i - 1] for i in bands)
 
 
 def _make_transform(normalize):
@@ -91,6 +101,7 @@ class ROSAGeoDataModule(pl.LightningDataModule):
     def _dataset(self, split):
         ds = build_dataset(
             self.dataset_dir, split=split, bands=self.band_names, crs=self.crs,
+            image_cls=S2RosaV2Image,
         )
         ds.transforms = self.transform  # applied per merged sample in __getitem__
         return ds

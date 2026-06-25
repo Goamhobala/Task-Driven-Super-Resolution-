@@ -28,7 +28,7 @@ from torchgeo.samplers import GridGeoSampler
 
 from sentinel2data.torchgeo_dataset import (
     WGS84,
-    S2RosaImage,
+    S2RosaV2Image,
     _split_paths,
     build_dataset,
 )
@@ -114,7 +114,8 @@ def main():
 # -- metrics loader --------------------------------------------------------
 def _eval_loader(dataset_dir, split, band_names, patch_size, batch_size, num_workers, normalize):
     """Dense GridGeoSampler loader over a split, yielding (image, mask, names)."""
-    ds = build_dataset(dataset_dir, split=split, bands=band_names, crs=WGS84)
+    ds = build_dataset(dataset_dir, split=split, bands=band_names, crs=WGS84,
+                       image_cls=S2RosaV2Image)
     ds.transforms = _make_transform(normalize)
     sampler = GridGeoSampler(ds, size=patch_size, stride=patch_size)
     return DataLoader(
@@ -139,7 +140,7 @@ def predict_tile_sliding(
     Returns ``(prob, profile)`` - a ``(H, W)`` float32 probability map aligned to
     the source raster + its rasterio profile (CRS/transform preserved).
     """
-    imds = S2RosaImage(paths=[str(image_path)], bands=list(bands), crs=None)
+    imds = S2RosaV2Image(paths=[str(image_path)], bands=list(bands), crs=None)
     imds.transforms = _make_transform(normalize)  # same prep as training
     sampler = GridGeoSampler(imds, size=patch_size, stride=stride)
     loader = DataLoader(imds, sampler=sampler, batch_size=batch_size, collate_fn=stack_samples)
