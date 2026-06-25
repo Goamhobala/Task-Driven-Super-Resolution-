@@ -84,7 +84,9 @@ def write_image_cog(path, arr, profile, *, transform, blockxsize=None,
         width=arr.shape[2],
         transform=transform,
         compress="deflate",
-        predictor=3 if np.issubdtype(arr.dtype, np.floating) else 2,
+        # Float predictor (3) hurts noisy S2 reflectance (~5% larger); only the
+        # integer predictor (2) helps. Float -> no predictor (1).
+        predictor=2 if np.issubdtype(arr.dtype, np.integer) else 1,
     )
     _set_tiling(profile, tiled, blockxsize, blockysize, interleave)
     with rasterio.open(path, "w", **profile) as dst:

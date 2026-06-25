@@ -199,7 +199,7 @@ class V2ROSAProcessor:
             dtype="float32",
             transform=src.transform,
             compress="deflate",
-            predictor=3,
+            predictor=1,  # float predictor (3) hurts noisy S2 reflectance
             tiled=True,
             blockxsize=block,
             blockysize=block,
