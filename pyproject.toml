@@ -58,8 +58,13 @@ unet = [
 benchmarking = [
     "geopandas",
     "awscli",
-    "eotdl"
+    "eotdl",
+    "pandas>=2.0",
+    "scipy>=1.11",
+    "pyarrow>=14.0",
+    "pyyaml",
     ]
+
 
 instageo = [
     "instageo[gpu,data,model]",
@@ -114,7 +119,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = "src"
-testpaths = ["tests"]
+testpaths = ["tests", "src"]
 python_files = ["test_*.py", "*_test.py", "*_tests.py"]
 
 [build-system]
