@@ -84,6 +84,9 @@ class SentinelDataModule(L.LightningDataModule):
             num_workers=self.num_workers,
         )
     
+    def predict_dataloader(self):
+        return self.test_dataloader() 
+    
 
     def _build_transform(transform_cfg: list) -> A.Compose:
         """Manually builds an albumentations pipeline from a list of
