@@ -3,7 +3,7 @@ import albumentations as A
 import lightning as L
 from torch.utils.data import DataLoader
 
-from unet.dataset import SentinelRoadsDataset, sentinel2_data_partition
+from src.unet.dataset import SentinelRoadsDataset, sentinel2_data_partition
 
 
 class SentinelDataModule(L.LightningDataModule):
