@@ -139,7 +139,7 @@ def _render_v2_triptych(dataset_dir, row, out_dir, percentile_range):
     return out_png
 
 
-def visualize_rosav2(dataset_dir, out_dir=None, limit=None, percentile_range=(0, 100)):
+def visualize_rosav2(dataset_dir, out_dir=None, limit=None, percentile_range=(2, 98)):
     """Render a side-by-side RGB | RGB-enhanced | road-mask PNG for every image in
     a ROSAV2 dataset.
 
