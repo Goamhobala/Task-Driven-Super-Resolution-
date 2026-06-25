@@ -110,7 +110,7 @@ class ROSAGeoDataModule(pl.LightningDataModule):
         ds = self._dataset(split)
         n_tiles = len(ds.datasets[0].index)
         if split == "train":
-            length = self.length or 100 * n_tiles
+            length = self.length or 10 * n_tiles
             sampler = RandomGeoSampler(ds, size=self.image_size, length=length)
         else:
             sampler = GridGeoSampler(
