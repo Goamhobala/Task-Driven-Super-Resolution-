@@ -28,7 +28,7 @@ class SentinelDataModule(L.LightningDataModule):
         train_batch_size: int = 4,
         eval_batch_size: int = 16,
         num_workers: int = 2,
-        transform: A = None
+        transform: list = None
     ):
         super().__init__()
         self.base_dir = base_dir
