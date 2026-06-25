@@ -1,4 +1,8 @@
-"""Train the UNet road-segmentation baseline on the S2-ROSA dataset.
+"""Train the UNet road-segmentation baseline on S2-ROSA-V2 (native loaders).
+
+Native-CRS, no-warp loaders (``unet.patch_dataset``): train = random 256 crops;
+val/test = whole-zone stitched IoU/F1 (in ``unet.model``). Checkpoints on the
+stitched ``val_iou``.
 """
 
 import argparse
@@ -7,12 +11,10 @@ import lightning.pytorch as pl
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 
-from unet.dataset import ROSADataModule
-from unet.geo_dataset import DEFAULT_BANDS, ROSAGeoDataModule
 from unet.model import UNetLightning
+from unet.patch_dataset import DEFAULT_BANDS, RoadDataModule
 
-# Default location of the dataset symlink created on Kaggle (kelvinwei/s2rosa-v2,
-# the tiled COG dataset; see unet/prep/kaggle_dependencies.py).
+# Dataset symlink created on Kaggle (kelvinwei/s2rosa-v2; see prep/kaggle_dependencies.py).
 KAGGLE_DATASET_DIR = "/kaggle/working/InstaRoadPrototype/dataset/s2rosa"
 
 
@@ -21,62 +23,36 @@ def _bands(value):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Train UNet on S2-ROSA")
+    p = argparse.ArgumentParser(description="Train UNet on S2-ROSA-V2")
     p.add_argument(
-        "dataset_dir",
-        nargs="?",
-        default=KAGGLE_DATASET_DIR,
-        help="Path to the S2-ROSA dataset root (contains metadata.parquet).",
+        "dataset_dir", nargs="?", default=KAGGLE_DATASET_DIR,
+        help="S2-ROSA-V2 root (contains splits/ + metadata.parquet).",
     )
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument(
-        "--bands",
-        type=_bands,
-        default=DEFAULT_BANDS,
-        help="1-based band indices into the 23-band V2 imagery (default 21,22,23 = "
-        "enhanced RGB; pass 1,2,3 for raw RGB).",
+        "--bands", type=_bands, default=DEFAULT_BANDS,
+        help="1-based indices into the 23-band imagery (default 21,22,23 = enhanced "
+        "RGB; 1,2,3,4 = raw RGB+NIR).",
     )
     p.add_argument("--image-size", type=int, default=256)
+    p.add_argument(
+        "--length", type=int, default=None,
+        help="Train patches per epoch (default 10 * n_train_tiles).",
+    )
+    p.add_argument(
+        "--val-overlap", type=int, default=128,
+        help="Val/test sliding-window overlap (px); 0 = non-overlapping.",
+    )
     p.add_argument("--encoder", default="resnet34")
     p.add_argument("--encoder-weights", default="imagenet")
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--pos-weight", type=float, default=5.0, help="BCE weight on road class.")
-    p.add_argument("--no-normalize", action="store_true", help="Disable per-image standardization.")
-    p.add_argument("--val-frac", type=float, default=0.1, help="Legacy loader only.")
-    p.add_argument("--test-frac", type=float, default=0.1, help="Legacy loader only.")
+    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--no-normalize", action="store_true", help="Disable per-image standardisation.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output-dir", default="checkpoints")
-    p.add_argument(
-        "--keep-edge-blocks",
-        action="store_true",
-        help="Legacy loader only: keep partial edge block windows.",
-    )
-    p.add_argument(
-        "--legacy-loader",
-        action="store_true",
-        help="Use the per-patch ROSADataModule (V1 block-windowed COGs) instead of "
-        "the default V2 torchgeo loader. V1-only: needs the V1 metadata schema and "
-        "20-band bands (e.g. --bands 1,2,3).",
-    )
-    p.add_argument(
-        "--length",
-        type=int,
-        default=None,
-        help="Tiled loader: train patches per epoch (default 100 * n_tiles).",
-    )
-    p.add_argument(
-        "--keep-empty-patches",
-        action="store_true",
-        help="Keep road-free patches in the train split (default: drop them).",
-    )
-    p.add_argument(
-        "--min-road-density",
-        type=float,
-        default=0.0,
-        help="Drop train patches with road_density <= this (default: 0.0, drops only empty).",
-    )
     p.add_argument("--wandb", action="store_true", help="Log to Weights & Biases.")
     p.add_argument("--fast-dev-run", action="store_true", help="Single-batch smoke run.")
     return p.parse_args()
@@ -85,31 +61,17 @@ def parse_args():
 def main():
     args = parse_args()
     pl.seed_everything(args.seed)
+    normalize = not args.no_normalize
 
-    if args.legacy_loader:
-        datamodule = ROSADataModule(
-            dataset_dir=args.dataset_dir,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            bands=args.bands,
-            image_size=args.image_size,
-            val_frac=args.val_frac,
-            test_frac=args.test_frac,
-            seed=args.seed,
-            drop_edge_blocks=not args.keep_edge_blocks,
-            normalize=not args.no_normalize,
-        )
-    else:
-        # Tiled torchgeo loader: splits come from the dataset's splits/*.csv.
-        datamodule = ROSAGeoDataModule(
-            dataset_dir=args.dataset_dir,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            bands=args.bands,
-            image_size=args.image_size,
-            length=args.length,
-            normalize=not args.no_normalize,
-        )
+    datamodule = RoadDataModule(
+        dataset_dir=args.dataset_dir,
+        bands=args.bands,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        image_size=args.image_size,
+        length=args.length,
+        normalize=normalize,
+    )
 
     model = UNetLightning(
         encoder_name=args.encoder,
@@ -118,14 +80,19 @@ def main():
         classes=1,
         lr=args.lr,
         pos_weight=args.pos_weight,
+        bands=args.bands,
+        image_size=args.image_size,
+        val_overlap=args.val_overlap,
+        threshold=args.threshold,
+        normalize=normalize,
     )
 
     logger = WandbLogger(project="unet_s2rosa_baseline") if args.wandb else False
     checkpoint = ModelCheckpoint(
         dirpath=args.output_dir,
         filename="unet_s2rosa_best",
-        monitor="val_loss",
-        mode="min",
+        monitor="val_iou",
+        mode="max",
         save_top_k=1,
         save_last=True,
     )

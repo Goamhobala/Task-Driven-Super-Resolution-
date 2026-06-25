@@ -1,12 +1,23 @@
-"""UNet model + PyTorch Lightning wrapper for binary road segmentation."""
+"""UNet model + PyTorch Lightning wrapper for binary road segmentation.
+
+Training is patch-based (random native crops). Validation/test are the
+**authoritative metric**: each whole zone is predicted with a native-CRS,
+cosine-blended sliding window (:func:`unet.sliding.predict_zone`) and scored
+**once per ground pixel** via torchmetrics (global TP/FP/FN, DDP-synced) -- never
+a per-overlapping-tile IoU/F1 average.
+"""
 
 import lightning.pytorch as pl
+import rasterio
 import segmentation_models_pytorch as smp
 import torch
+from torchmetrics.classification import BinaryF1Score, BinaryJaccardIndex
+
+from unet.sliding import predict_zone
 
 
 def build_model(encoder_name="resnet34", encoder_weights="imagenet", in_channels=3, classes=1):
-    """Plain segmentation-models-pytorch UNet (was UnetPlusPlus)."""
+    """Plain segmentation-models-pytorch UNet."""
     if encoder_weights in (None, "none", "None", ""):
         encoder_weights = None
     return smp.Unet(
@@ -17,19 +28,8 @@ def build_model(encoder_name="resnet34", encoder_weights="imagenet", in_channels
     )
 
 
-def _binary_metrics(logits, masks, eps=1e-6):
-    """IoU and F1 (Dice) for the road class from logits vs. binary masks."""
-    preds = (torch.sigmoid(logits) > 0.5).float()
-    tp = torch.sum(preds * masks)
-    fp = torch.sum(preds * (1 - masks))
-    fn = torch.sum((1 - preds) * masks)
-    iou = tp / (tp + fp + fn + eps)
-    f1 = 2 * tp / (2 * tp + fp + fn + eps)
-    return iou, f1
-
-
 class UNetLightning(pl.LightningModule):
-    """UNet + (Dice + weighted BCE), logging loss/IoU/F1 per train/val/test epoch."""
+    """UNet + (Dice + weighted BCE); train_loss per epoch, stitched val/test IoU+F1."""
 
     def __init__(
         self,
@@ -39,18 +39,28 @@ class UNetLightning(pl.LightningModule):
         classes=1,
         lr=1e-3,
         pos_weight=5.0,
+        bands=(21, 22, 23),
+        image_size=256,
+        val_overlap=128,
+        threshold=0.5,
+        normalize=True,
     ):
         super().__init__()
         self.save_hyperparameters()
         self.model = build_model(encoder_name, encoder_weights, in_channels, classes)
         self.dice_loss = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
+        # Stitched, once-per-pixel metrics (accumulate global TP/FP/FN; auto DDP-sync).
+        self.val_iou = BinaryJaccardIndex()
+        self.val_f1 = BinaryF1Score()
+        self.test_iou = BinaryJaccardIndex()
+        self.test_f1 = BinaryF1Score()
 
     def forward(self, x):
         return self.model(x)
 
     def _loss(self, logits, masks):
         # Dice handles overlap; weighted BCE pushes the sparse road class so the
-        # model can't minimise loss by predicting all-background (roads ~13%).
+        # model can't minimise loss by predicting all-background.
         dice = self.dice_loss(logits, masks)
         pos_weight = torch.tensor(self.hparams.pos_weight, device=logits.device)
         bce = torch.nn.functional.binary_cross_entropy_with_logits(
@@ -58,29 +68,38 @@ class UNetLightning(pl.LightningModule):
         )
         return dice + bce
 
-    def _shared_step(self, batch, stage):
+    def training_step(self, batch, batch_idx):
         images, masks, _ = batch
-        logits = self(images)
-        loss = self._loss(logits, masks)
-
-        with torch.no_grad():
-            iou, f1 = _binary_metrics(logits, masks)
-
-        bs = images.size(0)
-        log = dict(on_step=False, on_epoch=True, batch_size=bs)
-        self.log(f"{stage}_loss", loss, prog_bar=True, **log)
-        self.log(f"{stage}_iou", iou, prog_bar=True, **log)
-        self.log(f"{stage}_f1", f1, **log)
+        loss = self._loss(self(images), masks)
+        self.log(
+            "train_loss", loss, prog_bar=True, on_step=False, on_epoch=True,
+            batch_size=images.size(0), sync_dist=True,
+        )
         return loss
 
-    def training_step(self, batch, batch_idx):
-        return self._shared_step(batch, "train")
+    # -- stitched val/test -------------------------------------------------
+    def _stitched_eval(self, batch, iou_metric, f1_metric):
+        image_path, mask_path, _zone = batch
+        prob, _ = predict_zone(
+            self, image_path, list(self.hparams.bands),
+            size=self.hparams.image_size, overlap=self.hparams.val_overlap,
+            normalize=self.hparams.normalize,
+        )
+        pred = torch.from_numpy((prob > self.hparams.threshold)).to(self.device)
+        with rasterio.open(mask_path) as m:
+            gt = torch.from_numpy((m.read(1) > 0)).to(self.device)
+        iou_metric.update(pred, gt)
+        f1_metric.update(pred, gt)
 
     def validation_step(self, batch, batch_idx):
-        return self._shared_step(batch, "val")
+        self._stitched_eval(batch, self.val_iou, self.val_f1)
+        self.log("val_iou", self.val_iou, prog_bar=True, on_epoch=True)
+        self.log("val_f1", self.val_f1, prog_bar=True, on_epoch=True)
 
     def test_step(self, batch, batch_idx):
-        return self._shared_step(batch, "test")
+        self._stitched_eval(batch, self.test_iou, self.test_f1)
+        self.log("test_iou", self.test_iou, on_epoch=True)
+        self.log("test_f1", self.test_f1, on_epoch=True)
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
