@@ -74,7 +74,8 @@ class V2ROSAProcessor:
     """S2-ROSA-V2 split-aware processor.
 
     The output shape depends on the zone's split (decided by the pipeline first):
-      * ``train`` -> road-bearing 512px **raw GTiff** tiles (drop empty), one row/tile.
+      * ``train`` -> road-bearing 512px **band-interleaved tiled COG** tiles (drop
+        empty), one row/tile.
       * ``val`` / ``test`` -> the **whole zone as a COG**, one row/zone.
 
     Every output image gets 3 appended CLAHE+gamma enhanced-RGB bands
@@ -115,6 +116,7 @@ class V2ROSAProcessor:
     # -- train: raw 512px tiles -------------------------------------------
     def _train_tiles(self, zone, sindex, img, full_mask, zone_name, layout, paths):
         ts = self.tile_spec.tile_size
+        patch = self.tile_spec.patch_size
         rgb_idx = [b - 1 for b in self.enhance_cfg.rgb_bands]
         rows = []
         n_rows = img.height // ts  # full tiles only -> edge remainder dropped
@@ -138,8 +140,11 @@ class V2ROSAProcessor:
                 img_path = layout["imagery"] / f"{stem}.tif"
                 msk_path = layout["masks_raster"] / f"{stem}.tif"
                 gph_path = layout["masks_graph"] / f"{stem}.parquet"
-                write_image_cog(img_path, out, img.profile, transform=win_tf, tiled=False)
-                write_mask_cog(msk_path, mask_arr, img.meta, transform=win_tf, tiled=False)
+                write_image_cog(img_path, out, img.profile, transform=win_tf,
+                                tiled=True, blockxsize=patch, blockysize=patch,
+                                interleave="band")
+                write_mask_cog(msk_path, mask_arr, img.meta, transform=win_tf,
+                               tiled=True, blockxsize=patch, blockysize=patch)
                 self._write_graph(zone, window_box(win, img.transform), sindex, gph_path)
 
                 rows.append(self._row(
@@ -198,6 +203,7 @@ class V2ROSAProcessor:
             tiled=True,
             blockxsize=block,
             blockysize=block,
+            interleave="band",
         )
         with rasterio.open(out_path, "w", **profile) as dst:
             for b in range(1, src.count + 1):

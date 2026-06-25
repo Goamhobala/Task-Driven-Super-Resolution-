@@ -87,20 +87,22 @@ def _split_paths(dataset_dir, split):
 WGS84 = "EPSG:4326"
 
 
-def build_dataset(dataset_dir, split="train", bands=RGB_BANDS, crs=WGS84):
+def build_dataset(dataset_dir, split="train", bands=RGB_BANDS, crs=WGS84,
+                  image_cls=S2RosaImage):
     """Build the intersected image&mask torchgeo dataset for one split.
 
-    ``bands`` selects which of :data:`S2_BANDS` to read (default RGB); pass
-    ``S2_BANDS`` for all 20. ``crs`` is the common working CRS every tile is
-    reprojected to (default EPSG:4326 / WGS84, so all UTM zones share one grid);
-    pass ``crs=None`` to keep the native CRS of the first tile instead (no warp,
-    but mixes UTM zones onto that one zone's CRS)."""
+    ``bands`` selects which of ``image_cls.all_bands`` to read (default RGB).
+    ``image_cls`` is the image ``RasterDataset`` (default :class:`S2RosaImage`,
+    20-band; pass :class:`S2RosaV2Image` for the 23-band S2-ROSA-V2 imagery).
+    ``crs`` is the common working CRS every tile is reprojected to (default WGS84
+    so all UTM zones share one grid); ``crs=None`` keeps the first tile's native
+    CRS (no warp)."""
     img_paths, msk_paths = _split_paths(dataset_dir, split)
     if crs is None:
         with rasterio.open(img_paths[0]) as src:
             crs = src.crs
 
-    image = S2RosaImage(paths=img_paths, bands=list(bands), crs=crs)
+    image = image_cls(paths=img_paths, bands=list(bands), crs=crs)
     mask = S2RosaMask(paths=msk_paths, crs=crs)
     return image & mask  # IntersectionDataset -> {'image','mask','bounds','crs'}
 
