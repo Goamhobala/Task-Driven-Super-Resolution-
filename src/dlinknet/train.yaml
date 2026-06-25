@@ -49,15 +49,12 @@ data:
     train_batch_size: 4
     eval_batch_size: 16
     num_workers: 2
-    transform:
-      class_path: albumentations.Compose
-      init_args:
-        transforms:
-          - class_path: albumentations.Resize
-            init_args:
-              height: 1024
-              width: 1024
-          - class_path: albumentations.Normalize
-            init_args:
-              mean: [0.485, 0.456, 0.406]
-              std: [0.229, 0.224, 0.225]
+    transform: # has custom behaviour, check compatibility with new dataset
+      - class_path: albumentations.Resize
+        init_args:
+          height: 1024
+          width: 1024
+      - class_path: albumentations.Normalize
+        init_args:
+          mean: [0.485, 0.456, 0.406]
+          std: [0.229, 0.224, 0.225]

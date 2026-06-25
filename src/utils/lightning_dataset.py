@@ -41,7 +41,7 @@ class SentinelDataModule(L.LightningDataModule):
         self.img_dir = os.path.join(self.dataset_dir, "images_enhanced_png", "images_enhanced_png")
         self.mask_dir = os.path.join(self.dataset_dir, "masks_png", "masks_png")
 
-        self.transform = transform
+        self.transform = SentinelDataModule._build_transform(transform) if transform else None
 
         self.train_dataset = None
         self.val_dataset = None
@@ -83,3 +83,17 @@ class SentinelDataModule(L.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
         )
+    
+
+    def _build_transform(transform_cfg: list) -> A.Compose:
+        """Manually builds an albumentations pipeline from a list of
+        {class_path, init_args} dicts, since jsonargparse can't
+        auto-instantiate albumentations classes."""
+        print(transform_cfg)
+        steps = []
+        for t in transform_cfg:
+            cls_name = t["class_path"].split(".")[-1]   # e.g. "Resize"
+            kwargs = t.get("init_args", {})
+            cls = getattr(A, cls_name)
+            steps.append(cls(**kwargs))
+        return A.Compose(steps)
