@@ -76,13 +76,19 @@ torchgeo = [
     "pyarrow",
     "lightning>=2.0",
     "torch>=2.1.0",
+    "albumentations",
 ]
 
 benchmarking = [
     "geopandas",
     "awscli",
-    "eotdl"
+    "eotdl",
+    "pandas>=2.0",
+    "scipy>=1.11",
+    "pyarrow>=14.0",
+    "pyyaml",
     ]
+
 
 instageo = [
     "instageo[gpu,data,model]",
@@ -97,6 +103,11 @@ terra = [
     "torch>=2.1.0",
     "torchvision>=0.25.0",
     "wandb",
+]
+
+dlinknet = [
+    "lightning>=2.0",
+    "torchmetrics>=1.0",
 ]
 
 utilities = [
@@ -135,7 +146,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = "src"
-testpaths = ["tests"]
+testpaths = ["tests", "src"]
 python_files = ["test_*.py", "*_test.py", "*_tests.py"]
 
 [build-system]
