@@ -22,7 +22,7 @@ four under ``model:`` -- jsonargparse rejects setting a linked argument.
 """
 from lightning.pytorch.cli import LightningCLI
 
-from sentinel2data.dataset import RoadDataModule
+from sentinel2data.dataset.datasets import RoadDataModule
 from unet.model import UNetLightning
 
 

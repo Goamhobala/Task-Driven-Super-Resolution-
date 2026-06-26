@@ -14,7 +14,7 @@ import segmentation_models_pytorch as smp
 import torch
 from torchmetrics.classification import BinaryF1Score, BinaryJaccardIndex
 
-from sentinel2data.dataset import predict_zone
+from sentinel2data.dataset.sliding import predict_zone
 
 
 def build_model(encoder_name="resnet34", encoder_weights="imagenet", in_channels=3, classes=1):

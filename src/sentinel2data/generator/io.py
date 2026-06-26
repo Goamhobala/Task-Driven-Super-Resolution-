@@ -65,7 +65,7 @@ def _set_tiling(profile, tiled, blockxsize, blockysize, interleave=None):
 
 
 def write_image_cog(path, arr, profile, *, transform, blockxsize=None,
-                    blockysize=None, tiled=True, interleave="band"):
+                    blockysize=None, tiled=True, interleave="band", band_names=None):
     """Write a multi-band image array ``(C, H, W)`` as an internally-tiled,
     **band-interleaved**, deflate-compressed COG.
 
@@ -73,6 +73,9 @@ def write_image_cog(path, arr, profile, *, transform, blockxsize=None,
     ``interleave='band'`` is the key to cheap partial-band reads (training on a
     few of many bands reads only those bands' tiles). The float predictor (3) is
     used for floating dtypes, else the horizontal predictor (2).
+
+    ``band_names`` (one label per band) are written as GDAL band descriptions so
+    they show up named in QGIS etc. (see :func:`sentinel2data.dataset.written_band_names`).
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,6 +94,9 @@ def write_image_cog(path, arr, profile, *, transform, blockxsize=None,
     _set_tiling(profile, tiled, blockxsize, blockysize, interleave)
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(arr)
+        if band_names:
+            for i, name in enumerate(band_names, start=1):
+                dst.set_band_description(i, name)
     return path
 
 

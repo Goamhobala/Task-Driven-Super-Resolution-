@@ -41,6 +41,7 @@ from sentinel2data.generator.helper import (
     window_bounds,
     window_box,
 )
+from sentinel2data.dataset.bands import S2_V2_BANDS
 from sentinel2data.generator.io import write_image_cog, write_mask_cog
 from sentinel2data.generator.labels import (
     RasterMaskLabeler,
@@ -142,7 +143,8 @@ class V2ROSAProcessor:
                 gph_path = layout["masks_graph"] / f"{stem}.parquet"
                 write_image_cog(img_path, out, img.profile, transform=win_tf,
                                 tiled=True, blockxsize=patch, blockysize=patch,
-                                interleave="band")
+                                interleave="band",
+                                band_names=list(S2_V2_BANDS))
                 write_mask_cog(msk_path, mask_arr, img.meta, transform=win_tf,
                                tiled=True, blockxsize=patch, blockysize=patch)
                 self._write_graph(zone, window_box(win, img.transform), sindex, gph_path)
@@ -205,11 +207,14 @@ class V2ROSAProcessor:
             blockysize=block,
             interleave="band",
         )
+        names = list(S2_V2_BANDS)
         with rasterio.open(out_path, "w", **profile) as dst:
             for b in range(1, src.count + 1):
                 dst.write(src.read(b).astype("float32"), b)
             for j in range(enhanced.shape[0]):
                 dst.write(enhanced[j], src.count + 1 + j)
+            for i, name in enumerate(names, start=1):
+                dst.set_band_description(i, name)
         return out_path
 
     # -- shared ------------------------------------------------------------
