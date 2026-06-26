@@ -42,15 +42,19 @@ CDNGI_CLASS_MAP = {
     "Arterial Road": "major",
     "Main Road": "major",
     "Secondary Road": "medium",
+    "Other Road": "medium", # need to double check
 }
 
 # Overture (Road Vector) Contants
-OVERTURE_MAJOR_MEDIUM = ("motorway", "trunk", "primary", "secondary")
+OVERTURE_MAJOR_MEDIUM = ("motorway", "trunk", "primary", "secondary", "unclassified", "unknown")
 OVERTURE_CLASS_MAP = {
     "motorway": "major",
     "trunk": "major",
     "primary": "major",
     "secondary": "medium",
+    "tertiary": "medium", # need to double check
+    "unclassified": "medium", # need to double check
+    "unknown": "medium", # need to double check
 }
 
 # Cleaned parquet format from CDNGI
