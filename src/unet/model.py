@@ -2,7 +2,7 @@
 
 Training is patch-based (random native crops). Validation/test are the
 **authoritative metric**: each whole zone is predicted with a native-CRS,
-cosine-blended sliding window (:func:`unet.sliding.predict_zone`) and scored
+cosine-blended sliding window (:func:`sentinel2data.dataset.predict_zone`) and scored
 **once per ground pixel** via torchmetrics (global TP/FP/FN, DDP-synced) -- never
 a per-overlapping-tile IoU/F1 average.
 """
@@ -13,7 +13,7 @@ import segmentation_models_pytorch as smp
 import torch
 from torchmetrics.classification import BinaryF1Score, BinaryJaccardIndex
 
-from unet.sliding import predict_zone
+from sentinel2data.dataset import predict_zone
 
 
 def build_model(encoder_name="resnet34", encoder_weights="imagenet", in_channels=3, classes=1):

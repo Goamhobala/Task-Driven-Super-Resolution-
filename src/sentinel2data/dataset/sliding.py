@@ -1,13 +1,11 @@
-"""Native-CRS sliding-window inference + cosine-blended stitch.
+"""Native-CRS sliding-window inference + cosine-blended stitch (model-agnostic).
 
-Separate from ``unet.inference`` so ``unet.model`` can reuse it for stitched
-validation without a circular import (``inference`` imports the model class).
-
-Protocol: slide ``size`` windows (stride ``size-overlap``) over a zone in its
-**native pixels** (no warp), **zero-pad** short edge windows, predict each, and
-**cosine/Hann-weight blend** the overlaps into one seamless probability raster.
-Score the metric once per ground pixel over that raster -- never average
-per-tile IoU/F1 over overlapping tiles.
+``predict_zone`` takes any ``nn.Module`` so models reuse it for stitched
+validation/inference. Protocol: slide ``size`` windows (stride ``size-overlap``)
+over a zone in its **native pixels** (no warp), **zero-pad** short edge windows,
+predict each, and **cosine/Hann-weight blend** the overlaps into one seamless
+probability raster. Score the metric once per ground pixel over that raster --
+never average per-tile IoU/F1 over overlapping tiles.
 """
 from __future__ import annotations
 
@@ -16,7 +14,7 @@ import rasterio
 import torch
 from rasterio.windows import Window
 
-from unet.patch_dataset import read_window, standardize
+from sentinel2data.dataset.reading import read_window, standardize
 
 
 def plan_windows(height, width, size=256, overlap=128):

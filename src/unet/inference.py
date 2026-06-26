@@ -1,7 +1,7 @@
 """Evaluate a trained UNet checkpoint on S2-ROSA-V2 (native CRS, no torchgeo).
 
 Per zone: native-pixel sliding window (zero-padded edges) + cosine-blended stitch
-(:func:`unet.sliding.predict_zone`) -> one probability raster in the zone's native
+(:func:`sentinel2data.dataset.predict_zone`) -> one probability raster in the zone's native
 CRS. Metrics are scored **once per ground pixel** over the stitched raster (global
 TP/FP/FN), never per-overlapping-tile averaging. Each zone is written as a 2-band
 COG (binary + probability) plus a 3-panel comparison PNG.
@@ -21,9 +21,8 @@ import pandas as pd
 import rasterio
 import torch
 
+from sentinel2data.dataset import DEFAULT_BANDS, predict_zone
 from unet.model import UNetLightning
-from unet.patch_dataset import DEFAULT_BANDS
-from unet.sliding import predict_zone
 
 KAGGLE_DATASET_DIR = "/kaggle/working/InstaRoadPrototype/dataset/s2rosa"
 

@@ -1,15 +1,16 @@
-"""Native-CRS map-style loaders for S2-ROSA-V2 (no torchgeo, no warp).
+"""Native-CRS, map-style datasets for S2-ROSA-V2 (shared; no torchgeo, no warp).
 
 Each tile/zone is read in its **native CRS, native pixels** via rasterio windows
 -- no reprojection (the imagery spans several UTM zones, so a shared CRS would
-force a per-patch warp; that is the torchgeo cost we avoid). NaN/inf in the COG
-is scrubbed to 0 *before* standardisation. Bands are 1-based COG indices.
+force a per-patch warp). NaN scrubbed before standardisation. Bands are 1-based
+COG indices.
 
   * train -> :class:`RoadTileDataset`: random 256x256 crop from a random 512 tile.
   * val/test -> :class:`ZoneDataset`: one item per whole zone; the stitched,
-    overlap-blended scoring happens in ``unet.model``'s ``validation_step``.
+    overlap-blended scoring lives in the model (see :func:`..sliding.predict_zone`).
 
-Map-style datasets also shard cleanly under DDP (Lightning's DistributedSampler).
+Map-style datasets shard cleanly under DDP (Lightning's DistributedSampler). Any
+model imports these from ``sentinel2data.dataset``.
 """
 from __future__ import annotations
 
@@ -24,23 +25,8 @@ import torch
 from rasterio.windows import Window
 from torch.utils.data import DataLoader, Dataset
 
-DEFAULT_BANDS = (21, 22, 23)  # 1-based: the appended enhanced-RGB triplet
-
-
-def read_window(src, bands, window):
-    """Read ``(C, h, w)`` float32 from an open rasterio dataset, NaN/inf -> 0.
-
-    The COG contains N/A values; scrub them before they reach standardisation or
-    the model (NaN would poison per-image mean/std and the forward pass)."""
-    arr = src.read(bands, window=window).astype("float32")
-    return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-def standardize(img):
-    """Per-image, per-channel standardisation of a ``(C, H, W)`` float array."""
-    mean = img.mean(axis=(1, 2), keepdims=True)
-    std = img.std(axis=(1, 2), keepdims=True) + 1e-6
-    return (img - mean) / std
+from sentinel2data.dataset.bands import DEFAULT_BANDS
+from sentinel2data.dataset.reading import read_window, standardize
 
 
 def _read_split_csv(dataset_dir, split):
@@ -111,7 +97,7 @@ class ZoneDataset(Dataset):
 
 
 def _zone_collate(batch):
-    """``batch_size=1`` -> hand the single ``(img, mask, zone)`` tuple straight through."""
+    """``batch_size=1`` -> hand the single ``(img, mask, zone)`` tuple through."""
     return batch[0]
 
 

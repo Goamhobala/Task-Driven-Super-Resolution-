@@ -1,6 +1,6 @@
 """Train the UNet road-segmentation baseline on S2-ROSA-V2 (native loaders).
 
-Native-CRS, no-warp loaders (``unet.patch_dataset``): train = random 256 crops;
+Native-CRS, no-warp loaders (``sentinel2data.dataset``): train = random 256 crops;
 val/test = whole-zone stitched IoU/F1 (in ``unet.model``). Checkpoints on the
 stitched ``val_iou``.
 """
@@ -11,8 +11,8 @@ import lightning.pytorch as pl
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 
+from sentinel2data.dataset import DEFAULT_BANDS, RoadDataModule
 from unet.model import UNetLightning
-from unet.patch_dataset import DEFAULT_BANDS, RoadDataModule
 
 # Dataset symlink created on Kaggle (kelvinwei/s2rosa-v2; see prep/kaggle_dependencies.py).
 KAGGLE_DATASET_DIR = "/kaggle/working/InstaRoadPrototype/dataset/s2rosa"
