@@ -1,0 +1,44 @@
+# sentinel2data CLI config -- `uv run src/sentinel2data/cli --config <example.yaml> <command>`
+# run `uv run src/sentinel2data/cli --help` for usage of each command
+
+# Top-level keys are COMMAND names (hyphenated); nested keys are option names
+# (underscored). Explicit CLI flags override these. 
+# Only the section for the command you actually run is read -- unused sections are ignored
+
+# Build a tiled S2-ROSA-V2 dataset
+generate:
+  variant: V2ROSA                  # or V1ROSA (in-place patch index; uses dataset_dir)
+  roads: roads/large_medium_scale_roads.parquet    # combined roads GeoParquet (from the `roads` command)
+  imagery_dir: GEE/imagery         # [V2ROSA] directory of source satellite COGs
+  output_dir: datasets/S2ROSA_V2   # [V2ROSA] output tiled-dataset dir
+  biome_parquet: nvm2024_t_biome.parquet   # [V2ROSA] optional NVM2024 biome GeoParquet
+  tile_size: 512
+  patch_size: 256                  # tile_size must be a multiple
+  buffer_m: null                   # road buffer (m)
+  # dataset_dir: datasets/S2ROSA     # [V1ROSA only] instead of imagery_dir/output_dir. Scans <dir>/imagery, writes masks + metadata in place
+
+# Extract major + medium roads into one GeoParquet (provide exactly one source).
+roads:
+  out: roads/large_medium_scale_roads.parquet
+  cdngi: roadsdata/cdngi                 # .gpkg file or directory of province *.gpkg
+  overture: null                   # OR an Overture roads GeoParquet (not both)
+
+# Frozen per-band train-set normalisation stats -> a unet LightningCLI config.
+norm-stats:
+  dataset_dir: datasets/S2ROSA_V2
+  out: src/unet/configs/norm_stats.yaml
+  exclude_zero: true               # drop 0 pixels when a COG sets no nodata
+  sar_clip: null                   # e.g. [-30, 5] to clip SAR bands 11-14 before stats
+
+# V1 Dataset Classification-overlay plot for one tile (provide exactly one of zone_name / tile_id).
+visualize:
+  dataset_dir: datasets/S2ROSA_V2
+  zone_name: BeaufortWest
+  tile_id: null
+  backdrop: satellite              # satellite | mask | none
+
+# V2 Visualisation. Side-by-side RGB | RGB-enhanced | road-mask PNGs for a ROSAV2 dataset.
+visualize-v2:
+  dataset_dir: datasets/S2ROSA_V2
+  out_dir: null                    # default <dataset_dir>/visualisation
+  limit: null                      # max images rendered per split

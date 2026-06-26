@@ -2,6 +2,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated, Optional, Tuple
 import typer
+import yaml
 
 from sentinel2data.generator import (
     RoadVectorExtractor,
@@ -28,6 +29,26 @@ app = typer.Typer(help="S2-ROSA Dataset Pipeline")
 
 DATASET_HELP = "Base path to the S2-ROSA dataset directory"
 DatasetDir = Annotated[Path, typer.Option(help=DATASET_HELP)]
+
+
+@app.callback()
+def _main(
+    ctx: typer.Context,
+    config: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--config",
+            help="YAML of per-command option defaults; top-level keys are command "
+            "names (`generate`, `roads`, `norm-stats`, `visualize`, `visualize-v2`). "
+            "Explicit CLI flags still override. See src/sentinel2data/configs/.",
+        ),
+    ] = None,
+):
+    """S2-ROSA Dataset Pipeline. ``--config FILE`` pre-fills each command's options."""
+    if config is not None:
+        # Click resolves each subcommand's defaults from ctx.default_map[<command>].
+        loaded = yaml.safe_load(config.read_text()) or {}
+        ctx.default_map = {**(ctx.default_map or {}), **loaded}
 
 
 @app.command()

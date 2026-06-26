@@ -29,6 +29,7 @@ sentinel2 = [
     "pandas>=3.0.2",
     "typer>=0.24.1",
     "pyogrio>=0.12.1",
+    "pyyaml",               # CLI --config loader (sentinel2data.cli)
 ]
 
 samroad = [

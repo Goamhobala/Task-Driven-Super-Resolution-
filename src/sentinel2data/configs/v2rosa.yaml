@@ -1,0 +1,23 @@
+# V2ROSA build recipe -- one file driving the whole pipeline. Run in sequence,
+# reusing this config for each step (explicit flags still override):
+#
+#   sentinel2data --config src/sentinel2data/configs/v2rosa.yaml roads
+#   sentinel2data --config src/sentinel2data/configs/v2rosa.yaml generate
+#   sentinel2data --config src/sentinel2data/configs/v2rosa.yaml norm-stats
+
+
+roads:
+  out: /Volumes/MacOSFiles/RoadVectorData/large_medium_scale_data/test.parquet
+  cdngi: /Volumes/MacOSFiles/RoadVectorData/CDNGI_Data     # .gpkg file or directory of province *.gpkg
+
+generate:
+  variant: V2ROSA
+  roads: /Volumes/MacOSFiles/RoadVectorData/large_medium_scale_data/CDNGI_large_medium_scale_roads.parquet
+  imagery_dir: /Volumes/MacOSFiles/S2ROSA/imagery         # directory of source satellite COGs
+  output_dir: /Volumes/MacOSFiles/S2ROSA_V2_test
+  tile_size: 512
+  patch_size: 256
+
+norm-stats:
+  dataset_dir: /Volumes/MacOSFiles/S2ROSA_V2_test
+  out: null # src/unet/configs/norm_stats.yaml
