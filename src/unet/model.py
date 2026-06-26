@@ -52,6 +52,9 @@ class UNetLightning(pl.LightningModule):
         self.save_hyperparameters()
         self.model = build_model(encoder_name, encoder_weights, in_channels, classes)
         self.dice_loss = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
+        # Train: per-patch metrics over the random crops (cheap, not stitched).
+        self.train_iou = BinaryJaccardIndex()
+        self.train_f1 = BinaryF1Score()
         # Stitched, once-per-pixel metrics (accumulate global TP/FP/FN; auto DDP-sync).
         self.val_iou = BinaryJaccardIndex()
         self.val_f1 = BinaryF1Score()
@@ -73,11 +76,19 @@ class UNetLightning(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         images, masks, _ = batch
-        loss = self._loss(self(images), masks)
+        logits = self(images)
+        loss = self._loss(logits, masks)
+        # Per-patch IoU/F1 (torchmetrics auto-accumulates the epoch + DDP-syncs).
+        preds = torch.sigmoid(logits) > self.hparams.threshold
+        target = (masks > 0.5).long()
+        self.train_iou.update(preds, target)
+        self.train_f1.update(preds, target)
         self.log(
             "train_loss", loss, prog_bar=True, on_step=False, on_epoch=True,
             batch_size=images.size(0), sync_dist=True,
         )
+        self.log("train_iou", self.train_iou, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("train_f1", self.train_f1, prog_bar=True, on_step=False, on_epoch=True)
         return loss
 
     # -- stitched val/test -------------------------------------------------
