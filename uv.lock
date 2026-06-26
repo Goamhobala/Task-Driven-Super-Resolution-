@@ -1715,6 +1715,7 @@ torchgeo = [
 unet = [
     { name = "albumentations", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "geopandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "jsonargparse", extra = ["signatures"], marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "kagglehub", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "lightning", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1762,6 +1763,7 @@ requires-dist = [
     { name = "imageio", marker = "extra == 'samroad'" },
     { name = "instageo", extras = ["gpu", "data", "model"], marker = "extra == 'instageo'", git = "https://github.com/kelviy/InstaGeo-E2E-Geospatial-ML.git" },
     { name = "jenkspy", marker = "extra == 'sentinel2'", specifier = ">=0.4.1" },
+    { name = "jsonargparse", extras = ["signatures"], marker = "extra == 'unet'", specifier = ">=4.27" },
     { name = "kagglehub", marker = "extra == 'unet'" },
     { name = "lightning", marker = "extra == 'samroad'" },
     { name = "lightning", marker = "extra == 'torchgeo'", specifier = ">=2.0" },

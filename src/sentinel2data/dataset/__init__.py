@@ -21,7 +21,7 @@ from sentinel2data.dataset.datasets import (
     RoadTileDataset,
     ZoneDataset,
 )
-from sentinel2data.dataset.reading import read_window, standardize
+from sentinel2data.dataset.reading import apply_norm, read_window, standardize
 from sentinel2data.dataset.sliding import blend_weight, plan_windows, predict_zone
 
 __all__ = [
@@ -36,6 +36,7 @@ __all__ = [
     # reading
     "read_window",
     "standardize",
+    "apply_norm",
     # datasets
     "RoadTileDataset",
     "ZoneDataset",

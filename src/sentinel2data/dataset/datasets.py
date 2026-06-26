@@ -26,7 +26,7 @@ from rasterio.windows import Window
 from torch.utils.data import DataLoader, Dataset
 
 from sentinel2data.dataset.bands import DEFAULT_BANDS
-from sentinel2data.dataset.reading import read_window, standardize
+from sentinel2data.dataset.reading import apply_norm, read_window
 
 
 def _read_split_csv(dataset_dir, split):
@@ -40,12 +40,14 @@ class RoadTileDataset(Dataset):
     """Random native-pixel crops from the train tiles. ``__len__`` = patches/epoch."""
 
     def __init__(self, dataset_dir, bands=DEFAULT_BANDS, image_size=256,
-                 length=None, normalize=True):
+                 length=None, normalize=True, norm_mean=None, norm_std=None):
         self.dataset_dir = Path(dataset_dir)
         self.df = _read_split_csv(dataset_dir, "train").reset_index(drop=True)
         self.bands = list(bands)
         self.image_size = image_size
         self.normalize = normalize
+        self.norm_mean = norm_mean  # full-stack frozen train stats (or None -> per-image)
+        self.norm_std = norm_std
         self.length = length if length is not None else 10 * len(self.df)
 
     def __len__(self):
@@ -70,7 +72,7 @@ class RoadTileDataset(Dataset):
             img, mask = pad_i, pad_m
 
         if self.normalize:
-            img = standardize(img)
+            img = apply_norm(img, self.bands, self.norm_mean, self.norm_std)
         image = torch.from_numpy(np.ascontiguousarray(img))
         mask = torch.from_numpy(np.ascontiguousarray(mask)).unsqueeze(0)
         return image, mask, f"{row['zone_name']}_{top}_{left}.png"
@@ -79,9 +81,16 @@ class RoadTileDataset(Dataset):
 class ZoneDataset(Dataset):
     """One item per zone -> ``(image_path, mask_path, zone_name)`` for stitched eval."""
 
-    def __init__(self, dataset_dir, split, bands=DEFAULT_BANDS):
+    def __init__(self, dataset_dir, split, bands=DEFAULT_BANDS,
+                 zones=None, max_zones=None):
         self.dataset_dir = Path(dataset_dir)
-        self.df = _read_split_csv(dataset_dir, split).reset_index(drop=True)
+        df = _read_split_csv(dataset_dir, split)
+        if zones:  # keep zones whose name starts with any given prefix
+            df = df[df["zone_name"].astype(str).apply(
+                lambda z: any(z.startswith(p) for p in zones))]
+        if max_zones:
+            df = df.head(max_zones)
+        self.df = df.reset_index(drop=True)
         self.bands = list(bands)
 
     def __len__(self):
@@ -104,8 +113,12 @@ def _zone_collate(batch):
 class RoadDataModule(pl.LightningDataModule):
     """Train = random native crops; val/test = whole zones (stitched in the model)."""
 
-    def __init__(self, dataset_dir, bands=DEFAULT_BANDS, batch_size=16, num_workers=2,
-                 image_size=256, length=None, normalize=True):
+    def __init__(self, dataset_dir: str, bands: tuple[int, ...] = DEFAULT_BANDS,
+                 batch_size: int = 16, num_workers: int = 2, image_size: int = 256,
+                 length: int | None = None, normalize: bool = True,
+                 norm_mean: list[float] | None = None, norm_std: list[float] | None = None,
+                 predict_split: str = "test", zones: list[str] | None = None,
+                 max_zones: int | None = None):
         super().__init__()
         self.dataset_dir = Path(dataset_dir)
         self.bands = tuple(bands)
@@ -114,10 +127,17 @@ class RoadDataModule(pl.LightningDataModule):
         self.image_size = image_size
         self.length = length
         self.normalize = normalize
+        # Frozen per-band train stats (full 23-band stack); None -> per-image standardise.
+        self.norm_mean = norm_mean
+        self.norm_std = norm_std
+        self.predict_split = predict_split
+        self.zones = zones
+        self.max_zones = max_zones
 
     def train_dataloader(self):
         ds = RoadTileDataset(
-            self.dataset_dir, self.bands, self.image_size, self.length, self.normalize
+            self.dataset_dir, self.bands, self.image_size, self.length, self.normalize,
+            self.norm_mean, self.norm_std,
         )
         return DataLoader(
             ds,
@@ -129,8 +149,8 @@ class RoadDataModule(pl.LightningDataModule):
             drop_last=True,
         )
 
-    def _zone_loader(self, split):
-        ds = ZoneDataset(self.dataset_dir, split, self.bands)
+    def _zone_loader(self, split, zones=None, max_zones=None):
+        ds = ZoneDataset(self.dataset_dir, split, self.bands, zones, max_zones)
         return DataLoader(ds, batch_size=1, num_workers=0, collate_fn=_zone_collate)
 
     def val_dataloader(self):
@@ -138,3 +158,6 @@ class RoadDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         return self._zone_loader("test")
+
+    def predict_dataloader(self):
+        return self._zone_loader(self.predict_split, self.zones, self.max_zones)

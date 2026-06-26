@@ -1,6 +1,6 @@
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Tuple
 import typer
 
 from sentinel2data.generator import (
@@ -144,6 +144,39 @@ def visualize_v2(
     """Render side-by-side RGB | RGB-enhanced | road-mask PNGs for a ROSAV2 dataset
     into <dataset_dir>/visualisation/{train,val,test}/."""
     visualize_rosav2(dataset_dir=dataset_dir, out_dir=out_dir, limit=limit)
+
+
+@app.command()
+def norm_stats(
+    dataset_dir: DatasetDir,
+    out: Annotated[
+        Optional[Path],
+        typer.Option(help="Output config YAML (default <dataset_dir>/norm_stats.yaml)"),
+    ] = None,
+    exclude_zero: Annotated[
+        bool,
+        typer.Option(help="When a COG sets no nodata, drop 0-valued pixels from the stats"),
+    ] = True,
+    sar_clip: Annotated[
+        Optional[Tuple[float, float]],
+        typer.Option(help="Clip SAR bands (VV/VH asc+desc) to LO HI before stats"),
+    ] = None,
+):
+    """Per-band mean/std over the TRAIN split (frozen, no leakage) -> a LightningCLI
+    config (data.norm_mean / data.norm_std), merged into the unet config so train and
+    val/test/predict z-score with the same frozen stats."""
+    # Lazy import: pulls torch/lightning via the dataset stack, unwanted by other commands.
+    from sentinel2data.dataset.compute_norm_stats import (
+        compute,
+        print_table,
+        write_stats_yaml,
+    )
+
+    out = out or dataset_dir / "norm_stats.yaml"
+    names, mean, std = compute(dataset_dir, exclude_zero=exclude_zero, sar_clip=sar_clip)
+    saved = write_stats_yaml(out, mean, std)
+    typer.echo(f"\nSaved {saved}")
+    print_table(names, mean, std)
 
 
 if __name__ == "__main__":

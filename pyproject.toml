@@ -66,6 +66,7 @@ unet = [
     "pyarrow",
     "kagglehub",
     "wandb",
+    "jsonargparse[signatures]>=4.27",   # LightningCLI config/CLI (unet.cli)
 ]
 
 torchgeo = [
@@ -103,6 +104,9 @@ utilities = [
     "geopandas>=1.1.2",
     "rasterio>=1.5.0",
 ]
+
+[project.scripts]
+unet = "unet.cli:cli_main"   # `unet fit|test|predict --config src/unet/configs/unet.yaml`
 
 
 [tool.uv.sources]

@@ -1,0 +1,10 @@
+# Logger overlay -> log to Weights & Biases. `trainer.logger` is a scalar, so this
+# deep-merges cleanly over a base config (no list-append surprises):
+#
+#   python -m unet.cli fit --config src/unet/configs/unet.yaml --config src/unet/configs/wandb.yaml
+
+trainer:
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: unet_s2rosa_baseline

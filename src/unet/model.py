@@ -6,6 +6,7 @@ cosine-blended sliding window (:func:`sentinel2data.dataset.predict_zone`) and s
 **once per ground pixel** via torchmetrics (global TP/FP/FN, DDP-synced) -- never
 a per-overlapping-tile IoU/F1 average.
 """
+from __future__ import annotations
 
 import lightning.pytorch as pl
 import rasterio
@@ -33,17 +34,19 @@ class UNetLightning(pl.LightningModule):
 
     def __init__(
         self,
-        encoder_name="resnet34",
-        encoder_weights="imagenet",
-        in_channels=3,
-        classes=1,
-        lr=1e-3,
-        pos_weight=5.0,
-        bands=(21, 22, 23),
-        image_size=256,
-        val_overlap=128,
-        threshold=0.5,
-        normalize=True,
+        encoder_name: str = "resnet34",
+        encoder_weights: str | None = "imagenet",
+        in_channels: int = 3,
+        classes: int = 1,
+        lr: float = 1e-3,
+        pos_weight: float = 5.0,
+        bands: tuple[int, ...] = (21, 22, 23),
+        image_size: int = 256,
+        val_overlap: int = 128,
+        threshold: float = 0.5,
+        normalize: bool = True,
+        norm_mean: list[float] | None = None,
+        norm_std: list[float] | None = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -84,6 +87,7 @@ class UNetLightning(pl.LightningModule):
             self, image_path, list(self.hparams.bands),
             size=self.hparams.image_size, overlap=self.hparams.val_overlap,
             normalize=self.hparams.normalize,
+            mean=self.hparams.norm_mean, std=self.hparams.norm_std,
         )
         pred = torch.from_numpy((prob > self.hparams.threshold)).to(self.device)
         with rasterio.open(mask_path) as m:
@@ -100,6 +104,22 @@ class UNetLightning(pl.LightningModule):
         self._stitched_eval(batch, self.test_iou, self.test_f1)
         self.log("test_iou", self.test_iou, on_epoch=True)
         self.log("test_f1", self.test_f1, on_epoch=True)
+
+    # -- inference: one stitched probability raster per zone ---------------
+    def predict_step(self, batch, batch_idx):
+        # `unet.writer.ZonePredictionWriter` consumes this to write COG/PNG + metrics.
+        # Pair with `--return_predictions false` so rasters aren't also kept in RAM.
+        image_path, mask_path, zone = batch
+        prob, profile = predict_zone(
+            self, image_path, list(self.hparams.bands),
+            size=self.hparams.image_size, overlap=self.hparams.val_overlap,
+            normalize=self.hparams.normalize,
+            mean=self.hparams.norm_mean, std=self.hparams.norm_std,
+        )
+        return {
+            "zone": zone, "image_path": image_path, "mask_path": mask_path,
+            "prob": prob, "profile": profile,
+        }
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)

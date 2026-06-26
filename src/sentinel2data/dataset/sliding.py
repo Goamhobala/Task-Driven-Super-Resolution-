@@ -14,7 +14,7 @@ import rasterio
 import torch
 from rasterio.windows import Window
 
-from sentinel2data.dataset.reading import read_window, standardize
+from sentinel2data.dataset.reading import apply_norm, read_window
 
 
 def plan_windows(height, width, size=256, overlap=128):
@@ -45,12 +45,16 @@ def blend_weight(size):
 
 
 @torch.no_grad()
-def predict_zone(model, image_path, bands, size=256, overlap=128, normalize=True):
+def predict_zone(model, image_path, bands, size=256, overlap=128, normalize=True,
+                 mean=None, std=None):
     """Sliding-window probability raster for one zone in its NATIVE CRS.
 
     Returns ``(prob (H, W) float32, profile)``. Zero-pads short edge windows
     (their padded region is excluded from the blend), scrubs NaN before the
     forward, cosine-blends overlaps. ``overlap=0`` -> non-overlapping tiles.
+
+    ``mean``/``std`` are full-stack frozen train stats (sliced to ``bands`` by
+    :func:`..reading.apply_norm`); ``None`` falls back to per-image standardisation.
     """
     model.eval()
     device = next(model.parameters()).device
@@ -67,7 +71,7 @@ def predict_zone(model, image_path, bands, size=256, overlap=128, normalize=True
             img = read_window(src, list(bands), win)  # (C, h, w), NaN-scrubbed
             h, w = img.shape[1], img.shape[2]
             if normalize:
-                img = standardize(img)               # stats on the valid region only
+                img = apply_norm(img, bands, mean, std)  # frozen train stats, else per-image
             if (h, w) != (size, size):               # zero-pad edge window
                 padded = np.zeros((img.shape[0], size, size), dtype="float32")
                 padded[:, :h, :w] = img
