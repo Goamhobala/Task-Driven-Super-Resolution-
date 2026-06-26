@@ -45,8 +45,8 @@ model:
   threshold: 0.5
 
 data:
-  dataset_dir: /kaggle/working/InstaRoadPrototype/dataset/s2rosa/S2ROSA
-  bands: [21, 22, 23]         # enhanced RGB; raw RGB+NIR = [1, 2, 3, 4]
+  dataset_dir: /kaggle/input/datasets/kelvinwei/s2rosa-v2/S2ROSA_V2
+  bands: [21, 22, 23, 4]         # enhanced RGB; raw RGB+NIR = [1, 2, 3, 4]
   batch_size: 16
   num_workers: 2
   image_size: 256
