@@ -7,7 +7,8 @@ from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 import wandb
 
 from unet.dataset import SentinelRoadsDataset, sentinel2_data_partition
-from dlinknet.model import build_model, LightningWrapper
+from dlinknet.model import build_model
+from src.utils.lightning_utils import LightningWrapper
 
 
 def main():
@@ -51,7 +52,7 @@ def main():
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=CHECKPOINT_DIR,
-        filename="dlinknet34_resnet34_roads-{epoch:02d}-{val_loss:.4f}",
+        filename="dlinknet34_resnet34",
         monitor="val_loss",
         mode="min",
         save_top_k=1,

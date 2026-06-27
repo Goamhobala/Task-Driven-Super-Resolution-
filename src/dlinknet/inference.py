@@ -16,7 +16,7 @@ def main():
 
     # NOTE: this now points at the Lightning checkpoint from the ModelCheckpoint
     # callback in training (a .ckpt, not the old .pth)
-    CHECKPOINT_PATH = '/kaggle/working/checkpoints/dlinknet34_resnet34_roads-epoch=09-val_loss=0.1234.ckpt'
+    CHECKPOINT_PATH = '/kaggle/working/checkpoints/dlinknet34_resnet34.ckpt'
     PREDICTIONS_PATH = '/kaggle/working/predictions/dlinknet_test_set'
 
     image_net_mean = (0.485, 0.456, 0.406)
