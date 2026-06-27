@@ -1,3 +1,4 @@
+import os 
 import torch
 import lightning as L  # pip install lightning  (formerly pytorch-lightning)
 import segmentation_models_pytorch as smp
@@ -5,6 +6,7 @@ import torchmetrics  # pip install torchmetrics (ships with lightning, but pin i
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+
 
 class PredictionSaverCallback(L.Callback):
     """Writes comparison plots (or raw masks) per batch instead of buffering them."""
@@ -39,8 +41,9 @@ class PredictionSaverCallback(L.Callback):
                 pred_mask_uint8 = (pred_mask * 255).astype(np.uint8)
                 Image.fromarray(pred_mask_uint8).save(os.path.join(self.output_dir, filenames[i]))
 
+
 class LightningWrapper(L.LightningModule):
-    def __init__(self, model, learning_rate=1e-3, threshold=0.5):
+    def __init__(self, model: torch.nn.Module, learning_rate=1e-3, threshold=0.5):
         super().__init__()
         self.model = model
         self.learning_rate = learning_rate
