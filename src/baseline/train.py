@@ -112,10 +112,17 @@ def main():
                           args.patch_size, args.patch_size, mask_suffix)
     print(f"patches  train={len(train_ds)}  val={len(val_ds)}")
 
+    # 'spawn' workers: neither CUDA (model is on GPU below) nor GDAL/rasterio
+    # (used in __getitem__) survives a fork, so the default fork start method
+    # segfaults the workers. spawn starts clean processes instead.
+    loader_kwargs = dict(num_workers=args.num_workers, pin_memory=True)
+    if args.num_workers > 0:
+        loader_kwargs["multiprocessing_context"] = "spawn"
+        loader_kwargs["persistent_workers"] = True
+
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                              num_workers=args.num_workers, pin_memory=True, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
-                            num_workers=args.num_workers, pin_memory=True)
+                              drop_last=True, **loader_kwargs)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, **loader_kwargs)
 
     pos_weight = compute_pos_weight(masks, splits["train"], mask_suffix).to(device)
     print(f"pos_weight={pos_weight.item():.2f}")

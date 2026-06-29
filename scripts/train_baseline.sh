@@ -20,7 +20,10 @@
 set -euo pipefail
 
 # ============================ CONFIG — EDIT HERE ============================
-REPO_DIR="$HOME/InstaRoadPrototype"                 # repo checkout on the cluster
+# Repo root. Set explicitly: under `sbatch`, SLURM copies this script to a spool
+# dir, so deriving the path from $BASH_SOURCE points at the copy, not the repo.
+# Override at submit time with:  REPO_DIR=/path sbatch scripts/train_baseline.sh
+REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 DATA_DIR="/scratch/$USER/InstaRoad"                 # holds Imagery/, mask_10m/, Data.npz
 VENV_DIR="/scratch/$USER/InstaRoad/.venv"           # prebuilt venv on scratch
 # One-time, into that venv:  uv pip install -e "$REPO_DIR[baseline]"

@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
@@ -112,7 +111,11 @@ def main():
     # stride == patch -> non-overlapping chips, each scored exactly once.
     ds = BenchDataset(imagery, masks, sites, stats, config=config,
                       patch_size=patch, stride=patch, mask_suffix=mask_suffix)
-    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    # spawn workers (CUDA + GDAL are not fork-safe); see train.py for why.
+    loader_kwargs = dict(num_workers=args.num_workers)
+    if args.num_workers > 0:
+        loader_kwargs["multiprocessing_context"] = "spawn"
+    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, **loader_kwargs)
     print(f"scoring {len(ds)} chips...")
 
     df = run(model, loader, device, args.threshold)
