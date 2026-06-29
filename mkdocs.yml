@@ -22,6 +22,7 @@ plugins:
 nav:
   - Introduction: index.md
   - Setup Guide: setup.md
+  - Benchmarking: benchmarking.md
   - SAM Road: samroad.md
   - Sentinel2: sentinel2.md
   - Change Log: changelog.md

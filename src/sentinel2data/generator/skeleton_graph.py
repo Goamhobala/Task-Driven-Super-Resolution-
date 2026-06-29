@@ -1,81 +1,21 @@
+"""Skeleton-based road-graph extraction (mask -> SAM-Road graph dict).
+
+A standalone converter: it derives a graph from a *raster mask* via
+skeletonization (not from road vectors, so it is independent of the road-vector
+pipeline). Operates on COG/GeoTIFF or PNG/JPG image+mask pairs. IO/stretch
+helpers now live in :mod:`sentinel2data.generator.helper`
+"""
 import glob
 import os
 import pickle
 from dataclasses import dataclass
-
 import cv2
 import numpy as np
 import sknw
 from skimage.morphology import skeletonize
+from sentinel2data.generator.io import load_binary_mask, load_image_rgb
 
-RASTER_EXTS = {".tif", ".tiff"}
 IMAGE_EXTS = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
-
-
-# --------------------------------------------------------------------------- #
-# IO helpers (format-agnostic: COG / GeoTIFF via rasterio, PNG/JPG via cv2)
-# --------------------------------------------------------------------------- #
-def _is_raster(path):
-    return os.path.splitext(path)[1].lower() in RASTER_EXTS
-
-
-def _stretch_to_uint8(band, percentile_range=(2, 98)):
-    """Percentile contrast stretch of a single float band to 0-255."""
-    valid = band[band > 0]
-    if valid.size == 0:
-        return np.zeros_like(band, dtype=np.uint8)
-
-    lo, hi = np.percentile(valid, percentile_range)
-    if hi <= lo:
-        return np.zeros_like(band, dtype=np.uint8)
-
-    stretched = np.clip(band, lo, hi)
-    stretched = (stretched - lo) / (hi - lo)
-    return (stretched * 255).astype(np.uint8)
-
-
-def load_image_rgb(path, bands=(1, 2, 3), percentile_range=(2, 98)):
-    """Load an RGB image as a BGR uint8 array (OpenCV convention).
-
-    Rasters (COG/GeoTIFF) are read via rasterio; the requested bands are
-    percentile-stretched to 8-bit if not already uint8. PNG/JPG are read
-    directly via OpenCV.
-    """
-    if not _is_raster(path):
-        return cv2.imread(path)  # already BGR uint8
-
-    import rasterio
-
-    with rasterio.open(path) as src:
-        arr = src.read(bands)  # (3, H, W), band order R, G, B
-
-    if arr.dtype == np.uint8:
-        rgb = np.transpose(arr, (1, 2, 0))
-    else:
-        arr = arr.astype(np.float32)
-        stretched = np.stack(
-            [_stretch_to_uint8(arr[i], percentile_range) for i in range(3)]
-        )
-        rgb = np.transpose(stretched, (1, 2, 0))
-
-    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-
-
-def load_binary_mask(path, band=1):
-    """Load a road mask as a 0/255 uint8 array.
-
-    Any non-zero pixel is treated as road, so this is robust to masks stored
-    as 0/1 (common in COG/GeoTIFF) or 0/255 (common in PNG).
-    """
-    if _is_raster(path):
-        import rasterio
-
-        with rasterio.open(path) as src:
-            arr = src.read(band)
-    else:
-        arr = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-
-    return np.where(arr > 0, 255, 0).astype(np.uint8)
 
 
 # --------------------------------------------------------------------------- #
