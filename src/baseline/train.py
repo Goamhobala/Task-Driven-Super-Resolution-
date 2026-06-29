@@ -1,7 +1,7 @@
 """Train the UNet++ baseline on the combined Sentinel-2 COGs.
 
 Reads the HPC layout directly:
-    <data>/Imagery/{site}.tif      combined 14-band COGs
+    <data>/imagery/{site}.tif      combined 14-band COGs
     <data>/mask_10m/{site}*.tif    binary road masks
     <data>/Data.npz                frozen per-band mean/std
 
@@ -37,8 +37,8 @@ from baseline.model import RoadSegLoss, build_model
 
 def parse_args():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data", required=True, help="scratch root containing Imagery/, mask_10m/, Data.npz")
-    ap.add_argument("--imagery", default=None, help="override Imagery dir")
+    ap.add_argument("--data", required=True, help="scratch root containing imagery/, mask_10m/, Data.npz")
+    ap.add_argument("--imagery", default=None, help="override imagery dir")
     ap.add_argument("--masks", default=None, help="override mask dir")
     ap.add_argument("--stats", default=None, help="override Data.npz path")
     ap.add_argument("--config", default="M3", choices=list(CHANNEL_GROUPS), help="channel group")
@@ -91,7 +91,7 @@ def main():
     torch.manual_seed(args.seed)
 
     data = Path(args.data)
-    imagery = Path(args.imagery) if args.imagery else data / "Imagery"
+    imagery = Path(args.imagery) if args.imagery else data / "imagery"
     masks = Path(args.masks) if args.masks else data / "mask_10m"
     stats = Path(args.stats) if args.stats else data / "Data.npz"
     out = Path(args.out)

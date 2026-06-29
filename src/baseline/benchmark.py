@@ -27,7 +27,7 @@ from benchmarking.confusion_matrix import confusion_counts, pixel_metrics_from_c
 def parse_args():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--ckpt", required=True, help="best.pth written by train.py")
-    ap.add_argument("--data", required=True, help="scratch root with Imagery/, mask_10m/, Data.npz")
+    ap.add_argument("--data", required=True, help="scratch root with imagery/, mask_10m/, Data.npz")
     ap.add_argument("--imagery", default=None)
     ap.add_argument("--masks", default=None)
     ap.add_argument("--stats", default=None)
@@ -96,7 +96,7 @@ def main():
     model.eval()
 
     data = Path(args.data)
-    imagery = Path(args.imagery) if args.imagery else data / "Imagery"
+    imagery = Path(args.imagery) if args.imagery else data / "imagery"
     masks = Path(args.masks) if args.masks else data / "mask_10m"
     stats = Path(args.stats) if args.stats else data / "Data.npz"
     out = Path(args.out)
