@@ -88,6 +88,8 @@ benchmarking = [
     "scipy>=1.11",
     "pyarrow>=14.0",
     "pyyaml",
+    "typer>=0.24.1",        # benchmarking.cli
+    # `benchmark eval` additionally needs the unet model stack (torch/lightning/smp/rasterio)
     ]
 
 
@@ -119,6 +121,7 @@ utilities = [
 
 [project.scripts]
 unet = "unet.cli:cli_main"   # `unet fit|test|predict --config src/unet/configs/unet.yaml`
+benchmark = "benchmarking.cli:cli_main"  # `benchmark eval|compare|variance|report --config src/benchmarking/configs/benchmark.yaml`
 
 
 [tool.uv.sources]
@@ -164,4 +167,4 @@ dev = [
 
 # This section tells hatchling to look inside 'src' for packages
 [tool.hatch.build.targets.wheel]
-packages = ["src/samroad", "src/sentinel2data", "src/unet", "src/terramind"]
+packages = ["src/samroad", "src/sentinel2data", "src/unet", "src/terramind", "src/benchmarking"]

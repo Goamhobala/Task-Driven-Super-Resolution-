@@ -1,0 +1,35 @@
+# Benchmarking recipe -- one file driving eval + statistical analysis. Reuse this
+# config for each command (explicit flags still override):
+#
+#   python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml \
+#       eval --checkpoint checkpoints/unet_seed0/last.ckpt --model-name unet --seed 0
+#   python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml variance --model-name unet
+#   python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml compare --model-a unet_a --model-b unet_b
+#   python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml report
+
+# Score a checkpoint over the split's non-overlapping chips -> store.
+# checkpoint / model_name / seed come from the CLI (per-seed, from run_seeds.bash).
+eval:
+  dataset_dir: /Volumes/MacOSFiles/ROSA_CDNGI_dense
+  store_dir: benchmarks
+  split: test
+  chip_size: 256
+  model: unet
+
+# Paired bootstrap CI + Wilcoxon between two model_names (pass --model-a/--model-b).
+compare:
+  store_dir: benchmarks
+  metric: f1
+  n_boot: 2000
+
+# Cross-seed mean +/- std for one model (pass --model-name).
+variance:
+  store_dir: benchmarks
+  metric: iou
+  aggregation: micro
+
+# Per-model mean +/- std + all pairwise comparisons.
+report:
+  store_dir: benchmarks
+  metric: iou
+  aggregation: micro
