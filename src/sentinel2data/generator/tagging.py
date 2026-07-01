@@ -96,21 +96,27 @@ class BiomeTagger:
 # Urbanisation classification (Jenks natural breaks, computed per tile)
 # --------------------------------------------------------------------------- #
 class UrbanisationClassifier:
-    """Classify each patch Rural/Peri-Urban/Urban by road density.
+    """Classify each tile Rural/Peri-Urban/Urban by road density.
 
-    Breaks are computed *within each tile* (``tile_id`` group), reproducing the
-    old per-tile behaviour; patches with zero road density stay ``"Empty"``.
+    Breaks are computed *within each split* (``split_set`` group), so the class
+    ratio is reported per train/val/test set; tiles with zero road density stay
+    ``"Empty"``. Falls back to a single whole-catalogue group when the grouping
+    column is absent.
     """
 
     column = "urbanisation_classification"
 
-    def __init__(self, density_col="road_density", group_col="tile_id"):
+    def __init__(self, density_col="road_density", group_col="split_set"):
         self.density_col = density_col
         self.group_col = group_col
 
     def tag(self, gdf) -> pd.Series:
         out = pd.Series(EMPTY_LABEL, index=gdf.index, dtype=object)
-        for _, group in gdf.groupby(self.group_col):
+        if self.group_col in gdf.columns:
+            groups = (g for _, g in gdf.groupby(self.group_col))
+        else:
+            groups = [gdf]
+        for group in groups:
             labels = self._classify(group[self.density_col].to_numpy())
             out.loc[group.index] = labels
         return out.rename(self.column)

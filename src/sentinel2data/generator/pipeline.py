@@ -6,8 +6,8 @@ A :class:`DatasetPipeline` is assembled from independent strategies:
                  -> Tagger(s) -> SplitStrategy -> write parquet + split CSVs
 
 Presets:
-  - :func:`make_v2rosa_pipeline` -- V2ROSA split-first (train raw 512px tiles, val/test
-    whole-zone COGs, +enhanced-RGB bands): ``generate --variant V2ROSA``.
+  - :func:`make_v2rosa_pipeline` -- V2ROSA split-first (all splits -> raw 512px tiles,
+    +enhanced-RGB bands, empty-tile subsampling): ``generate --variant V2ROSA``.
   - :func:`make_v1rosa_pipeline` -- V1ROSA (patch index): ``generate --variant V1ROSA``.
 
 ``DatasetPipeline`` (scan -> process -> tag -> split -> write) backs V1ROSA;
@@ -107,9 +107,9 @@ class V2RosaPipeline:
     """Split-first runner for S2-ROSA-V2.
 
     Each zone's split is decided BEFORE processing (so its output dir is known),
-    then the split-aware :class:`V2ROSAProcessor` emits per-split artifacts. Rows
-    from all zones are concatenated, ``image_id``-stamped, biome-tagged (optional)
-    and written to ``metadata.parquet`` + ``splits/<split>.csv``.
+    then :class:`V2ROSAProcessor` tiles it into that split. Rows from all zones are
+    concatenated, ``image_id``-stamped, biome-tagged (optional), urbanisation-
+    classified per split, and written to ``metadata.parquet`` + ``splits/<split>.csv``.
     """
 
     def __init__(self, *, source, processor, paths, val_frac=0.1, test_frac=0.1,
@@ -148,6 +148,10 @@ class V2RosaPipeline:
         if self.biome_tagger is not None:
             gdf[self.biome_tagger.column] = self.biome_tagger.tag(gdf)
 
+        # Urbanisation class per split (Jenks breaks over each split's densities).
+        urban = UrbanisationClassifier()
+        gdf[urban.column] = urban.tag(gdf)
+
         schema = self.processor.schema
         gdf = gdf[schema.columns]
         write_geoparquet(gdf, self.paths.metadata_path)
@@ -169,15 +173,19 @@ def make_v2rosa_pipeline(
     val_frac=0.1,
     test_frac=0.1,
     split_seed=42,
+    empty_keep_ratio=1.0,
+    tile_seed=42,
     enhance_cfg=None,
 ):
-    """S2-ROSA-V2 (split-first): train raw 512px tiles, val/test whole-zone COGs,
-    +3 enhanced-RGB bands; optional BiomeTagger."""
+    """S2-ROSA-V2 (split-first): every split cut into raw 512px tiles (+3 enhanced-RGB
+    bands), empty tiles subsampled by ``empty_keep_ratio``; optional BiomeTagger."""
     processor = V2ROSAProcessor(
         roads_parquet_path,
         tile_spec=TileSpec(tile_size=tile_size, patch_size=patch_size),
         mask_labeler=RasterMaskLabeler(default_buffer_m=buffer_m),
         enhance_cfg=enhance_cfg,
+        empty_keep_ratio=empty_keep_ratio,
+        tile_seed=tile_seed,
     )
     biome_tagger = (
         BiomeTagger(biome_parquet_path) if biome_parquet_path is not None else None

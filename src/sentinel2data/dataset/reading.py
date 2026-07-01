@@ -1,6 +1,6 @@
 """Low-level native-CRS window reads + per-image standardisation (NaN-safe).
 
-Shared by the datasets and the sliding-window stitch. Pure numpy/rasterio -- no
+Shared by the train and eval crop datasets. Pure numpy/rasterio -- no
 torch/lightning, so band-only consumers stay light.
 """
 import numpy as np

@@ -30,6 +30,11 @@ from sentinel2data.generator.roads import (
     RoadSource,
     RoadVectorExtractor,
 )
+from sentinel2data.generator.summary import (
+    summarise_dataset,
+    summarise_metadata,
+    write_summary_yaml,
+)
 from sentinel2data.generator.splitting import (
     RandomTileSplit,
     SplitStrategy,
@@ -70,6 +75,10 @@ __all__ = [
     "CdngiSource",
     "OvertureSource",
     "RoadVectorExtractor",
+    # summary
+    "summarise_dataset",
+    "summarise_metadata",
+    "write_summary_yaml",
     # labels
     "LabelGenerator",
     "RasterMaskLabeler",

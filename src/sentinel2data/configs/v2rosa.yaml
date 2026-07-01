@@ -20,6 +20,7 @@ generate:
   output_dir: /Volumes/MacOSFiles/S2ROSA_V2_test
   tile_size: 512
   patch_size: 256
+  empty_keep_ratio: 1.0                                   # fraction of empty (no-road) tiles kept, all splits (1.0=keep all, 0.0=road tiles only)
 
 norm-stats:
   dataset_dir: /Volumes/MacOSFiles/S2ROSA_V2_test
@@ -30,3 +31,8 @@ visualize-v2:
   dataset_dir: /Volumes/MacOSFiles/S2ROSA_V2_test
   out_dir: null                    # default <dataset_dir>/visualisation
   limit: null                      # max images rendered per split
+
+# Per-split biome + urbanisation ratios and road-density stats -> dataset_summary.yaml.
+summary:
+  dataset_dir: /Volumes/MacOSFiles/S2ROSA_V2_test
+  out: null                        # default <dataset_dir>/dataset_summary.yaml

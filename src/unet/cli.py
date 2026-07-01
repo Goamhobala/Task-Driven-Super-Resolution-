@@ -1,18 +1,14 @@
-"""LightningCLI entry point -- one YAML drives train + eval + inference.
+"""LightningCLI entry point -- one YAML drives train + eval.
 
 The UNet baseline is now config-driven via Lightning subcommands (no more
 ``train.py`` / ``inference.py``):
 
-    # train (checkpoints on the stitched val_iou)
-    python -m unet.cli fit     --config src/unet/configs/unet.yaml
+    # train (checkpoints on val_iou)
+    python -m unet.cli fit  --config src/unet/configs/unet.yaml
 
-    # whole-zone stitched IoU/F1 on the test split (model.test_step)
-    python -m unet.cli test    --config src/unet/configs/unet.yaml \
+    # per-crop IoU/F1 over the test tiles (model.test_step)
+    python -m unet.cli test --config src/unet/configs/unet.yaml \
         --ckpt_path checkpoints/unet_s2rosa_best.ckpt
-
-    # per-zone COG + comparison PNG + global metrics (unet.writer.ZonePredictionWriter)
-    python -m unet.cli predict --config src/unet/configs/unet.yaml \
-        --ckpt_path checkpoints/unet_s2rosa_best.ckpt --return_predictions false
 
 Override any value on the CLI, e.g. ``--data.batch_size 64 --trainer.max_epochs 200``.
 

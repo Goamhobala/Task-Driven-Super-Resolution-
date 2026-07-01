@@ -73,11 +73,16 @@ def generate(
         typer.Option(help="[V2ROSA] NVM2024 biome GeoParquet (scripts/biome.py convert); tiles tagged 'Unknown' if omitted"),
     ] = None,
     tile_size: Annotated[int, typer.Option(help="[V2ROSA] tile edge in pixels (kept tiles are exactly this)")] = 512,
-    patch_size: Annotated[int, typer.Option(help="[V2ROSA] sampler patch edge; tile_size must be a multiple")] = 256,
+    patch_size: Annotated[int, typer.Option(help="[V2ROSA] COG block size + dataloader crop edge")] = 256,
     buffer_m: Annotated[
         Optional[int],
         typer.Option(help="Fallback road buffer (metres); default 10 for V1ROSA, 5 for V2ROSA"),
     ] = None,
+    empty_keep_ratio: Annotated[
+        float,
+        typer.Option(help="[V2ROSA] fraction of empty (no-road) tiles kept, same for all splits (1.0=keep all, 0.0=only road tiles)"),
+    ] = 1.0,
+    tile_seed: Annotated[int, typer.Option(help="[V2ROSA] seed for empty-tile subsampling")] = 42,
 ):
     """Generate a dataset variant: --variant V1ROSA (in-place patch index) or V2ROSA (cut tiles)."""
     if variant is Variant.V1ROSA:
@@ -99,6 +104,8 @@ def generate(
             tile_size=tile_size,
             patch_size=patch_size,
             buffer_m=5 if buffer_m is None else buffer_m,
+            empty_keep_ratio=empty_keep_ratio,
+            tile_seed=tile_seed,
         ).run()
 
 
@@ -198,6 +205,23 @@ def norm_stats(
     saved = write_stats_yaml(out, mean, std)
     typer.echo(f"\nSaved {saved}")
     print_table(names, mean, std)
+
+
+@app.command()
+def summary(
+    dataset_dir: DatasetDir,
+    out: Annotated[
+        Optional[Path],
+        typer.Option(help="Output summary YAML (default <dataset_dir>/dataset_summary.yaml)"),
+    ] = None,
+):
+    """Per-split biome + urbanisation ratios and road-density stats from metadata.parquet."""
+    from sentinel2data.generator.summary import summarise_metadata
+
+    metadata_path = dataset_dir / "metadata.parquet"
+    if not metadata_path.exists():
+        raise typer.BadParameter(f"metadata.parquet not found under {dataset_dir}")
+    summarise_metadata(metadata_path, out)
 
 
 if __name__ == "__main__":

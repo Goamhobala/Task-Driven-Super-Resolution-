@@ -70,29 +70,25 @@ BIOME_COL = "T_BIOME"
 NULL_TOKENS = {"<null>", "null", "none", "nan", ""}
 UNKNOWN_BIOME = "Unknown"
 
-# Metadata Column Schema V2 (S2-ROSA-V2): one row per IMAGE -- a 512 train tile or
-# a whole-zone val/test COG. Split-segregated layout, road-graph per image.
-# image_path / mask_path keep torchgeo-friendly names (root-relative).
 V2_METADATA_COLUMNS = [
     "image_id",
     "zone_name",
     "split_set",
-    "is_tile",            # True = 512 train tile, False = whole-zone val/test COG
-    "tile_row",           # None for whole-zone rows
-    "tile_col",
     "image_path",
     "mask_path",          # raster mask
     "mask_graph_path",
-    "tile_size",          # None for whole-zone rows
+    "tile_size",          # tile edge in px (512)
     "band_count",         # source bands + 3 appended enhanced-RGB bands
     "spatial_resolution",
     "road_pixels",
     "road_density",
+    "urbanisation_classification",  # Jenks class from road_density, per split
     "biome",
     "satellite_image_dates",
     "crs",
     "geometry",
 ]
+
 V2_SPLIT_CSV_COLUMNS = [
     "image_id",
     "zone_name",
@@ -100,6 +96,7 @@ V2_SPLIT_CSV_COLUMNS = [
     "image_path",
     "mask_path",
     "mask_graph_path",
+    "road_density",
 ]
 
 # Metadata Column Schema V1
