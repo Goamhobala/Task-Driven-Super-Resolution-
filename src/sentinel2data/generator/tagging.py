@@ -1,10 +1,4 @@
-"""Catalogue taggers: each adds one derived column to the metadata GeoDataFrame.
-
-A :class:`Tagger` is a swappable strategy run by the pipeline after the
-catalogue is assembled (``gdf[tagger.column] = tagger.tag(gdf)``):
-  * :class:`BiomeTagger`           -- NVM2024 biome via point-in-polygon join.
-  * :class:`UrbanisationClassifier`-- Jenks urbanisation class from road density.
-"""
+"""Metadata taggers: each adds one derived column to the metadata GeoDataFrame""" 
 from pathlib import Path
 from abc import ABC, abstractmethod
 import geopandas as gpd
@@ -28,10 +22,6 @@ class Tagger(ABC):
     def tag(self, gdf: gpd.GeoDataFrame) -> pd.Series:
         pass
 
-
-# --------------------------------------------------------------------------- #
-# Biome
-# --------------------------------------------------------------------------- #
 
 class BiomeTagger(Tagger):
     """Look up the NVM2024 biome for each tile centroid from a GeoParquet.
@@ -89,10 +79,6 @@ class BiomeTagger(Tagger):
         print(result.value_counts(dropna=False).to_string())
         return result
 
-
-# --------------------------------------------------------------------------- #
-# Urbanisation classification (Jenks natural breaks, computed per tile)
-# --------------------------------------------------------------------------- #
 class UrbanisationClassifier(Tagger):
     """Classify each tile Rural/Peri-Urban/Urban by road density.
 
