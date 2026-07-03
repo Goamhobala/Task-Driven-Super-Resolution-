@@ -10,20 +10,16 @@ Normalisation reuses the checkpoint's own frozen train stats (``hparams``) so th
 evaluation matches training exactly. Only the pixel metrics are filled; graph
 columns (``apls`` etc.) are left out (added by a future graph runner).
 """
-from __future__ import annotations
-
 import hashlib
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import rasterio
 import torch
 from rasterio.windows import Window
-
 from benchmarking.confusion_matrix import confusion_counts, pixel_metrics_from_counts
 from benchmarking.store import append_chips, append_run
 from sentinel2data.dataset.reading import apply_norm, read_window
@@ -121,10 +117,14 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
 
     chip_rows = []
     for _, r in df.iterrows():
+        # tile_id = the tile's unique stem (e.g. "Mtubatuba_r0_c2"), NOT zone_name --
+        # many tiles share a zone, and chip_id is derived from tile_id, so using
+        # zone_name would collide chips across tiles of the same zone and break the
+        # per-chip pairing in compare/report.
         chip_rows.extend(_score_tile(
             net, device,
             Path(dataset_dir) / r["image_path"], Path(dataset_dir) / r["mask_path"],
-            str(r["zone_name"]), chip_size, cfg,
+            Path(r["image_path"]).stem, chip_size, cfg,
         ))
 
     chips = pd.DataFrame(chip_rows)

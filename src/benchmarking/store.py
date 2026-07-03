@@ -1,6 +1,5 @@
-"""Parquet store for benchmarking results -- two tables (docs/benchmarking.md).
-
-  * ``runs.parquet``         -- one row per evaluated checkpoint (run metadata).
+"""Parquet store for benchmarking results
+  * ``runs.parquet``         -- per patch evaluated checkpoint (run metadata).
   * ``chip_metrics.parquet`` -- one row per ``(run_id, chip_id)`` (per-chip metrics),
     with ``model_name`` + ``seed`` denormalised so it is self-contained for the
     stats functions without joining ``runs``.
@@ -8,10 +7,7 @@
 Parquet has no in-place append: each writer reads the existing table (if any),
 concatenates, and rewrites. Fine at benchmarking scale.
 """
-from __future__ import annotations
-
 from pathlib import Path
-
 import pandas as pd
 
 RUNS_FILE = "runs.parquet"

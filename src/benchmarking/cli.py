@@ -1,24 +1,12 @@
 """Benchmarking CLI -- eval a checkpoint to the store, then compare / summarise.
-
-Mirrors ``sentinel2data.cli``: a Typer app whose ``--config FILE`` pre-fills each
-command's option defaults (top-level YAML keys = command names; explicit flags
-override). Commands:
-
     eval      score a trained checkpoint over non-overlapping chips -> store
     compare   paired bootstrap CI + Wilcoxon signed-rank between two models
     variance  cross-seed mean +/- std + 95% CI for one model (training instability)
     report    per-model mean +/- std + all pairwise comparisons
-
-    python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml \
-        eval --checkpoint checkpoints/unet_seed0/last.ckpt --model-name unet --seed 0
-    python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml variance --model-name unet
 """
-from __future__ import annotations
-
 import itertools
 from pathlib import Path
 from typing import Annotated, Optional
-
 import typer
 import yaml
 
@@ -45,7 +33,7 @@ def _main(
 
 @app.command(name="eval")
 def run_eval(
-    dataset_dir: Annotated[Path, typer.Option(help="V2 dataset root (has splits/<split>.csv)")],
+    dataset_dir: Annotated[Path, typer.Option(help="ROSA dataset root (has splits/<split>.csv)")],
     checkpoint: Annotated[Path, typer.Option(help="Trained UNet .ckpt to evaluate")],
     model_name: Annotated[str, typer.Option(help="Config identifier the stats pair/group on")],
     seed: Annotated[int, typer.Option(help="Training seed (for cross-seed CIs)")],
