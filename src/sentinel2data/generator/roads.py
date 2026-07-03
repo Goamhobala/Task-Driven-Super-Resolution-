@@ -87,7 +87,7 @@ class CdngiSource(RoadSource):
 
         if combined.isna().any().any():
             na_cols = combined.columns[combined.isna().any()].tolist()
-            raise ValueError(f"NA values found in Overture output columns: {na_cols} for file {self.path}.")
+            raise ValueError(f"NA values found in CDNGI output columns: {na_cols} for file {self.path}.")
         
         return combined
 

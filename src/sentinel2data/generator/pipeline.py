@@ -79,6 +79,7 @@ class RosaPipeline:
         gdf[urban.column] = urban.tag(gdf)
 
         schema = self.processor.schema
+        gdf = gdf.rename_geometry(schema.geometry_col)
         gdf = gdf[schema.columns]
         write_geoparquet(gdf, self.paths.metadata_path)
         write_split_csvs(gdf, self.paths.splits_dir, schema.split_csv_columns)

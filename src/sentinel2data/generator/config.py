@@ -68,7 +68,7 @@ CDNGI_ROAD_CLASSIFICATION = {
     }
 }
 
-def flatten_classification(road_classification_config: dict, exclude_class: list = ["ignored"]) -> tuple[dict, dict, list]:
+def flatten_classification(road_classification_config: dict, exclude_class: tuple = ("ignored",)) -> tuple[dict, dict, list]:
     """Flatten config into mappings of road class to scale and buffer. 
     The ignored category is dropped.
 
@@ -138,12 +138,12 @@ class TileSpec:
     tile_size: int = 512        # tile size from large zone imagery
     patch_size: int = 256       # internal COG patch size
 
-@dataclass(frozen=True)
-class SplitFractions:
-    """Dataset split proportions and seed"""
-    val_frac: float = 0.1
-    test_frac: float = 0.1
-    seed: int = 42
+# @dataclass(frozen=True)
+# class SplitFractions:
+#     """Dataset split proportions and seed"""
+#     val_frac: float = 0.1
+#     test_frac: float = 0.1
+#     seed: int = 42
 
 @dataclass(frozen=True)
 class RGBEnhanceConfig:
