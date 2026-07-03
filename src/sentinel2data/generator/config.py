@@ -8,8 +8,7 @@ RASTER_EXTS = {".tif", ".tiff"}
 WGS84 = "EPSG:4326"          # common lat/lon CRS
 COMMON_CRS = WGS84           # google maps view of a map
 # Scaffolded values
-SCAFFOLD_DATES = ["2023-01-01"]   # TODO: real composite dates per tile
-SCAFFOLD_BIOME = "Unknown"        # TODO: real biome/zone names per tile
+SCAFFOLD_DATES = ["2023-01-01"]   # composite dates per tile
 
 
 ## ROAD CLASSIFICATION ##
@@ -73,7 +72,21 @@ CDNGI_ROAD_CLASSIFICATION = {
 }
 
 # Cleaned parquet format from CDNGI
-ROAD_VECTOR_COLUMNS = ("data_source", "road_classification", "buffer", "geometry")
+ROAD_VECTOR_COLUMNS = ("data_source", "road_class", "scale_class", "buffer", "geometry")
+
+
+def flatten_classification(road_classification: dict) -> tuple[dict, dict]:
+    """Flatten config into mappings of road class to scale and buffer. 
+    The ignored category is dropped.
+    """
+    scale_map, buffer_map = {}, {}
+    for scale_class, classes in road_classification.items():
+        if scale_class == "ignored":
+            continue
+        for road_class, buffer in classes.items():
+            scale_map[road_class] = scale_class
+            buffer_map[road_class] = buffer
+    return scale_map, buffer_map
 
 
 ## METADATA CONSTANTS ##
