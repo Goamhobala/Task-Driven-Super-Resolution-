@@ -48,8 +48,8 @@ OVERTURE_ROAD_CLASSIFICATION = {
 
 CDNGI_ROAD_CLASSIFICATION = {
     "large": {
-        "National Freeway": 15.0, 
-        "National Road": 12.0, 
+        "National Freeway": 12.0, 
+        "National Road": 10.0, 
         "Arterial Road": 10.0, 
         "Main Road": 8.0
     },

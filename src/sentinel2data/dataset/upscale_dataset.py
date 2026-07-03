@@ -1,22 +1,13 @@
-"""Super-resolution dataloader for S2-ROSA-V2 -- separate from the native datasets.
+"""Bicubic upscaler dataloader 
 
-Reads a NATIVE V2 tiled dataset but feeds the model bicubic-upsampled crops, so no
-super-resolution imagery is stored on disk. A ``crop_size`` native-px window is read
-and bicubic-upsampled to ``crop_size * upscale`` (the model input); the mask is
-rasterised fresh from that tile's road-graph centrelines at the upsampled transform
-(crisp roads, not a nearest-upsampled binary). ``crop_size=128, upscale=4`` -> 512px
-patches at 4x zoom.
+Reads a 10m ROSA tiled dataset, upscales 128px image with bicubic interpolation 2.5m to the model
 
-Selected via ``python -m unet.cli_upscale`` + ``configs/unet_upscale.yaml``. The plain
-``unet.cli`` / :class:`sentinel2data.dataset.datasets.RoadDataModule` native path is
-untouched.
+ A `crop_size` native-px window is read and bicubic-upsampled to `crop_size * upscale`.
+The mask is rasterised fresh from that tile's road-graph centrelines at the upsampled transform
 """
-from __future__ import annotations
-
 import random
 from functools import lru_cache
 from pathlib import Path
-
 import geopandas as gpd
 import lightning.pytorch as pl
 import numpy as np
@@ -28,14 +19,12 @@ from rasterio.enums import Resampling
 from rasterio.windows import Window
 from rasterio.windows import transform as window_transform
 from torch.utils.data import DataLoader, Dataset
-
 from sentinel2data.dataset.bands import DEFAULT_BANDS
 from sentinel2data.dataset.reading import apply_norm
 from sentinel2data.generator.helper import window_bounds
-from sentinel2data.generator.labels import RasterMaskLabeler
 
-# Per-class road buffer widths (metres) -- identical to the generator's stored masks.
-_LABELER = RasterMaskLabeler()
+# Per-row road buffer half-width (metres), carried in each masks_graph parquet.
+_BUFFER_COL = "buffer"
 
 
 def _read_split_csv(dataset_dir, split):
@@ -67,18 +56,25 @@ def _read_upsampled(src, bands, window, out_size):
 def _graph_mask(graph_path, src, window, out_size, upscale):
     """Rasterise the tile's buffered centrelines over the crop at output resolution.
 
-    The upsampled transform keeps the crop's geographic extent but 1/upscale-sized
-    pixels, so the mask aligns with the bicubic-upsampled image."""
+    Each centreline is buffered by its per-row ``buffer`` half-width (metres) from
+    the masks_graph parquet -- geometries are in the tile's metric CRS, so the buffer
+    is in metres directly. The upsampled transform keeps the crop's geographic extent
+    but 1/upscale-sized pixels, so the mask aligns with the bicubic-upsampled image."""
     out_shape = (out_size, out_size)
     roads = _load_graph(str(graph_path))
     if roads.empty:
         return np.zeros(out_shape, dtype="float32")
+    if _BUFFER_COL not in roads.columns:
+        raise ValueError(
+            f"masks_graph parquet {graph_path} lacks a '{_BUFFER_COL}' column; "
+            "regenerate the dataset with the current road-graph labeler."
+        )
     minx, miny, maxx, maxy = window_bounds(window, src.transform)
     cand = roads.cx[minx:maxx, miny:maxy]
     if cand.empty:
         return np.zeros(out_shape, dtype="float32")
     up_tf = window_transform(window, src.transform) * Affine.scale(1.0 / upscale)
-    buffered = cand.geometry.buffer(_LABELER.buffer_distances(cand))
+    buffered = cand.geometry.buffer(cand[_BUFFER_COL].to_numpy(dtype="float64"))
     mask = features.rasterize(
         ((g, 1) for g in buffered), out_shape=out_shape, transform=up_tf,
         fill=0, all_touched=True, dtype="uint8",

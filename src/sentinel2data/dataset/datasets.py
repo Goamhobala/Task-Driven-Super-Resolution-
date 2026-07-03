@@ -1,23 +1,6 @@
-"""Native-CRS, map-style datasets for S2-ROSA-V2 (shared; no torchgeo, no warp).
-
-Each tile/zone is read in its **native CRS, native pixels** via rasterio windows
--- no reprojection (the imagery spans several UTM zones, so a shared CRS would
-force a per-patch warp). NaN scrubbed before standardisation. Bands are 1-based
-COG indices.
-
-  * train -> :class:`RoadTileDataset`: random 256x256 crop from a random 512 tile.
-  * val/test -> :class:`TileCropDataset`: the 4 deterministic non-overlapping
-    256x256 quadrants of each 512 tile (a 2x2 partition -> once-per-pixel coverage,
-    so the accumulated IoU/F1 is a stable per-pixel metric, not a per-tile average).
-
-Map-style datasets shard cleanly under DDP (Lightning's DistributedSampler). Any
-model imports these from ``sentinel2data.dataset``.
-"""
-from __future__ import annotations
-
+"""Custom Dataset Loader"""
 import random
 from pathlib import Path
-
 import lightning.pytorch as pl
 import numpy as np
 import pandas as pd
@@ -25,7 +8,6 @@ import rasterio
 import torch
 from rasterio.windows import Window
 from torch.utils.data import DataLoader, Dataset
-
 from sentinel2data.dataset.bands import DEFAULT_BANDS
 from sentinel2data.dataset.reading import apply_norm, read_window
 
@@ -38,7 +20,10 @@ def _read_split_csv(dataset_dir, split):
 
 
 class RoadTileDataset(Dataset):
-    """Random native-pixel crops from the train tiles. ``__len__`` = patches/epoch."""
+    """Use this dataset for training. Random pixel crops from the 512x512 train tiles.
+
+    Length by default is 10 * len(train_tiles)
+    """
 
     def __init__(self, dataset_dir, bands=DEFAULT_BANDS, image_size=256,
                  length=None, normalize=True, norm_mean=None, norm_std=None):
@@ -47,14 +32,18 @@ class RoadTileDataset(Dataset):
         self.bands = list(bands)
         self.image_size = image_size
         self.normalize = normalize
-        self.norm_mean = norm_mean  # full-stack frozen train stats (or None -> per-image)
+        self.norm_mean = norm_mean  # frozen train stats (or None -> per-image)
         self.norm_std = norm_std
         self.length = length if length is not None else 10 * len(self.df)
+
+        if self.norm_mean is None or self.norm_std is None:
+            raise ValueError("No frozen train stats given")
 
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
+        """Random crop and normalise"""
         row = self.df.iloc[random.randrange(len(self.df))]
         s = self.image_size
         with rasterio.open(self.dataset_dir / row["image_path"]) as src, \
@@ -80,29 +69,32 @@ class RoadTileDataset(Dataset):
 
 
 class TileCropDataset(Dataset):
-    """Deterministic eval crops: the 4 non-overlapping ``image_size`` quadrants of
-    each 512 tile (2x2 partition -> once-per-pixel coverage, stable val/test metric).
+    """
+    Use this dataset for validation/testing. 
 
-    Item ``idx`` -> tile ``idx // 4``, quadrant ``idx % 4`` (row-major). Tiles are
-    exactly ``tile_size`` px (the generator drops partial edge strips), so every
-    quadrant read is a full ``image_size`` window -- no padding.
+    Deterministic 2x2 crops from the 512x512 tiles - sliding window with no overlaps
+    Item ``idx`` -> tile ``idx // 4``, quadrant ``idx % 4`` (row-major)
     """
 
-    def __init__(self, dataset_dir, split, bands=DEFAULT_BANDS, image_size=256,
+    def __init__(self, dataset_dir, split, bands=DEFAULT_BANDS,
                  normalize=True, norm_mean=None, norm_std=None):
         self.dataset_dir = Path(dataset_dir)
         self.df = _read_split_csv(dataset_dir, split).reset_index(drop=True)
         self.bands = list(bands)
-        self.image_size = image_size
+        self.image_size = 256
         self.normalize = normalize
         self.norm_mean = norm_mean
         self.norm_std = norm_std
-        self.per_tile = 4  # 2x2 non-overlapping quadrants
+        self.per_tile = 4  # Assume 512x512 tiles, hence 4 patches.
+
+        if self.norm_mean is None or self.norm_std is None:
+            raise ValueError("No frozen train stats given")
 
     def __len__(self):
         return len(self.df) * self.per_tile
 
     def __getitem__(self, idx):
+        """Sliding Window and normalise"""
         row = self.df.iloc[idx // self.per_tile]
         quad = idx % self.per_tile
         s = self.image_size
@@ -122,7 +114,7 @@ class TileCropDataset(Dataset):
 
 
 class RoadDataModule(pl.LightningDataModule):
-    """Train = random native crops; val/test = deterministic 2x2 quadrant crops."""
+    """Train - random native crops; val/test - deterministic 2x2 quadrant crops."""
 
     def __init__(self, dataset_dir: str, bands: tuple[int, ...] = DEFAULT_BANDS,
                  batch_size: int = 16, num_workers: int = 2, image_size: int = 256,
@@ -136,9 +128,11 @@ class RoadDataModule(pl.LightningDataModule):
         self.image_size = image_size
         self.length = length
         self.normalize = normalize
-        # Frozen per-band train stats (full 23-band stack); None -> per-image standardise.
         self.norm_mean = norm_mean
         self.norm_std = norm_std
+
+        if self.norm_mean is None or self.norm_std is None:
+            raise ValueError("No frozen train stats given")
 
     def train_dataloader(self):
         ds = RoadTileDataset(

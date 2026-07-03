@@ -9,7 +9,7 @@ but feeds bicubic-upsampled crops + graph-rasterised masks over a NATIVE V2 data
 
 The plain ``unet.cli`` + ``RoadDataModule`` native path is untouched.
 """
-from sentinel2data.dataset.upscale import UpscaleRoadDataModule
+from sentinel2data.dataset.upscale_dataset import UpscaleRoadDataModule
 from unet.cli import UNetCLI
 from unet.model import UNetLightning
 
