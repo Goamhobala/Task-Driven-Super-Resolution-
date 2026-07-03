@@ -18,7 +18,6 @@ from sentinel2data.generator.config import (
     RGBEnhanceConfig,
     TileSpec,
     WGS84,
-    split_layout,
 )
 from sentinel2data.generator.helper import (
     enhance_rgb,
@@ -81,11 +80,12 @@ class ROSAProcessor:
 
 
     def process(self, zone_id, sat_cog_path, split, paths):
+        """Process one zone COG into per-tile outputs (image, mask, graph) and metadata rows."""
         sat_cog_path = Path(sat_cog_path)
         zone_name = sat_cog_path.stem
         print(f"[{zone_id}] {zone_name} -> {split}")
 
-        layout = split_layout(paths.root, split)
+        layout = paths.split_dirs(split)
         zone = load_zone_roads(sat_cog_path, self.roads_parquet_path)
         full_mask = self.mask_labeler.rasterize(zone)  # (H, W) uint8
         sindex = zone.roads.sindex if not zone.roads.empty else None
@@ -95,8 +95,8 @@ class ROSAProcessor:
                 zone, sindex, img, full_mask, zone_name, split, layout, paths
             )
 
-    # -- tile every split into raw 512px tiles ----------------------------
     def _tile_zone(self, zone, sindex, img, full_mask, zone_name, split, layout, paths):
+        "Tiles into 512px tiles, writes imagery, mask, and graph outputs, returns metadata rows."
         ts = self.tile_spec.tile_size
         patch = self.tile_spec.patch_size
         rgb_idx = [b - 1 for b in self.enhance_cfg.rgb_bands]
@@ -151,12 +151,6 @@ class ROSAProcessor:
 
     def _empty_keep_mask(self, zone_name, full_mask, ts, n_rows, n_cols):
         """Boolean ``(n_rows, n_cols)``: which empty tiles to keep (seeded per zone).
-
-        Non-empty tiles are left ``True`` (the caller keeps them regardless). An RNG
-        seeded by ``(tile_seed, crc32(zone_name))`` -- stable across runs, unlike
-        Python ``hash`` -- draws one uniform per empty tile and keeps it when the
-        draw is below ``empty_keep_ratio``. ``ratio >= 1.0`` short-circuits to keep
-        all; ``ratio <= 0`` drops every empty tile.
         """
         ratio = self.empty_keep_ratio
         keep = np.ones((n_rows, n_cols), dtype=bool)
@@ -170,7 +164,7 @@ class ROSAProcessor:
                     keep[r, c] = rng.random() < ratio
         return keep
 
-    # -- shared ------------------------------------------------------------
+
     def _write_graph(self, zone, clip_box, sindex, out_path):
         """Roads clipped to an image's extent (tile) or the whole zone -> parquet."""
         if clip_box is not None:

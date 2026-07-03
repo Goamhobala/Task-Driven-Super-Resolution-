@@ -169,28 +169,16 @@ ROSA_SCHEMA = CatalogueSchema(
     reindex_tile_id=False,  # V2 split-first runner assigns image_id itself
 )
 
-# TODO fix this
 @dataclass(frozen=True)
 class DatasetPaths:
-    """Directory layout of the dataset from its root directory"""
+    """Directory layout of the dataset from its root directory.
+    """
     root: Path
+
     def __post_init__(self):
-        # Normalise to Path without breaking frozen-ness.
+        # Normalise to Path
         object.__setattr__(self, "root", Path(self.root))
 
-    @property
-    def imagery_dir(self) -> Path:
-        return self.root / "imagery"
-
-    @property
-    def masks_raster_dir(self) -> Path:
-        return self.root / "masks_raster"
-
-    @property
-    def masks_graph_dir(self) -> Path:
-        return self.root / "masks_graph"
-
-    # shared
     @property
     def splits_dir(self) -> Path:
         return self.root / "splits"
@@ -199,12 +187,11 @@ class DatasetPaths:
     def metadata_path(self) -> Path:
         return self.root / "metadata.parquet"
 
-
-def split_layout(root, split):
-    """Per-split V2 output dirs: ``<root>/<split>/{imagery,masks_raster,masks_graph}``."""
-    base = Path(root) / split
-    return {
-        "imagery": base / "imagery",
-        "masks_raster": base / "masks_raster",
-        "masks_graph": base / "masks_graph",
-    }
+    def split_dirs(self, split) -> dict:
+        """Per-split output dirs ``<root>/<split>/{imagery,masks_raster,masks_graph}``."""
+        base = self.root / split
+        return {
+            "imagery": base / "imagery",
+            "masks_raster": base / "masks_raster",
+            "masks_graph": base / "masks_graph",
+        }
