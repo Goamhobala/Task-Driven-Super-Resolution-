@@ -45,6 +45,14 @@ def _stretch(chw, rgb=(0, 1, 2), pct=(2, 98)):
     return out
 
 
+def _overlay(rgb_img, mask, alpha=0.45, color=(1.0, 0.0, 0.0)):
+    """RGB image with the binary mask alpha-blended in ``color`` (default red)."""
+    ov = rgb_img.copy()
+    m = np.asarray(mask) > 0
+    ov[m] = (1.0 - alpha) * ov[m] + alpha * np.asarray(color, dtype="float32")
+    return np.clip(ov, 0.0, 1.0)
+
+
 def _build_dataset(dataset_dir, split, bands, crop_size, upscale):
     """Real SR dataset for ``split`` with normalisation off (raw reflectance;
     the upscale datasets need no frozen stats when ``normalize=False``)."""
@@ -60,8 +68,8 @@ def _build_dataset(dataset_dir, split, bands, crop_size, upscale):
     )
 
 
-def _draw(ax_i, ax_m, ds, idx, upscale, rgb, pct):
-    """Render item ``idx`` (bicubic RGB | graph mask) into the two axes."""
+def _draw(ax_i, ax_m, ax_o, ds, idx, upscale, rgb, pct):
+    """Render item ``idx`` (bicubic RGB | graph mask | red overlay) into the three axes."""
     image, mask, name = ds[idx]
     rgb_img = _stretch(image, rgb, pct)
     m = np.asarray(mask).squeeze()
@@ -70,12 +78,16 @@ def _draw(ax_i, ax_m, ds, idx, upscale, rgb, pct):
 
     ax_i.clear()
     ax_m.clear()
+    ax_o.clear()
     ax_i.imshow(rgb_img)
     ax_i.set_title(f"bicubic RGB  {edge}px (x{upscale})")
     ax_i.axis("off")
     ax_m.imshow(m, cmap="gray", vmin=0, vmax=1)
     ax_m.set_title(f"graph mask ({road:.1f}% road)")
     ax_m.axis("off")
+    ax_o.imshow(_overlay(rgb_img, m))
+    ax_o.set_title("GT overlay")
+    ax_o.axis("off")
     return name
 
 
@@ -93,10 +105,10 @@ def preview_upsampler(dataset_dir, split="train", bands=DEFAULT_BANDS,
         raise ValueError(f"Split '{split}' is empty in {dataset_dir}")
     state = {"idx": start % n}
 
-    fig, (ax_i, ax_m) = plt.subplots(1, 2, figsize=(9, 4.8))
+    fig, (ax_i, ax_m, ax_o) = plt.subplots(1, 3, figsize=(13.5, 4.8))
 
     def show():
-        name = _draw(ax_i, ax_m, ds, state["idx"], upscale, rgb, pct)
+        name = _draw(ax_i, ax_m, ax_o, ds, state["idx"], upscale, rgb, pct)
         fig.suptitle(f"[{state['idx'] + 1}/{n}] {split}  ·  {name}", fontsize=10)
         fig.canvas.draw_idle()
 
@@ -139,8 +151,8 @@ def save_previews(dataset_dir, split="train", out_dir="previews_upsampled", n=8,
     count = min(n, len(ds))
     for i in range(count):
         idx = (start + i) % len(ds)
-        fig, (ax_i, ax_m) = plt.subplots(1, 2, figsize=(9, 4.8))
-        name = _draw(ax_i, ax_m, ds, idx, upscale, rgb, pct)
+        fig, (ax_i, ax_m, ax_o) = plt.subplots(1, 3, figsize=(13.5, 4.8))
+        name = _draw(ax_i, ax_m, ax_o, ds, idx, upscale, rgb, pct)
         fig.suptitle(f"[{idx + 1}/{len(ds)}] {split}  ·  {name}", fontsize=10)
         fig.tight_layout()
         out = out_dir / f"{split}_{idx:04d}_{Path(name).stem}.png"
