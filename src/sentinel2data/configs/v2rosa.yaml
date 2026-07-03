@@ -7,10 +7,10 @@
 
 
 roads:
-  out: /Volumes/MacOSFiles/RoadVectorData/large_medium_scale_data/cdngi_test_better.parquet
-  cdngi: /Volumes/MacOSFiles/RoadVectorData/CDNGI_Data     # .gpkg file or directory of province *.gpkg
-  # out: /Volumes/MacOSFiles/RoadVectorData/large_medium_scale_data/overture_test_better.parquet
-  # overture: /Volumes/MacOSFiles/RoadVectorData/OvertureSARoadData/south_africa_overture_roads.parquet
+  # out: /Volumes/MacOSFiles/RoadVectorData/clean_road_data/cdngi_dense.parquet
+  # cdngi: /Volumes/MacOSFiles/RoadVectorData/CDNGI_Data     # .gpkg file or directory of province *.gpkg
+  out: /Volumes/MacOSFiles/RoadVectorData/clean_road_data/overture_dense.parquet
+  overture: /Volumes/MacOSFiles/RoadVectorData/OvertureSARoadData/south_africa_overture_roads.parquet
     
 generate:
   variant: V2ROSA

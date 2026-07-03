@@ -4,11 +4,8 @@ from typing import Annotated, Optional, Tuple
 import typer
 import yaml
 
-from sentinel2data.generator import (
-    RoadVectorExtractor,
-    make_v1rosa_pipeline,
-    make_v2rosa_pipeline,
-)
+from sentinel2data.generator.roads import RoadVectorExtractor
+# from sentinel2data.generator.pipeline import make_v1rosa_pipeline, make_v2rosa_pipeline
 from sentinel2data.viz import visualize_classification, visualize_rosav2
 
 
@@ -20,8 +17,6 @@ class Backdrop(str, Enum):
 
 class Variant(str, Enum):
     """The dataset format to generate."""
-
-    V1ROSA = "V1ROSA"  # patch-window index (masks generated in place, one row / block)
     V2ROSA = "V2ROSA"  # cut tiles (physical NxN image+mask COGs, one row / tile)
 
 
@@ -55,7 +50,7 @@ def _main(
 def generate(
     variant: Annotated[
         Variant,
-        typer.Option(help="Dataset variant: V1ROSA (patch-window index) or V2ROSA (cut tiles)"),
+        typer.Option(help="Dataset variant: V2ROSA"),
     ],
     roads: Annotated[Path, typer.Option(help="Combined roads GeoParquet from the `roads` command")],
     dataset_dir: Annotated[

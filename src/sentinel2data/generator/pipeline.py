@@ -17,7 +17,7 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 from sentinel2data.generator.config import (
-    DEFAULT_BUFFER_M,
+    # DEFAULT_BUFFER_M,
     IMAGE_EXTS,
     WGS84,
     DatasetPaths,

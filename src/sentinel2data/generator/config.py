@@ -31,14 +31,15 @@ OVERTURE_ROAD_CLASSIFICATION = {
         "motorway_link": 12.0, 
         "trunk_link": 10.0, 
         "primary_link": 8.0, 
-        "secondary_link": 6.0
+        "secondary_link": 6.0,
+        "tertiary_link": 5.0,   
     },
     "small": {
         "living_street": 4.0, 
-        "pedestrian": 3.0, 
         "track": 3.0
     },
     "ignored": {
+        "pedestrian": -1, 
         "path": -1, 
         "footway": -1, 
         "service": -1, 
@@ -64,7 +65,7 @@ CDNGI_ROAD_CLASSIFICATION = {
     "small": {
         "Street": 4.0, 
         "Track": 3.0, 
-        "Slipway": 3.0
+        "Slipway": 3.0,
     },
     "ignored": {
         "Footpath": -1
