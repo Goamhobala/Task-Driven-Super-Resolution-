@@ -151,7 +151,7 @@ class RoadDataModule(pl.LightningDataModule):
 
     def _eval_loader(self, split):
         ds = TileCropDataset(
-            self.dataset_dir, split, self.bands, self.image_size, self.normalize,
+            self.dataset_dir, split, self.bands, self.normalize,
             self.norm_mean, self.norm_std,
         )
         return DataLoader(
