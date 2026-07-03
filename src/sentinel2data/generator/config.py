@@ -3,12 +3,8 @@ from pathlib import Path
 
 ## GENERAL CONSTANTS ##
 
-IMAGE_EXTS = (".tif", ".tiff")
-RASTER_EXTS = {".tif", ".tiff"}
-WGS84 = "EPSG:4326"          # common lat/lon CRS
-COMMON_CRS = WGS84           # google maps view of a map
-# Scaffolded values
-SCAFFOLD_DATES = ["2023-01-01"]   # composite dates per tile
+WGS84 = "EPSG:4326"          # common lat/lon CRS. Google maps view of a map
+SCAFFOLD_DATES = ["2023-01-01"]   # Change to range/composite dates per tile
 
 
 ## ROAD CLASSIFICATION ##

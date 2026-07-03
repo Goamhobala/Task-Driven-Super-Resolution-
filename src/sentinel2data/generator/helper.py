@@ -8,15 +8,18 @@ import numpy as np
 from rasterio.warp import transform_bounds
 from rasterio.windows import transform as window_transform
 from shapely.geometry import box
-from sentinel2data.generator.config import IMAGE_EXTS, RGBEnhanceConfig
+from sentinel2data.generator.config import RGBEnhanceConfig
 
 # image directory scanning
-def scan_rasters(directory, exts=IMAGE_EXTS, skip_mask_suffix="_mask.tif"):
+def scan_rasters(directory, skip_mask_suffix="_mask.tif"):
     """Return sorted source rasters in the given directory.
 
     Skips macOS `._` dotfiles and previously-generated `*_mask.tif` - so a
     dataset dir can be re-scanned in place without re-ingesting its own masks.
     """
+
+    exts = (".tif", ".tiff")
+    
     directory = Path(directory)
     paths = []
     for ext in exts:

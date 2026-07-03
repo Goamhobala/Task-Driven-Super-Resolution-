@@ -14,11 +14,7 @@ import pandas as pd
 import rasterio
 from rasterio import features
 from shapely.geometry import box
-from sentinel2data.generator.config import (
-    DEFAULT_BUFFER_M,
-    ROAD_TIER_BUFFER_M,
-    WGS84,
-)
+from sentinel2data.generator.config import WGS84
 from sentinel2data.generator.helper import window_box
 from sentinel2data.generator.io import write_mask_cog
 

@@ -17,8 +17,6 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 from sentinel2data.generator.config import (
-    # DEFAULT_BUFFER_M,
-    IMAGE_EXTS,
     WGS84,
     DatasetPaths,
     TileSpec,
@@ -28,18 +26,17 @@ from sentinel2data.generator.io import write_geoparquet, write_split_csvs
 from sentinel2data.generator.labels import RasterMaskLabeler, RoadGraphLabeler
 from sentinel2data.generator.splitting import RandomTileSplit, _holdout_map
 from sentinel2data.generator.tagging import BiomeTagger, UrbanisationClassifier
-from sentinel2data.generator.processor import V2ROSAProcessor, V1ROSAProcessor
+from sentinel2data.generator.processor import V2ROSAProcessor
 
 
 class ImageryScan:
-    """Discovers source COGs in a directory (skips dotfiles + ``*_mask.tif``)."""
+    """Wrapper for scanning rasters with helper function"""
 
-    def __init__(self, directory, exts=IMAGE_EXTS):
+    def __init__(self, directory):
         self.directory = Path(directory)
-        self.exts = exts
 
     def scan(self):
-        return scan_rasters(self.directory, self.exts)
+        return scan_rasters(self.directory)
 
 
 def build_catalogue(zone_gdfs, schema):
@@ -201,31 +198,4 @@ def make_v2rosa_pipeline(
         test_frac=test_frac,
         split_seed=split_seed,
         biome_tagger=biome_tagger,
-    )
-
-
-def make_v1rosa_pipeline(
-    dataset_dir,
-    roads_parquet_path,
-    buffer_m=DEFAULT_BUFFER_M,
-    val_frac=0.1,
-    test_frac=0.1,
-    split_seed=42,
-):
-    """Patch index (v1): V1ROSAProcessor + UrbanisationClassifier + RandomTileSplit.
-
-    Scans ``dataset_dir/imagery`` and writes masks/metadata under ``dataset_dir``.
-    """
-    paths = DatasetPaths(dataset_dir)
-    processor = V1ROSAProcessor(
-        roads_parquet_path,
-        mask_labeler=RasterMaskLabeler(default_buffer_m=buffer_m),
-        graph_labeler=RoadGraphLabeler(),
-    )
-    return DatasetPipeline(
-        source=ImageryScan(paths.imagery_dir),
-        processor=processor,
-        taggers=[UrbanisationClassifier()],
-        split=RandomTileSplit(val_frac, test_frac, split_seed),
-        paths=paths,
     )

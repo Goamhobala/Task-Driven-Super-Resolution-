@@ -23,8 +23,6 @@ from rasterio.windows import Window
 from rasterio.windows import transform as window_transform
 from shapely.geometry import box
 from sentinel2data.generator.config import (
-    V1_SCHEMA,
-    SCAFFOLD_BIOME,
     SCAFFOLD_DATES,
     V2_SCHEMA,
     UNKNOWN_BIOME,
