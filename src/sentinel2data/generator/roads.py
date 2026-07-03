@@ -1,20 +1,13 @@
-"""Road vector sourcing: extract one :class:`RoadSource` (CDNGI *or* Overture)
-into a normalized GeoParquet (or GeoPackage).
-
-The source filters to its large/medium classes, reprojects to EPSG:4326 and
-remaps its native class onto the simplified major/medium tier carried in the
-``class`` column (buffer widths per tier live in
-:data:`sentinel2data.generator.config.ROAD_TIER_BUFFER_M`). Exactly one source
-is used per output layer, so the result never stacks the duplicate centrelines
-two datasets would produce for the same road.
+"""
+Purpose of this module is to extract the desired road centrelines from raw datasets.
+Currently support CD:NGI and Overture datasets.
 """
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from abc import ABC, abstractmethod
 import geopandas as gpd
 import pandas as pd
 from sentinel2data.generator.config import (
     CDNGI_CLASS_MAP,
-    CDNGI_ROADS_LAYER,
     OVERTURE_CLASS_MAP,
     OVERTURE_MAJOR_MEDIUM,
     ROAD_VECTOR_COLUMNS,
@@ -22,43 +15,51 @@ from sentinel2data.generator.config import (
 )
 
 
-@runtime_checkable
-class RoadSource(Protocol):
-    """A provider of normalized major/medium road centrelines (EPSG:4326)."""
+class RoadSource(ABC):
+    """Interface for different road source implementations"""
 
+    @abstractmethod
     def load(self) -> "gpd.GeoDataFrame | None":
-        """Return normalized roads, or ``None`` if the source yields nothing."""
-        ...
+        """Returns roads in WGS84"""
+        pass
 
 
-class CdngiSource:
-    """Major + medium roads from one or many CDNGI GeoPackages."""
+class CdngiSource(RoadSource):
+    """Roads from CD:NGI Geopackages"""
 
-    def __init__(self, path, layer=CDNGI_ROADS_LAYER):
+    CDNGI_ROADS_LAYER = "TRAN_ROADS_EXP"
+
+    def __init__(self, path: str | Path):
+        """
+        Args:
+            path (str | Path): Path to the root directory containing CD:NGI GeoPackages.
+        """
         self.path = Path(path)
-        self.layer = layer
 
     def _gpkg_paths(self):
-        """Resolve ``path`` to a sorted list of .gpkg files (file or directory)."""
-        if self.path.is_dir():
-            return sorted(self.path.rglob("*.gpkg"))
-        return [self.path]
+        """Scan for list of .gpkg files"""
+        gpkg_files = sorted(self.path.rglob("*.gpkg"))
+        print(f"Found {len(gpkg_files)} CD:NGI GeoPackage files in {self.path}")
+        return gpkg_files
 
     def load(self):
-        keys = list(CDNGI_CLASS_MAP)
-        where = "FEAT_TYPE IN ({})".format(", ".join(f"'{k}'" for k in keys))
+        road_type_filter = list(CDNGI_CLASS_MAP)
+        where = "FEAT_TYPE IN ({})".format(", ".join(f"'{type}'" for type in road_type_filter))
 
-        parts = []
+        provincial_gpd_roads = []
         for gpkg in self._gpkg_paths():
-            province = gpkg.stem.split("_")[0]
+            province = gpkg.stem.split("_")[0]  # assume default naming convention: <province>_NGI_TOPODATA_<year>.gpkg
             print(f"Reading CDNGI {gpkg.name} (province {province})...")
             gdf = gpd.read_file(
-                gpkg, layer=self.layer, columns=["FEAT_TYPE"], where=where
+                gpkg, layer=CdngiSource.CDNGI_ROADS_LAYER, columns=["FEAT_TYPE"], where=where
             )
+
             if gdf.empty:
+                print(f"Warning: No roads found in {gpkg.name} (province {province}).")
                 continue
+
             gdf = gdf.to_crs(WGS84)
-            parts.append(
+            provincial_gpd_roads.append(
                 gpd.GeoDataFrame(
                     {
                         "source": "cdngi",
@@ -71,16 +72,16 @@ class CdngiSource:
                 )
             )
 
-        if not parts:
+        if not provincial_gpd_roads:
             return None
         combined = gpd.GeoDataFrame(
-            pd.concat(parts, ignore_index=True), geometry="geometry", crs=WGS84
+            pd.concat(provincial_gpd_roads, ignore_index=True), geometry="geometry", crs=WGS84
         )
         print(f"CDNGI: {len(combined)} major+medium road segments.")
         return combined
 
 
-class OvertureSource:
+class OvertureSource(RoadSource):
     """Major + medium roads from an Overture roads GeoParquet (predicate pushdown)."""
 
     def __init__(self, path):

@@ -1675,6 +1675,7 @@ benchmarking = [
     { name = "pyarrow", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pyyaml", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "scipy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "typer", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 dlinknet = [
     { name = "lightning", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1861,6 +1862,7 @@ requires-dist = [
     { name = "torchvision", marker = "sys_platform != 'linux' and extra == 'samroad'", specifier = ">=0.25.0" },
     { name = "torchvision", marker = "sys_platform != 'linux' and extra == 'terra'", specifier = ">=0.25.0" },
     { name = "torchvision", marker = "sys_platform != 'linux' and extra == 'unet'", specifier = ">=0.25.0" },
+    { name = "typer", marker = "extra == 'benchmarking'", specifier = ">=0.24.1" },
     { name = "typer", marker = "extra == 'sentinel2'", specifier = ">=0.24.1" },
     { name = "wandb", marker = "extra == 'samroad'" },
     { name = "wandb", marker = "extra == 'terra'" },

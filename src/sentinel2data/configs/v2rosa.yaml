@@ -34,5 +34,5 @@ visualize-v2:
 
 # Per-split biome + urbanisation ratios and road-density stats -> dataset_summary.yaml.
 summary:
-  dataset_dir: /Volumes/MacOSFiles/S2ROSA_V2_test
+  dataset_dir: /Volumes/MacOSFiles/ROSA_CDNGI_dense
   out: null                        # default <dataset_dir>/dataset_summary.yaml
