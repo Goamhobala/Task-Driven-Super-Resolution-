@@ -81,15 +81,18 @@ class ROSAProcessor:
 
     def process(self, zone_id, sat_cog_path, split, paths):
         """Process one zone COG into per-tile outputs (image, mask, graph) and metadata rows."""
+        # Init
         sat_cog_path = Path(sat_cog_path)
         zone_name = sat_cog_path.stem
         print(f"[{zone_id}] {zone_name} -> {split}")
-
         layout = paths.split_dirs(split)
+
+        # Load the zone's roads and rasterize to a full-zone mask
         zone = load_zone_roads(sat_cog_path, self.roads_parquet_path)
         full_mask = self.mask_labeler.rasterize(zone)  # (H, W) uint8
         sindex = zone.roads.sindex if not zone.roads.empty else None
 
+        # Tiles zone
         with rasterio.open(sat_cog_path) as img:
             return self._tile_zone(
                 zone, sindex, img, full_mask, zone_name, split, layout, paths
@@ -103,7 +106,10 @@ class ROSAProcessor:
         n_rows = img.height // ts  # full tiles only -> edge remainder dropped
         n_cols = img.width // ts
 
+        # which tiles to keep
         keep_empty = self._empty_keep_mask(zone_name, full_mask, ts, n_rows, n_cols)
+
+        # iterate tiles in COG
         rows = []
         kept = kept_road = dropped = 0
         for r in range(n_rows):
@@ -115,11 +121,13 @@ class ROSAProcessor:
                     dropped += 1
                     continue
 
+                # tile imagery, enhance RGB
                 img_arr = img.read(window=win).astype("float32")  # (C, ts, ts)
                 enhanced = enhance_rgb(img_arr[rgb_idx], self.enhance_cfg)
                 out = np.concatenate([img_arr, enhanced], axis=0)  # (C+3, ts, ts)
                 win_tf = window_transform(win, img.transform)
 
+                # write outputs
                 stem = f"{zone_name}_r{r}_c{c}"
                 img_path = layout["imagery"] / f"{stem}.tif"
                 msk_path = layout["masks_raster"] / f"{stem}.tif"
@@ -132,6 +140,7 @@ class ROSAProcessor:
                                tiled=True, blockxsize=patch, blockysize=patch)
                 self._write_graph(zone, window_box(win, img.transform), sindex, gph_path)
 
+                # generate metadata
                 rows.append(self._row(
                     paths=paths, zone_name=zone_name, split=split,
                     img_path=img_path, msk_path=msk_path, gph_path=gph_path,
@@ -139,8 +148,11 @@ class ROSAProcessor:
                     res=abs(win_tf.a), total_px=ts * ts, road_px=road_px,
                     tile_size=ts, band_count=out.shape[0],
                 ))
+
+                
                 kept += 1
                 kept_road += road_px > 0
+                
         partial = n_cols * (img.width % ts > 0) + n_rows * (img.height % ts > 0)
         print(
             f"  {split} grid {n_rows}x{n_cols}: kept {kept} "
@@ -150,8 +162,7 @@ class ROSAProcessor:
         return rows
 
     def _empty_keep_mask(self, zone_name, full_mask, ts, n_rows, n_cols):
-        """Boolean ``(n_rows, n_cols)``: which empty tiles to keep (seeded per zone).
-        """
+        """Boolean ``(n_rows, n_cols)``: which empty tiles to keep (seeded per zone)."""
         ratio = self.empty_keep_ratio
         keep = np.ones((n_rows, n_cols), dtype=bool)
         if ratio >= 1.0:
