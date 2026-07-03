@@ -71,22 +71,23 @@ CDNGI_ROAD_CLASSIFICATION = {
     }
 }
 
-# Cleaned parquet format from CDNGI
-ROAD_VECTOR_COLUMNS = ("data_source", "road_class", "scale_class", "buffer", "geometry")
-
-
-def flatten_classification(road_classification: dict) -> tuple[dict, dict]:
+def flatten_classification(road_classification_config: dict, exclude_class: list = ["ignored"]) -> tuple[dict, dict, list]:
     """Flatten config into mappings of road class to scale and buffer. 
     The ignored category is dropped.
+
+    Args:
+        road_classification_config (dict): The road classification configuration.
+        exclude_class (list): List of scale classes to exclude.
     """
-    scale_map, buffer_map = {}, {}
-    for scale_class, classes in road_classification.items():
-        if scale_class == "ignored":
+    scale_map, buffer_map, road_classifications = {}, {}, []
+    for scale_class, classes in road_classification_config.items():
+        if scale_class in exclude_class:
             continue
         for road_class, buffer in classes.items():
             scale_map[road_class] = scale_class
             buffer_map[road_class] = buffer
-    return scale_map, buffer_map
+            road_classifications.append(road_class)
+    return scale_map, buffer_map, road_classifications
 
 
 ## METADATA CONSTANTS ##
