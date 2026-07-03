@@ -1,21 +1,7 @@
-"""Zone processors: how one source COG becomes catalogue rows + tile artifacts.
-
-This is the main axis a new dataset *variant* swaps. Each :class:`ZoneProcessor`
-owns its output layout and row schema and composes :mod:`labels` generators:
-
-  * :class:`V2ROSAProcessor` (V2ROSA) -- split-aware: train zones -> raw 512px
-    GTiff tiles, val/test zones -> whole-zone COG; each image gets appended
-    enhanced-RGB bands + a road-graph parquet, under ``<root>/<split>/``.
-  * :class:`V1ROSAProcessor` (V1ROSA) -- write an in-place full-zone raster mask +
-    road-graph parquet, one row per internal mask block-window.
-
-``V1ROSAProcessor.process(zone_id, sat, paths)`` returns a per-zone GeoDataFrame for
-the generic pipeline; ``V2ROSAProcessor.process(zone_id, sat, split, paths)`` returns
-row dicts for the split-first pipeline (which assigns ``image_id``).
-"""
+"""Processes one COG into outputs per tile (image, mask, metadata)"""
 import zlib
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from abc import ABC, abstractmethod
 import geopandas as gpd
 import numpy as np
 import rasterio
@@ -24,7 +10,7 @@ from rasterio.windows import transform as window_transform
 from shapely.geometry import box
 from sentinel2data.generator.config import (
     SCAFFOLD_DATES,
-    V2_SCHEMA,
+    ROSA_SCHEMA,
     UNKNOWN_BIOME,
     CatalogueSchema,
     DatasetPaths,
@@ -49,16 +35,15 @@ from sentinel2data.generator.labels import (
 )
 
 
-@runtime_checkable
-class ZoneProcessor(Protocol):
+class ZoneProcessor(ABC):
     """Turn one zone COG into per-zone catalogue rows (+ side-effect artifacts)."""
-
     schema: CatalogueSchema
 
+    @abstractmethod
     def process(
         self, zone_id: int, sat_cog_path: Path, paths: DatasetPaths
     ) -> "gpd.GeoDataFrame | None":
-        ...
+        pass
 
 
 def _rel(root, path):
@@ -70,22 +55,20 @@ def _rel(root, path):
         return str(path)
 
 
-class V2ROSAProcessor:
-    """S2-ROSA-V2 processor: cut every zone into non-overlapping 512px tiles.
+class ROSAProcessor:
+    """ROSA processor: cut every zone into non-overlapping 512px tiles.
 
-    All splits are tiled identically (train/val/test) -- the pipeline decides a
-    zone's split first, then this processor writes its tiles under
-    ``<root>/<split>/{imagery,masks_raster,masks_graph}``, one catalogue row per
-    tile. Non-empty tiles are always kept; empty (no-road) tiles are kept with
-    probability ``empty_keep_ratio`` (seeded per zone, same for every split), so
-    ``1.0`` drops nothing and ``0.0`` keeps only road-bearing tiles.
+    All splits are tiled identically (train/val/test). 
+    The pipeline decides a zone's split first, then the processor writes the tiles mask and image outputs. 
+    Metadata is generated per tile
 
-    Every tile gets 3 appended CLAHE+gamma enhanced-RGB bands (:func:`enhance_rgb`),
-    a raster mask, and a road-graph parquet. ``process`` returns a list of row dicts
-    (the split-first pipeline concatenates + assigns ``image_id``).
+    Empty (no-road) tiles are kept with probability ``empty_keep_ratio`` (seeded per zone).
+    Ratio `1.0`` drops nothing and ``0.0`` keeps only road present tiles.
+
+    Tile gets 3 appended CLAHE+gamma enhanced-RGB bands.
     """
 
-    schema = V2_SCHEMA
+    schema = ROSA_SCHEMA
 
     def __init__(self, roads_parquet_path, tile_spec=None, mask_labeler=None,
                  enhance_cfg=None, empty_keep_ratio=1.0, tile_seed=42):
@@ -96,7 +79,7 @@ class V2ROSAProcessor:
         self.empty_keep_ratio = float(empty_keep_ratio)
         self.tile_seed = int(tile_seed)
 
-    # -- entry -------------------------------------------------------------
+
     def process(self, zone_id, sat_cog_path, split, paths):
         sat_cog_path = Path(sat_cog_path)
         zone_name = sat_cog_path.stem
@@ -220,73 +203,3 @@ class V2ROSAProcessor:
             "crs": src_crs.to_string(),
             "geometry": box(west, south, east, north),
         }
-
-
-class V1ROSAProcessor:
-    """Index a zone COG's internal mask block-windows as patches (v1).
-
-    Writes a full-zone raster mask + patch-aligned road-graph parquet in place
-    (``masks_raster/``, ``masks_graph/``), then records one row per mask block.
-    """
-
-    schema = V1_SCHEMA
-
-    def __init__(self, roads_parquet_path, mask_labeler=None, graph_labeler=None):
-        self.roads_parquet_path = Path(roads_parquet_path)
-        self.mask_labeler = mask_labeler or RasterMaskLabeler()
-        self.graph_labeler = graph_labeler or RoadGraphLabeler()
-
-    def process(self, zone_id, sat_cog_path, paths):
-        sat_cog_path = Path(sat_cog_path)
-        zone_name = sat_cog_path.stem
-        print(f"[{zone_id}] {zone_name}")
-
-        mask_path = paths.masks_raster_dir / f"{zone_name}_mask.tif"
-        graph_path = paths.masks_graph_dir / f"{zone_name}_graphs.parquet"
-
-        zone = load_zone_roads(sat_cog_path, self.roads_parquet_path)
-        self.mask_labeler.generate(sat_cog_path, zone, mask_path)
-        self.graph_labeler.generate(sat_cog_path, zone, graph_path)
-
-        rel_paths = {
-            "tile_path": _rel(paths.root, sat_cog_path),
-            "mask_raster_path": _rel(paths.root, mask_path),
-            "mask_graph_path": _rel(paths.root, graph_path),
-        }
-        records, native_crs = self._scan_patches(zone_id, zone_name, rel_paths, mask_path)
-        if not records:
-            return None
-        return gpd.GeoDataFrame(
-            records, geometry="patch_bounding_geometry", crs=native_crs
-        ).to_crs(WGS84)
-
-    def _scan_patches(self, zone_id, zone_name, rel_paths, mask_path):
-        print(f"Scanning mask blocks: {zone_name}")
-        records = []
-        with rasterio.open(mask_path) as src:
-            native_crs = src.crs
-            crs_str = src.crs.to_string()
-            spatial_resolution = abs(src.transform.a)
-            for ji, window in src.block_windows(1):
-                patch = src.read(1, window=window)
-                road_pixels = int(np.count_nonzero(patch > 0))
-                total_pixels = int(patch.size)
-                road_density = road_pixels / total_pixels if total_pixels else 0.0
-                records.append(
-                    {
-                        "tile_id": zone_id,
-                        "patch_row_id": ji[0],
-                        "patch_col_id": ji[1],
-                        "zone_name": zone_name,
-                        **rel_paths,
-                        "spatial_resolution": spatial_resolution,
-                        "urbanisation_classification": EMPTY_LABEL,
-                        "biome": SCAFFOLD_BIOME,
-                        "road_density": road_density,
-                        "split_set": None,  # assigned by the SplitStrategy
-                        "satellite_image_dates": list(SCAFFOLD_DATES),
-                        "crs": crs_str,
-                        "patch_bounding_geometry": window_box(window, src.transform),
-                    }
-                )
-        return records, native_crs

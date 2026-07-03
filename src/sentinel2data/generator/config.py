@@ -98,7 +98,7 @@ BIOME_COL = "T_BIOME"
 NULL_TOKENS = {"<null>", "null", "none", "nan", ""}
 UNKNOWN_BIOME = "Unknown"
 
-V2_METADATA_COLUMNS = [
+ROSA_METADATA_COLUMNS = [
     # indexing
     "image_id",
     "zone_name",
@@ -122,7 +122,7 @@ V2_METADATA_COLUMNS = [
     "spatial_resolution",       # spatial resolution. Constant (10)
 ]
 
-V2_SPLIT_CSV_COLUMNS = [
+ROSA_SPLIT_CSV_COLUMNS = [
     "image_id",
     "zone_name",
     "split_set",
@@ -162,10 +162,10 @@ class CatalogueSchema:
     reindex_tile_id: bool = False # TODO: likely not needed. Overwrite tile_id with global 0..N-1 index after concatenation (cut-tiles) vs keep processor's ids (patch-windows, where tile_id groups a whole zone for classification + splitting)
 
 
-V2_SCHEMA = CatalogueSchema(
-    columns=V2_METADATA_COLUMNS,
+ROSA_SCHEMA = CatalogueSchema(
+    columns=ROSA_METADATA_COLUMNS,
     geometry_col="tile_bounding_geometry",
-    split_csv_columns=V2_SPLIT_CSV_COLUMNS,
+    split_csv_columns=ROSA_SPLIT_CSV_COLUMNS,
     reindex_tile_id=False,  # V2 split-first runner assigns image_id itself
 )
 
@@ -178,16 +178,6 @@ class DatasetPaths:
         # Normalise to Path without breaking frozen-ness.
         object.__setattr__(self, "root", Path(self.root))
 
-    # v2 (cut tiles)
-    @property
-    def images_dir(self) -> Path:
-        return self.root / "images"
-
-    @property
-    def masks_dir(self) -> Path:
-        return self.root / "masks"
-
-    # v1 (patch windows, masks generated in place)
     @property
     def imagery_dir(self) -> Path:
         return self.root / "imagery"

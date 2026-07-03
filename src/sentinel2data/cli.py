@@ -5,7 +5,7 @@ import typer
 import yaml
 
 from sentinel2data.generator.roads import RoadVectorExtractor
-# from sentinel2data.generator.pipeline import make_v1rosa_pipeline, make_v2rosa_pipeline
+from sentinel2data.generator.pipeline import make_rosa_pipeline
 from sentinel2data.viz import visualize_classification, visualize_rosav2
 
 
@@ -52,11 +52,7 @@ def generate(
         Variant,
         typer.Option(help="Dataset variant: V2ROSA"),
     ],
-    roads: Annotated[Path, typer.Option(help="Combined roads GeoParquet from the `roads` command")],
-    dataset_dir: Annotated[
-        Optional[Path],
-        typer.Option(help="[V1ROSA] dataset root; scans <dir>/imagery, writes masks + metadata in place"),
-    ] = None,
+    roads: Annotated[Path, typer.Option(help="Cleaned roads GeoParquet from the `roads` command (carries per-road buffer)")],
     imagery_dir: Annotated[
         Optional[Path], typer.Option(help="[V2ROSA] directory of source satellite COGs")
     ] = None,
@@ -69,39 +65,25 @@ def generate(
     ] = None,
     tile_size: Annotated[int, typer.Option(help="[V2ROSA] tile edge in pixels (kept tiles are exactly this)")] = 512,
     patch_size: Annotated[int, typer.Option(help="[V2ROSA] COG block size + dataloader crop edge")] = 256,
-    buffer_m: Annotated[
-        Optional[int],
-        typer.Option(help="Fallback road buffer (metres); default 10 for V1ROSA, 5 for V2ROSA"),
-    ] = None,
     empty_keep_ratio: Annotated[
         float,
         typer.Option(help="[V2ROSA] fraction of empty (no-road) tiles kept, same for all splits (1.0=keep all, 0.0=only road tiles)"),
     ] = 1.0,
     tile_seed: Annotated[int, typer.Option(help="[V2ROSA] seed for empty-tile subsampling")] = 42,
 ):
-    """Generate a dataset variant: --variant V1ROSA (in-place patch index) or V2ROSA (cut tiles)."""
-    if variant is Variant.V1ROSA:
-        if dataset_dir is None:
-            raise typer.BadParameter("V1ROSA requires --dataset-dir.")
-        make_v1rosa_pipeline(
-            dataset_dir=dataset_dir,
-            roads_parquet_path=roads,
-            buffer_m=10 if buffer_m is None else buffer_m,
-        ).run()
-    else:  # V2ROSA
-        if imagery_dir is None or output_dir is None:
-            raise typer.BadParameter("V2ROSA requires --imagery-dir and --output-dir.")
-        make_v2rosa_pipeline(
-            imagery_dir=imagery_dir,
-            output_dir=output_dir,
-            roads_parquet_path=roads,
-            biome_parquet_path=biome_parquet,
-            tile_size=tile_size,
-            patch_size=patch_size,
-            buffer_m=5 if buffer_m is None else buffer_m,
-            empty_keep_ratio=empty_keep_ratio,
-            tile_seed=tile_seed,
-        ).run()
+    """Generate the V2ROSA dataset (cut 512px tiles). Road buffers come from the roads parquet."""
+    if imagery_dir is None or output_dir is None:
+        raise typer.BadParameter("V2ROSA requires --imagery-dir and --output-dir.")
+    make_rosa_pipeline(
+        imagery_dir=imagery_dir,
+        output_dir=output_dir,
+        roads_parquet_path=roads,
+        biome_parquet_path=biome_parquet,
+        tile_size=tile_size,
+        patch_size=patch_size,
+        empty_keep_ratio=empty_keep_ratio,
+        tile_seed=tile_seed,
+    ).run()
 
 
 @app.command()

@@ -6,7 +6,7 @@ catalogue is assembled (``gdf[tagger.column] = tagger.tag(gdf)``):
   * :class:`UrbanisationClassifier`-- Jenks urbanisation class from road density.
 """
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from abc import ABC, abstractmethod
 import geopandas as gpd
 import jenkspy
 import numpy as np
@@ -20,27 +20,20 @@ from sentinel2data.generator.config import (
     WGS84,
 )
 
-
-@runtime_checkable
-class Tagger(Protocol):
+class Tagger(ABC):
     """Compute one catalogue column aligned to the input rows."""
-
     column: str
-
+    
+    @abstractmethod
     def tag(self, gdf: gpd.GeoDataFrame) -> pd.Series:
-        ...
+        pass
 
 
 # --------------------------------------------------------------------------- #
 # Biome
 # --------------------------------------------------------------------------- #
-def _clean_biome(s: pd.Series) -> pd.Series:
-    """Normalise the ``<Null>`` text + empty values to real NA."""
-    s = s.astype("string").str.strip()
-    return s.mask(s.str.lower().isin(NULL_TOKENS), pd.NA)
 
-
-class BiomeTagger:
+class BiomeTagger(Tagger):
     """Look up the NVM2024 biome for each tile centroid from a GeoParquet.
 
     Tiles outside the map extent (or in a null biome) become ``"Unknown"``.
@@ -53,6 +46,11 @@ class BiomeTagger:
         self.biome_col = biome_col
         self._biomes = None  # lazy
 
+    def _clean_biome(self, s: pd.Series) -> pd.Series:
+        """Normalise the ``<Null>`` text + empty values to real NA."""
+        s = s.astype("string").str.strip()
+        return s.mask(s.str.lower().isin(NULL_TOKENS), pd.NA)
+        
     def _load(self):
         if self._biomes is not None:
             return self._biomes
@@ -67,7 +65,7 @@ class BiomeTagger:
                 f"{self.biome_col!r} not in biome parquet columns: {list(gdf.columns)}"
             )
         gdf = gdf.to_crs(WGS84)
-        gdf[self.biome_col] = _clean_biome(gdf[self.biome_col])
+        gdf[self.biome_col] = self._clean_biome(gdf[self.biome_col])
         self._biomes = gdf[[self.biome_col, "geometry"]]
         return self._biomes
 
@@ -95,7 +93,7 @@ class BiomeTagger:
 # --------------------------------------------------------------------------- #
 # Urbanisation classification (Jenks natural breaks, computed per tile)
 # --------------------------------------------------------------------------- #
-class UrbanisationClassifier:
+class UrbanisationClassifier(Tagger):
     """Classify each tile Rural/Peri-Urban/Urban by road density.
 
     Breaks are computed *within each split* (``split_set`` group), so the class

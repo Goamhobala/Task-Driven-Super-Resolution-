@@ -1,22 +1,14 @@
-"""Per-zone (Large COG tiff) label generation from a combined road-vector GeoParquet.
-
-  - 'RasterMaskLabeler` class -- buffered binary raster mask aligned to imagery.
-  - `RoadGraphLabeler` class  -- patch-aligned road-segment vector parquet.
-
-`load_zone_roads` function performs read sat meta, spatially filter + reproject + clip the road parquet to the COG footprint.
-"""
+"""Generates label masks in a per-zone basis"""
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
 import geopandas as gpd
 import numpy as np
-import pandas as pd
 import rasterio
 from rasterio import features
 from shapely.geometry import box
 from sentinel2data.generator.config import WGS84
-from sentinel2data.generator.helper import window_box
 from sentinel2data.generator.io import write_mask_cog
+from abc import ABC, abstractmethod
 
 
 @dataclass
@@ -60,6 +52,7 @@ def load_zone_roads(sat_cog_path, roads_parquet_path) -> ZoneRoads:
         roads = gpd.read_parquet(roads_parquet_path, bbox=(minx, miny, maxx, maxy))
     except (ValueError, KeyError):
         # Parquet lacks a covering bbox column: read all, filter in memory.
+        print("Warning: parquet lacks bbox column; reading all roads and filtering in memory.")
         roads = gpd.read_parquet(roads_parquet_path)
         roads = roads.cx[minx:maxx, miny:maxy]
 
@@ -72,45 +65,41 @@ def load_zone_roads(sat_cog_path, roads_parquet_path) -> ZoneRoads:
     return ZoneRoads(gpd.clip(roads, footprint), sat_meta)
 
 
-@runtime_checkable
-class LabelGenerator(Protocol):
-    """Produce one label artifact for a zone, returning its written path."""
 
+class LabelGenerator(ABC):
+    """Produce one label artifact for a zone, returning its written path."""
     name: str
 
+    @abstractmethod
     def generate(self, sat_cog_path: Path, zone: ZoneRoads, out_path: Path) -> Path:
-        ...
+        pass
 
 
-class RasterMaskLabeler:
-    """Rasterize buffered roads into a binary, tiled, LZW mask COG.
+class RasterMaskLabeler(LabelGenerator):
+    """Rasterize buffered roads into a binary COG mask.
 
-    Each road is buffered by a half-width that depends on its ``class`` tier
-    (major/medium), falling back to ``default_buffer_m`` for unmapped classes.
+    Each road is buffered by the buffer column which contains half-width (metres) buffer from centerline, in
+    the cleaned road parquet.
     """
 
     name = "mask_raster"
-
-    def __init__(self, tier_buffer_m=None, default_buffer_m=DEFAULT_BUFFER_M):
-        self.tier_buffer_m = dict(
-            ROAD_TIER_BUFFER_M if tier_buffer_m is None else tier_buffer_m
-        )
-        self.default_buffer_m = default_buffer_m
+    BUFFER_COL = "buffer"
 
     def buffer_distances(self, roads):
-        """Per-row buffer radius (metres) from each road's ``class`` tier."""
-        if "class" in roads.columns:
-            dist = roads["class"].map(self.tier_buffer_m).fillna(self.default_buffer_m)
-        else:
-            dist = pd.Series(self.default_buffer_m, index=roads.index)
-        return dist.to_numpy(dtype="float64")
+        """Gets buffer column from roads geo dataframe. Contains half-width (metres) buffer from centerline."""
+        if self.BUFFER_COL not in roads.columns:
+            raise ValueError(
+                f"Road frame is missing the '{self.BUFFER_COL}' column required for "
+                "buffering; regenerate the road vector with the current roads extractor."
+            )
+        return roads[self.BUFFER_COL].to_numpy(dtype="float64")
 
     def rasterize(self, zone: ZoneRoads) -> np.ndarray:
-        """Build the binary mask array (no disk IO) -- reusable by tilers."""
+        """Build the binary mask array"""
         meta = zone.sat_meta["meta"]
         roads = zone.roads
         if roads.empty:
-            print("No roads to rasterize. Creating an empty mask.")
+            print("Warning: No roads to rasterize. Creating an empty mask.")
             return np.zeros((meta["height"], meta["width"]), dtype="uint8")
 
         distances = self.buffer_distances(roads)
@@ -142,54 +131,23 @@ class RasterMaskLabeler:
         return Path(out_path)
 
 
-class RoadGraphLabeler:
-    """Split the road network into patches aligned to the COG's internal tiling.
-
-    Writes one parquet row per (road segment ∩ patch).
+class RoadGraphLabeler(LabelGenerator):
+    """Write the tile's road network to parquet.
+    Copy and paste of the input road parquet, but cropped to the tile's bounding box.
     """
 
     name = "mask_graph"
 
     def generate(self, sat_cog_path, zone: ZoneRoads, out_path) -> Path:
-        crs = zone.crs
-        block_w = zone.sat_meta["blockxsize"]
-        block_h = zone.sat_meta["blockysize"]
         roads = zone.roads
-        sindex = roads.sindex if not roads.empty else None
+        if not roads.empty:
+            tile_box = box(*zone.sat_meta["bounds"])
+            roads = self._clip_roads(roads, tile_box, roads.sindex)
 
-        print(f"Extracting patch-aligned road graphs (block {block_w}x{block_h})...")
-        parts = []
-        with rasterio.open(sat_cog_path) as src:
-            for ji, window in src.block_windows(1):
-                patch_box = window_box(window, src.transform)
-                patch_roads = self._clip_roads(roads, patch_box, sindex)
-                if patch_roads.empty:
-                    continue
-                patch_roads = patch_roads.copy()
-                patch_roads["patch_row_id"] = ji[0]
-                patch_roads["patch_col_id"] = ji[1]
-                parts.append(patch_roads)
-
-        if parts:
-            gdf = gpd.GeoDataFrame(
-                pd.concat(parts, ignore_index=True), geometry="geometry", crs=crs
-            )
-        else:
-            # No road hit any patch: keep the full attribute schema, zero rows.
-            gdf = roads.iloc[0:0].copy()
-            gdf["patch_row_id"] = pd.Series(dtype="int64")
-            gdf["patch_col_id"] = pd.Series(dtype="int64")
-
-        n_patches = (
-            0 if gdf.empty else gdf.groupby(["patch_row_id", "patch_col_id"]).ngroups
-        )
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        print(
-            f"Writing {len(gdf)} road segments across {n_patches} patches "
-            f"to {out_path}..."
-        )
-        gdf.to_parquet(out_path)
+        print(f"Writing {len(roads)} road segments (cropped to tile) to {out_path}...")
+        roads.to_parquet(out_path)
         print("Road graph complete.")
         return out_path
 
