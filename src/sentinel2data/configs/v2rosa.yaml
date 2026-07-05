@@ -1,0 +1,39 @@
+# V2ROSA build recipe -- one file driving the whole pipeline. Run in sequence,
+# reusing this config for each step (explicit flags still override):
+#
+#   sentinel2data --config src/sentinel2data/configs/v2rosa.yaml roads
+#   sentinel2data --config src/sentinel2data/configs/v2rosa.yaml generate
+#   sentinel2data --config src/sentinel2data/configs/v2rosa.yaml norm-stats
+
+
+roads:
+  # out: /Volumes/MacOSFiles/RoadVectorData/clean_road_data/cdngi_dense.parquet
+  # cdngi: /Volumes/MacOSFiles/RoadVectorData/CDNGI_Data     # .gpkg file or directory of province *.gpkg
+  out: /Volumes/MacOSFiles/RoadVectorData/clean_road_data/overture_dense.parquet
+  overture: /Volumes/MacOSFiles/RoadVectorData/OvertureSARoadData/south_africa_overture_roads.parquet
+    
+generate:
+  # roads: /Volumes/MacOSFiles/RoadVectorData/large_medium_scale_data/CDNGI_large_medium_scale_roads.parquet
+  roads: /Volumes/MacOSFiles/RoadVectorData/clean_road_data/overture_dense.parquet
+  biome_parquet: /Volumes/MacOSFiles/NVM2024Beta_Shapefile/nvm2024_t_biome.parquet
+  imagery_dir: /Volumes/MacOSFiles/S2ROSA/imagery         # directory of source satellite COGs
+  
+  output_dir: /Volumes/MacOSFiles/ROSA_Dense_Overture
+  tile_size: 512
+  patch_size: 256
+  empty_keep_ratio: 1.0                                   # fraction of empty (no-road) tiles kept, all splits (1.0=keep all, 0.0=road tiles only)
+
+norm-stats:
+  dataset_dir: /Volumes/MacOSFiles/ROSA_Dense_Overture
+  out: null # src/unet/configs/norm_stats.yaml
+
+# Visualisation. Side-by-side RGB | RGB-enhanced | road-mask PNGs for a ROSAV2 dataset.
+visualize:
+  dataset_dir: /Volumes/MacOSFiles/ROSA_Dense_Overture
+  out_dir: null                    # default <dataset_dir>/visualisation
+  limit: null                      # max images rendered per split
+
+# Per-split biome + urbanisation ratios and road-density stats -> dataset_summary.yaml.
+summary:
+  dataset_dir: /Volumes/MacOSFiles/ROSA_Dense_Overture
+  out: null                        # default <dataset_dir>/dataset_summary.yaml
