@@ -94,10 +94,25 @@ def _data_kwargs(cfg: dict, dataset_dir: str | None, num_workers: int | None) ->
 # --------------------------------------------------------------------------- #
 # Objective
 # --------------------------------------------------------------------------- #
+def _resolve_devices(v):
+    """Coerce '1'/'2' -> int; keep 'auto'. Refuse multi-GPU: DDP re-launches the
+    whole entry script per rank, which breaks the Optuna loop and segfaults on
+    rasterio. Use one process per GPU (shared --storage) to parallelise instead."""
+    dev = int(v) if isinstance(v, str) and v.lstrip("-").isdigit() else v
+    if isinstance(dev, int) and dev > 1:
+        raise SystemExit(
+            f"--devices {dev}: the search must run one GPU per process (no DDP). "
+            "Pass --devices 1. To use N GPUs, launch N tuner processes sharing the "
+            "same --storage, each pinned with CUDA_VISIBLE_DEVICES."
+        )
+    return dev
+
+
 def build_objective(args, base_cfg: dict):
     data_cfg = _data_kwargs(base_cfg, args.dataset_dir, args.num_workers)
     model_cfg = dict(base_cfg.get("model", {}))
     bands = tuple(data_cfg["bands"])
+    devices = _resolve_devices(args.devices)
 
     def objective(trial: optuna.Trial) -> float:
         # --- search space (log-uniform where scale-free) ----------------------
@@ -143,7 +158,11 @@ def build_objective(args, base_cfg: dict):
         trainer = pl.Trainer(
             max_epochs=args.max_epochs,
             accelerator=args.accelerator,
-            devices=args.devices,
+            devices=devices,
+            # single_device: DDP would re-launch this whole script per rank, which
+            # (a) re-drives the same Optuna study from every rank and (b) opens
+            # rasterio/GDAL in a subprocess -> segfault. Each trial runs on one GPU.
+            strategy="auto",
             precision=args.precision,
             logger=False,               # keep trials quiet; final refit does the W&B logging
             enable_checkpointing=False,
@@ -221,7 +240,9 @@ def parse_args(argv=None):
     ap.add_argument("--max-epochs", type=int, default=8, help="Short budget per trial; refit longer after.")
     ap.add_argument("--patience", type=int, default=3, help="EarlyStopping patience per trial (0=off).")
     ap.add_argument("--accelerator", default="auto")
-    ap.add_argument("--devices", default="auto")
+    ap.add_argument("--devices", default="1",
+                    help="GPUs PER tuner process. Must be 1 (no DDP during search); "
+                         "parallelise with one process per GPU sharing --storage.")
     ap.add_argument("--precision", default="bf16-mixed")
 
     # search space

@@ -38,7 +38,7 @@ VENV_DIR="/scratch/${USER_NAME}/InstaRoad/.venv"     # prebuilt venv on scratch
 # One-time, into that venv:  uv pip install -e "$REPO_DIR[unet]"
 
 # S2ROSA dataset root (holds the train/val/test tile splits the RoadDataModule reads).
-DATASET_DIR="/scratch/${USER_NAME}/InstaRoad/S2ROSA_V2"
+DATASET_DIR="/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI"
 
 # Canonical Lightning config(s). unet.yaml is the base; norm_stats.yaml layers the
 # frozen per-band train stats over it (data.norm_mean/std). Order matters (last wins).
@@ -51,7 +51,10 @@ NUM_WORKERS=1        # 0 = load in main process; GDAL/rasterio segfault in subpr
 PRECISION="bf16-mixed"
 
 # --- Optuna search budget ---------------------------------------------------
-N_TRIALS=30
+N_TRIALS=30           # TOTAL trials across all search workers
+SEARCH_GPUS=2        # 1 = single-process search; 2+ = one tuner per GPU sharing
+                      #     the study (splits N_TRIALS across them). Match your
+                      #     allocation, e.g. salloc --gres=gpu:2 -> SEARCH_GPUS=2.
 TUNE_EPOCHS=8         # short per-trial budget; the winner is refit at full length
 PATIENCE=3           # per-trial EarlyStopping on val_iou (0 = off)
 # Search space (see unet.tune for defaults; override here if desired)
@@ -98,24 +101,56 @@ fi
 source "$VENV_DIR/bin/activate"
 export PYTHONPATH="$REPO_DIR/src:${PYTHONPATH:-}"
 
-echo "=== OPTUNA SEARCH (n_trials=$N_TRIALS, ${TUNE_EPOCHS} epochs/trial) ==="
-python -m unet.tune \
-  --base-config "$BASE_CONFIG" \
-  --base-config "$NORM_CONFIG" \
-  --dataset-dir "$DATASET_DIR" \
-  --out "$RUN_DIR" \
-  --num-workers "$NUM_WORKERS" \
-  --n-trials "$N_TRIALS" \
-  --max-epochs "$TUNE_EPOCHS" \
-  --patience "$PATIENCE" \
-  --precision "$PRECISION" \
-  --seed "$SEED" \
-  --study-name "unet_optuna_seed${SEED}" \
-  --storage "sqlite:///${RUN_DIR}/study.db" \
-  --lr-min "$LR_MIN" --lr-max "$LR_MAX" \
-  --pos-weight-min "$POS_WEIGHT_MIN" --pos-weight-max "$POS_WEIGHT_MAX" \
-  --encoders $ENCODERS \
-  --batch-sizes $BATCH_SIZES
+echo "=== OPTUNA SEARCH (n_trials=$N_TRIALS across ${SEARCH_GPUS} GPU(s), ${TUNE_EPOCHS} epochs/trial) ==="
+# Each search worker runs ONE GPU per process (no DDP): under DDP, Lightning
+# re-launches this whole script per rank, which re-drives the same study and
+# segfaults on rasterio in the spawned process. Parallelism instead comes from
+# running SEARCH_GPUS independent tuner processes over a SHARED sqlite study;
+# Optuna hands out trials and handles the locking. Each worker gets its own seed
+# so the samplers don't propose identical points.
+STORAGE="sqlite:///${RUN_DIR}/study.db"
+
+run_tuner () {   # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
+  local gpu="$1" ntrials="$2" seed="$3" pin=""
+  [ -n "$gpu" ] && pin="CUDA_VISIBLE_DEVICES=$gpu"
+  env $pin python -m unet.tune \
+    --base-config "$BASE_CONFIG" \
+    --base-config "$NORM_CONFIG" \
+    --dataset-dir "$DATASET_DIR" \
+    --out "$RUN_DIR" \
+    --num-workers "$NUM_WORKERS" \
+    --devices 1 \
+    --n-trials "$ntrials" \
+    --max-epochs "$TUNE_EPOCHS" \
+    --patience "$PATIENCE" \
+    --precision "$PRECISION" \
+    --seed "$seed" \
+    --study-name "unet_optuna_seed${SEED}" \
+    --storage "$STORAGE" \
+    --lr-min "$LR_MIN" --lr-max "$LR_MAX" \
+    --pos-weight-min "$POS_WEIGHT_MIN" --pos-weight-max "$POS_WEIGHT_MAX" \
+    --encoders $ENCODERS \
+    --batch-sizes $BATCH_SIZES
+}
+
+if [ "$SEARCH_GPUS" -le 1 ]; then
+  run_tuner "" "$N_TRIALS" "$SEED"
+else
+  # Split the total trial budget across workers (ceil so the sum >= N_TRIALS).
+  PER_WORKER=$(( (N_TRIALS + SEARCH_GPUS - 1) / SEARCH_GPUS ))
+  echo "  fanning out ${SEARCH_GPUS} workers x ${PER_WORKER} trials each"
+  pids=()
+  for (( g=0; g<SEARCH_GPUS; g++ )); do
+    run_tuner "$g" "$PER_WORKER" "$(( SEED + g ))" &
+    pids+=($!)
+    sleep 3   # stagger so worker 0 creates the study before the others attach
+  done
+  fail=0
+  for pid in "${pids[@]}"; do
+    wait "$pid" || fail=1
+  done
+  [ "$fail" -eq 0 ] || { echo "ERROR: an Optuna search worker failed (see log above)." >&2; exit 1; }
+fi
 
 BEST_CONFIG="${RUN_DIR}/best_params.yaml"
 if [ ! -f "$BEST_CONFIG" ]; then
