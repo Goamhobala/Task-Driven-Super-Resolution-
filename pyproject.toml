@@ -100,6 +100,16 @@ baseline = [
     "terratorch",
 ]
 
+# R0/R1/R2 resolution-enhancement experiments (src/sr): baseline deps + SEN2SR.
+sr = [
+    "instaroadprototype[baseline]",
+    "lightning>=2.0",
+    "torchmetrics>=1.0",
+    "sen2sr",
+    "mlstac",
+    "safetensors",
+]
+
 utilities = [
     "absl-py>=2.4.0",
     "geopandas>=1.1.2",

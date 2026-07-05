@@ -25,6 +25,7 @@ from torch.utils.data import DataLoader
 
 import wandb
 
+from baseline.augment import build_transform, visualize_augmentations
 from baseline.data import (
     CHANNEL_GROUPS,
     build_splits,
@@ -51,6 +52,19 @@ def parse_args():
     ap.add_argument("--encoder", default="resnet50")
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--augment", action=argparse.BooleanOptionalAction, default=True,
+                    help="master switch for real-time augmentation on the train split")
+    # Per-augmentation toggles (see baseline.augment). flip on by default; the
+    # rest opt-in, and 'blur'/'colour' are flagged potentially detrimental.
+    ap.add_argument("--aug-flip", action=argparse.BooleanOptionalAction, default=True,
+                    help="D4 flips + rotations (default: on)")
+    ap.add_argument("--aug-sharpen", action="store_true", help="edge sharpening")
+    ap.add_argument("--aug-noise", action="store_true", help="additive per-band Gaussian noise")
+    ap.add_argument("--aug-blur", action="store_true", help="Gaussian blur (potentially detrimental)")
+    ap.add_argument("--aug-colour", action="store_true",
+                    help="per-band brightness/contrast jitter (potentially detrimental)")
+    ap.add_argument("--viz-augment", action="store_true",
+                    help="save a grid of augmented samples to <out>/augment_preview.png and exit (no training)")
     ap.add_argument("--alpha", type=float, default=0.3, help="clDice weight in the loss")
     ap.add_argument("--patience", type=int, default=10)
     ap.add_argument("--min-delta", type=float, default=1e-4)
@@ -106,11 +120,31 @@ def main():
     print(f"sites  train={splits['train']}\n       val={splits['val']}\n       test={splits['test']}")
     print(f"config={args.config} ({in_channels} ch)  mask_suffix={mask_suffix!r}  device={device}")
 
+    # No fixed seed here: each DataLoader worker/epoch should draw its own
+    # random augmentations (a fixed seed would correlate them across workers).
+    aug_kwargs = dict(flip=args.aug_flip, sharpen=args.aug_sharpen, noise=args.aug_noise,
+                      blur=args.aug_blur, colour=args.aug_colour)
+    transform = build_transform(**aug_kwargs) if args.augment else None
+    enabled = [n for n, on in aug_kwargs.items() if on]
+    print(f"augment={'+'.join(enabled) if transform else 'off'}")
+
     train_ds = make_dataset(imagery, masks, splits["train"], stats, args.config,
-                            args.patch_size, args.stride, mask_suffix)
+                            args.patch_size, args.stride, mask_suffix, transform=transform)
     val_ds = make_dataset(imagery, masks, splits["val"], stats, args.config,
                           args.patch_size, args.patch_size, mask_suffix)
     print(f"patches  train={len(train_ds)}  val={len(val_ds)}")
+
+    if args.viz_augment:
+        # Inspect the augmentation without committing to a training run. Preview
+        # off the raw (un-augmented) patches so each grid row applies the
+        # transform itself; fall back to a default transform if --no-augment.
+        preview_ds = make_dataset(imagery, masks, splits["train"], stats, args.config,
+                                  args.patch_size, args.stride, mask_suffix)
+        preview_path = visualize_augmentations(
+            preview_ds, build_transform(**aug_kwargs, seed=args.seed),
+            out / "augment_preview.png", seed=args.seed)
+        print(f"wrote augmentation preview -> {preview_path}")
+        return
 
     # 'spawn' workers: neither CUDA (model is on GPU below) nor GDAL/rasterio
     # (used in __getitem__) survives a fork, so the default fork start method
@@ -119,6 +153,8 @@ def main():
     if args.num_workers > 0:
         loader_kwargs["multiprocessing_context"] = "spawn"
         loader_kwargs["persistent_workers"] = True
+    else:
+        loader_kwargs["pin_memory"] = False  # pin_memory has no effect without workers
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                               drop_last=True, **loader_kwargs)

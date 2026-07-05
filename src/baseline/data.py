@@ -33,8 +33,36 @@ __all__ = [
     "build_splits",
     "make_dataset",
     "compute_pos_weight",
+    "AugmentedRoadSegDataset",
     "BenchDataset",
 ]
+
+
+class AugmentedRoadSegDataset(RoadSegDataset):
+    """RoadSegDataset that applies an Albumentations transform per patch.
+
+    The base class returns the normalised image `(C, H, W)` and binary mask
+    `(1, H, W)` as tensors; we hand the same spatial transform to both so they
+    stay pixel-aligned, then convert back. With `transform=None` it is exactly
+    `RoadSegDataset`, so the same class can serve augmented (train) and plain
+    (val/test) splits. Albumentations wants channel-last numpy, hence the
+    permutes around the call.
+    """
+
+    def __init__(self, *args, transform=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.transform = transform
+
+    def __getitem__(self, idx):
+        x, y = super().__getitem__(idx)
+        if self.transform is None:
+            return x, y
+        img = x.permute(1, 2, 0).numpy()   # (H, W, C)
+        mask = y[0].numpy()                 # (H, W)
+        out = self.transform(image=img, mask=mask)
+        x = torch.from_numpy(np.ascontiguousarray(out["image"].transpose(2, 0, 1)))
+        y = torch.from_numpy(np.ascontiguousarray(out["mask"]))[None, ...]
+        return x, y
 
 
 def resolve_mask_suffix(masks_dir, sites, default="_mask.tif") -> str:
@@ -57,11 +85,17 @@ def build_splits(imagery_dir):
 
 
 def make_dataset(imagery_dir, masks_dir, sites, stats_path, config,
-                 patch_size=256, stride=256, mask_suffix="_mask.tif"):
-    return RoadSegDataset(
+                 patch_size=256, stride=256, mask_suffix="_mask.tif",
+                 transform=None):
+    """Build the patch dataset, optionally with a per-patch augmentation.
+
+    Pass `transform` (an Albumentations Compose, see `baseline.augment`) for the
+    training split; leave it None for val/test so they stay deterministic.
+    """
+    return AugmentedRoadSegDataset(
         imagery_dir, masks_dir, sites, stats_path,
         config=config, patch_size=patch_size, stride=stride,
-        mask_suffix=mask_suffix,
+        mask_suffix=mask_suffix, transform=transform,
     )
 
 

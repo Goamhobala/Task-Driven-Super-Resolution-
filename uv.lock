@@ -1769,6 +1769,18 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+baseline = [
+    { name = "albumentations", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "pyarrow", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "rasterio", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "scipy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "segmentation-models-pytorch", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "terratorch", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin')" },
+    { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "wandb", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
 benchmarking = [
     { name = "awscli", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "eotdl", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1777,6 +1789,10 @@ benchmarking = [
     { name = "pyarrow", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pyyaml", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "scipy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+dlinknet = [
+    { name = "lightning", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "torchmetrics", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 instageo = [
     { name = "instageo", extra = ["data", "gpu", "model"], marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1854,6 +1870,7 @@ dev = [
 requires-dist = [
     { name = "absl-py", marker = "extra == 'utilities'", specifier = ">=2.4.0" },
     { name = "addict", marker = "extra == 'samroad'" },
+    { name = "albumentations", marker = "extra == 'baseline'" },
     { name = "albumentations", marker = "extra == 'terra'", specifier = ">=2.0.8" },
     { name = "albumentations", marker = "extra == 'unet'" },
     { name = "awscli", marker = "extra == 'benchmarking'" },
@@ -1867,6 +1884,7 @@ requires-dist = [
     { name = "imageio", marker = "extra == 'samroad'" },
     { name = "instageo", extras = ["gpu", "data", "model"], marker = "extra == 'instageo'", git = "https://github.com/kelviy/InstaGeo-E2E-Geospatial-ML.git" },
     { name = "jenkspy", marker = "extra == 'sentinel2'", specifier = ">=0.4.1" },
+    { name = "lightning", marker = "extra == 'dlinknet'", specifier = ">=2.0" },
     { name = "lightning", marker = "extra == 'samroad'" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "matplotlib", marker = "extra == 'terra'", specifier = ">=3.10.8" },
@@ -1881,12 +1899,15 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'terra'", specifier = ">=2.4.2" },
     { name = "opencv-python", marker = "extra == 'samroad'" },
     { name = "opencv-python", marker = "extra == 'sentinel2'" },
+    { name = "pandas", marker = "extra == 'baseline'", specifier = ">=2.0" },
     { name = "pandas", marker = "extra == 'benchmarking'", specifier = ">=2.0" },
     { name = "pandas", marker = "extra == 'sentinel2'", specifier = ">=3.0.2" },
+    { name = "pyarrow", marker = "extra == 'baseline'", specifier = ">=14.0" },
     { name = "pyarrow", marker = "extra == 'benchmarking'", specifier = ">=14.0" },
     { name = "pyarrow", marker = "extra == 'sentinel2'", specifier = ">=23.0.1" },
     { name = "pyyaml", marker = "extra == 'benchmarking'" },
     { name = "pyyaml", marker = "extra == 'samroad'" },
+    { name = "rasterio", marker = "extra == 'baseline'", specifier = ">=1.5.0" },
     { name = "rasterio", marker = "extra == 'sentinel2'", specifier = ">=1.5.0" },
     { name = "rasterio", marker = "extra == 'utilities'", specifier = ">=1.5.0" },
     { name = "rioxarray", marker = "extra == 'sentinel2'", specifier = ">=0.22.0" },
@@ -1894,30 +1915,37 @@ requires-dist = [
     { name = "scikit-image", marker = "extra == 'samroad'" },
     { name = "scikit-image", marker = "extra == 'sentinel2'" },
     { name = "scikit-learn", marker = "extra == 'samroad'" },
+    { name = "scipy", marker = "extra == 'baseline'", specifier = ">=1.11" },
     { name = "scipy", marker = "extra == 'benchmarking'", specifier = ">=1.11" },
     { name = "scipy", marker = "extra == 'samroad'" },
+    { name = "segmentation-models-pytorch", marker = "extra == 'baseline'" },
     { name = "segmentation-models-pytorch", marker = "extra == 'terra'" },
     { name = "segmentation-models-pytorch", marker = "extra == 'unet'" },
     { name = "shapely", marker = "extra == 'sentinel2'", specifier = ">=2.1.2" },
     { name = "sknw", marker = "extra == 'sentinel2'" },
     { name = "tcod", marker = "extra == 'samroad'" },
+    { name = "terratorch", marker = "extra == 'baseline'", git = "https://github.com/terrastackai/terratorch.git" },
     { name = "terratorch", marker = "extra == 'terra'", git = "https://github.com/terrastackai/terratorch.git" },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'baseline'", specifier = ">=2.1.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'samroad'", specifier = ">=2.1.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'sentinel2'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'terra'", specifier = ">=2.1.0", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torch", marker = "sys_platform != 'linux' and extra == 'baseline'", specifier = ">=2.1.0" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'samroad'", specifier = ">=2.1.0" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'sentinel2'", specifier = ">=2.11.0" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'terra'", specifier = ">=2.1.0" },
+    { name = "torchmetrics", marker = "extra == 'dlinknet'", specifier = ">=1.0" },
     { name = "torchmetrics", marker = "extra == 'samroad'" },
     { name = "torchvision", marker = "sys_platform == 'linux' and extra == 'samroad'", specifier = ">=0.25.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchvision", marker = "sys_platform == 'linux' and extra == 'terra'", specifier = ">=0.25.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchvision", marker = "sys_platform != 'linux' and extra == 'samroad'", specifier = ">=0.25.0" },
     { name = "torchvision", marker = "sys_platform != 'linux' and extra == 'terra'", specifier = ">=0.25.0" },
     { name = "typer", marker = "extra == 'sentinel2'", specifier = ">=0.24.1" },
+    { name = "wandb", marker = "extra == 'baseline'" },
     { name = "wandb", marker = "extra == 'samroad'" },
     { name = "wandb", marker = "extra == 'terra'" },
 ]
-provides-extras = ["sentinel2", "samroad", "unet", "benchmarking", "instageo", "terra", "utilities"]
+provides-extras = ["sentinel2", "samroad", "unet", "benchmarking", "instageo", "terra", "dlinknet", "baseline", "utilities"]
 
 [package.metadata.requires-dev]
 dev = [
