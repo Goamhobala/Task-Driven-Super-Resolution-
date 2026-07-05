@@ -76,6 +76,12 @@ RUN_DIR="/scratch/${USER_NAME}/InstaRoad/runs/unet_optuna_seed${SEED}"
 CKPT_DIR="${RUN_DIR}/checkpoints"
 mkdir -p "$RUN_DIR" "$CKPT_DIR"
 
+# Mirror all stdout+stderr to a timestamped log in RUN_DIR. `#SBATCH --output`
+# only applies under `sbatch`; this also captures interactive `salloc`+bash runs.
+LOG_FILE="${RUN_DIR}/run_$(date +%Y%m%d_%H%M%S).log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "Logging to ${LOG_FILE}"
+
 # --- Diagnose the environment IN THE JOB LOG, then fail fast with a clear
 #     message if the data isn't visible from this node (instead of dying later
 #     as a cryptic num_samples=0 inside the DataLoader). ----------------------
