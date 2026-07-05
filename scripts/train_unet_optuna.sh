@@ -47,7 +47,7 @@ NORM_CONFIG="$REPO_DIR/src/unet/configs/norm_stats.yaml"
 WANDB_CONFIG="$REPO_DIR/src/unet/configs/wandb.yaml"   # logger overlay -> Weights & Biases
 
 SEED=0
-NUM_WORKERS=0         # 0 = load in main process; GDAL/rasterio segfault in subprocesses
+NUM_WORKERS=1        # 0 = load in main process; GDAL/rasterio segfault in subprocesses
 PRECISION="bf16-mixed"
 
 # --- Optuna search budget ---------------------------------------------------
