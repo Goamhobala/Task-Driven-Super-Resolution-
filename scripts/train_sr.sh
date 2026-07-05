@@ -29,13 +29,13 @@ set -euo pipefail
 # ============================ CONFIG — EDIT HERE ============================
 USER_NAME="${USER:-$(whoami)}"
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
-DATA_DIR="/scratch/${USER_NAME}/InstaRoad"     # holds imagery/, mask_2pt5m/, Data.npz
-VENV_DIR="${DATA_DIR}/.venv"
+DATA_DIR="/scratch/${USER_NAME}/InstaRoad/ROSA_V2"   # V2 dataset root: splits/, <split>/imagery/
+VENV_DIR="/scratch/${USER_NAME}/InstaRoad/.venv"
 
-IMAGERY_DIR="${DATA_DIR}/imagery"
-MASK_HR_DIR="${DATA_DIR}/mask_2pt5m"           # 2.5 m masks (exactly 4x imagery dims)
-STATS_NPZ="${DATA_DIR}/Data.npz"
-SEN2SR_DIR="${DATA_DIR}/models/SEN2SRLite_RGBN"
+HR_MASKS_DIRNAME="masks_osm_2pt5m"             # OSM 2.5 m masks beside each split's imagery/
+                                               # (pre-generate with OpenStreetMapTest/dataset_hr_masks.py)
+STATS_FILE="${DATA_DIR}/norm_stats.yaml"       # sentinel2data norm-stats output (.yaml or legacy .npz)
+SEN2SR_DIR="/scratch/${USER_NAME}/InstaRoad/models/SEN2SRLite_RGBN"
 
 EXPERIMENT="R2"       # R0=bicubic  R1=SEN2SR frozen  R2=SEN2SR joint (task-driven)
 EPOCHS=50
@@ -61,18 +61,20 @@ mkdir -p "$RUN_DIR"
 
 # Fail fast, in the job log, if the data isn't visible from this node.
 echo "host=$(hostname)  USER_NAME=${USER_NAME}  REPO_DIR=${REPO_DIR}"
-echo "DATA_DIR=${DATA_DIR}  imagery=${IMAGERY_DIR}  masks_hr=${MASK_HR_DIR}"
-for d in "$IMAGERY_DIR" "$MASK_HR_DIR"; do
-  if [ ! -d "$d" ]; then
-    echo "ERROR: $d not visible on $(hostname). Is /scratch mounted on this node?" >&2
-    exit 1
-  fi
-done
-n_tif=$(find "${IMAGERY_DIR}" -maxdepth 1 -name '*.tif' | wc -l)
-n_msk=$(find "${MASK_HR_DIR}" -maxdepth 1 -name '*.tif' | wc -l)
-echo "  imagery .tif count: ${n_tif}   2.5m mask .tif count: ${n_msk}"
+echo "DATA_DIR=${DATA_DIR}  hr_masks_dirname=${HR_MASKS_DIRNAME}"
+if [ ! -f "${DATA_DIR}/splits/train.csv" ]; then
+  echo "ERROR: ${DATA_DIR}/splits/train.csv not visible on $(hostname). Is /scratch mounted?" >&2
+  exit 1
+fi
+n_tif=$(find "${DATA_DIR}"/*/imagery -maxdepth 1 -name '*.tif' 2>/dev/null | wc -l)
+n_msk=$(find "${DATA_DIR}"/*/"${HR_MASKS_DIRNAME}" -maxdepth 1 -name '*.tif' 2>/dev/null | wc -l)
+echo "  imagery .tif count: ${n_tif}   OSM 2.5m mask .tif count: ${n_msk}"
 if [ "${n_tif}" -eq 0 ] || [ "${n_msk}" -eq 0 ]; then
-  echo "ERROR: missing COGs or 2.5m masks." >&2
+  echo "ERROR: missing tile COGs or OSM 2.5m masks (run dataset_hr_masks.py)." >&2
+  exit 1
+fi
+if [ ! -f "${STATS_FILE}" ]; then
+  echo "ERROR: ${STATS_FILE} missing — run: python -m sentinel2data.cli norm-stats --dataset-dir ${DATA_DIR} --out ${STATS_FILE}" >&2
   exit 1
 fi
 if [ "${EXPERIMENT}" != "R0" ] && [ ! -f "${SEN2SR_DIR}/model.safetensor" ]; then
@@ -86,9 +88,8 @@ export PYTHONPATH="$REPO_DIR/src:${PYTHONPATH:-}"
 echo "=== TRAIN (experiment=$EXPERIMENT) ==="
 python -m sr.train \
   --data "$DATA_DIR" \
-  --imagery "$IMAGERY_DIR" \
-  --masks-hr "$MASK_HR_DIR" \
-  --stats "$STATS_NPZ" \
+  --hr-masks-dirname "$HR_MASKS_DIRNAME" \
+  --stats "$STATS_FILE" \
   --sen2sr-dir "$SEN2SR_DIR" \
   --experiment "$EXPERIMENT" \
   --out "$RUN_DIR" \

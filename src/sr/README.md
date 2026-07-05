@@ -16,7 +16,11 @@ rates (`--lr-sr` ≪ `--lr-seg`, α = lr_sr/lr_seg), plus an optional warm-up
 (`--freeze-sr-steps` holds the SR LR at 0, `--sr-lr-ramp-steps` ramps it up).
 
 ```
-python -m sr.train --data /scratch/$USER/InstaRoad --experiment R2 --out runs/sr_r2
+# once, after building the V2 dataset (in OpenStreetMapTest):
+python dataset_hr_masks.py --dataset-dir <root> --scale 4
+# once: python -m sentinel2data.cli norm-stats --dataset-dir <root> --out <root>/norm_stats.yaml
+
+python -m sr.train --data <root> --experiment R2 --out runs/sr_r2
 sbatch scripts/train_sr.sh          # HPC; edit the CONFIG block
 python -m sr.smoke --sen2sr-dir <dir> [--download]   # laptop-friendly sanity checks
 ```
@@ -65,20 +69,27 @@ normalisation; "match what R0/R1 apply" means the Data.npz z-score.)
 
 ## Assumptions about the on-disk layout (flag if wrong)
 
-* `mask_2pt5m/{site}{suffix}.tif` are rasterised on the imagery grid upsampled
-  by exactly 4 (so dims are exactly 4× the site's 10 m COG). Asserted per site
-  at dataset init; a `scale` arg exists on `SRRoadSegDataset` if that changes.
-  The mask filename suffix is auto-discovered (`resolve_mask_suffix`), same as
-  the baseline.
-* The combined COGs store bands `[B4, B3, B2, B8, ...]` (per
-  `sentinel2data.processor.dataset.BAND_NAMES`), which is **already** SEN2SR's
-  required `[B04, B03, B02, B08]` = R, G, B, NIR order — the M0 slice is used
-  as-is, no permutation (`sr.sen2sr_loader.SEN2SR_BAND_ORDER` is the single
-  point of truth if the layout ever changes).
-* `Data.npz` mean/std are in DN units on the same 14-band layout (M0 slice
-  taken for the adapter).
-* NODATA (−32768) pixels are zeroed *before* the /10000 scaling, mirroring the
-  baseline's zero-after-z-score convention in reflectance space.
+Reads the V2 tiled layout written by `sentinel2data generate` (split CSVs
+under `<root>/splits/`, 512×512 tile COGs under `<root>/<split>/imagery/`),
+sharing the split definition with the baseline/benchmarking. **Masks are NOT
+the pipeline's** `masks_raster/` (10 m) or `masks_graph/` parquets:
+
+* `<root>/<split>/masks_osm_2pt5m/{tile}.tif` are OSM road masks pre-generated
+  by `OpenStreetMapTest/dataset_hr_masks.py --scale 4` — rasterised on each
+  tile's grid upsampled by exactly 4 (dims exactly 4× the tile's). Asserted
+  per tile at dataset init; `scale` / `hr_masks_dirname` args exist on
+  `SRRoadSegDataset` if that changes. The on-disk layout is the *only*
+  contract between the two repos.
+* The V2 COGs store bands `[B4, B3, B2, B8, ...]`
+  (`sentinel2data.dataset.bands.S2_V2_BANDS`; SR uses bands 1–4 = `S2_10M`),
+  which is **already** SEN2SR's required `[B04, B03, B02, B08]` = R, G, B, NIR
+  order — used as-is, no permutation. Do **not** substitute the CLAHE+gamma
+  enhanced-RGB bands (21–23) here: SEN2SR expects raw reflectance.
+* Band stats come from `sentinel2data norm-stats` (`norm_stats.yaml`,
+  full-stack 1-based DN-unit mean/std; the [B4,B3,B2,B8] slice is taken for
+  the adapter). A legacy `Data.npz` is still accepted.
+* Nodata (NaN in V2 COGs; −32768 legacy) is zeroed *before* the /10000
+  scaling (== zero reflectance).
 
 ## Segmentation net & loss
 

@@ -53,7 +53,7 @@ SEN2SR_RGBN_X4_URL = (
 )
 
 # The channel order SEN2SR was trained on. Our combined COGs store bands
-# [B4, B3, B2, B8, ...] (see sentinel2data.processor.dataset.BAND_NAMES), so
+# [B4, B3, B2, B8, ...] (see sentinel2data.dataset.bands.S2_V2_BANDS), so
 # the M0 slice [0, 1, 2, 3] is ALREADY in this order — no permutation needed.
 # Kept here as the single point of truth should the COG layout ever change.
 SEN2SR_BAND_ORDER = ("B4", "B3", "B2", "B8")  # = R, G, B, NIR
