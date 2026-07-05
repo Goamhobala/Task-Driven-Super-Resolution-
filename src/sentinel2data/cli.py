@@ -4,11 +4,8 @@ from typing import Annotated, Optional, Tuple
 import typer
 import yaml
 
-from sentinel2data.generator import (
-    RoadVectorExtractor,
-    make_v1rosa_pipeline,
-    make_v2rosa_pipeline,
-)
+from sentinel2data.generator.roads import RoadVectorExtractor
+from sentinel2data.generator.pipeline import make_rosa_pipeline
 from sentinel2data.viz import visualize_classification, visualize_rosav2
 
 
@@ -20,8 +17,6 @@ class Backdrop(str, Enum):
 
 class Variant(str, Enum):
     """The dataset format to generate."""
-
-    V1ROSA = "V1ROSA"  # patch-window index (masks generated in place, one row / block)
     V2ROSA = "V2ROSA"  # cut tiles (physical NxN image+mask COGs, one row / tile)
 
 
@@ -53,15 +48,7 @@ def _main(
 
 @app.command()
 def generate(
-    variant: Annotated[
-        Variant,
-        typer.Option(help="Dataset variant: V1ROSA (patch-window index) or V2ROSA (cut tiles)"),
-    ],
-    roads: Annotated[Path, typer.Option(help="Combined roads GeoParquet from the `roads` command")],
-    dataset_dir: Annotated[
-        Optional[Path],
-        typer.Option(help="[V1ROSA] dataset root; scans <dir>/imagery, writes masks + metadata in place"),
-    ] = None,
+    roads: Annotated[Path, typer.Option(help="Cleaned roads GeoParquet from the `roads` command (carries per-road buffer)")],
     imagery_dir: Annotated[
         Optional[Path], typer.Option(help="[V2ROSA] directory of source satellite COGs")
     ] = None,
@@ -73,33 +60,26 @@ def generate(
         typer.Option(help="[V2ROSA] NVM2024 biome GeoParquet (scripts/biome.py convert); tiles tagged 'Unknown' if omitted"),
     ] = None,
     tile_size: Annotated[int, typer.Option(help="[V2ROSA] tile edge in pixels (kept tiles are exactly this)")] = 512,
-    patch_size: Annotated[int, typer.Option(help="[V2ROSA] sampler patch edge; tile_size must be a multiple")] = 256,
-    buffer_m: Annotated[
-        Optional[int],
-        typer.Option(help="Fallback road buffer (metres); default 10 for V1ROSA, 5 for V2ROSA"),
-    ] = None,
+    patch_size: Annotated[int, typer.Option(help="[V2ROSA] COG block size + dataloader crop edge")] = 256,
+    empty_keep_ratio: Annotated[
+        float,
+        typer.Option(help="[V2ROSA] fraction of empty (no-road) tiles kept, same for all splits (1.0=keep all, 0.0=only road tiles)"),
+    ] = 1.0,
+    tile_seed: Annotated[int, typer.Option(help="[V2ROSA] seed for empty-tile subsampling")] = 42,
 ):
-    """Generate a dataset variant: --variant V1ROSA (in-place patch index) or V2ROSA (cut tiles)."""
-    if variant is Variant.V1ROSA:
-        if dataset_dir is None:
-            raise typer.BadParameter("V1ROSA requires --dataset-dir.")
-        make_v1rosa_pipeline(
-            dataset_dir=dataset_dir,
-            roads_parquet_path=roads,
-            buffer_m=10 if buffer_m is None else buffer_m,
-        ).run()
-    else:  # V2ROSA
-        if imagery_dir is None or output_dir is None:
-            raise typer.BadParameter("V2ROSA requires --imagery-dir and --output-dir.")
-        make_v2rosa_pipeline(
-            imagery_dir=imagery_dir,
-            output_dir=output_dir,
-            roads_parquet_path=roads,
-            biome_parquet_path=biome_parquet,
-            tile_size=tile_size,
-            patch_size=patch_size,
-            buffer_m=5 if buffer_m is None else buffer_m,
-        ).run()
+    """Generate the V2ROSA dataset (cut 512px tiles). Road buffers come from the roads parquet."""
+    if imagery_dir is None or output_dir is None:
+        raise typer.BadParameter("V2ROSA requires --imagery-dir and --output-dir.")
+    make_rosa_pipeline(
+        imagery_dir=imagery_dir,
+        output_dir=output_dir,
+        roads_parquet_path=roads,
+        biome_parquet_path=biome_parquet,
+        tile_size=tile_size,
+        patch_size=patch_size,
+        empty_keep_ratio=empty_keep_ratio,
+        tile_seed=tile_seed,
+    ).run()
 
 
 @app.command()
@@ -122,37 +102,37 @@ def roads(
     ).build()
 
 
+# @app.command()
+# def visualize(
+#     dataset_dir: DatasetDir,
+#     zone_name: Annotated[Optional[str], typer.Option(help="Zone (COG stem) to plot")] = None,
+#     tile_id: Annotated[Optional[int], typer.Option(help="Tile id to plot")] = None,
+#     backdrop: Annotated[
+#         Backdrop, typer.Option(help="Backdrop under the classification overlay")
+#     ] = Backdrop.satellite,
+# ):
+#     """Plot one tile's patches coloured by urbanisation classification."""
+#     if (zone_name is None) == (tile_id is None):
+#         raise typer.BadParameter("Provide exactly one of --zone-name or --tile-id.")
+
+#     metadata_path = dataset_dir / "metadata.parquet"
+#     label = zone_name if zone_name is not None else f"tile{tile_id}"
+#     out_plot_path = (
+#         dataset_dir / "classification_plots" / f"{label}_{backdrop.value}_classification.png"
+#     )
+
+#     visualize_classification(
+#         metadata_path=metadata_path,
+#         out_plot_path=out_plot_path,
+#         zone_name=zone_name,
+#         tile_id=tile_id,
+#         dataset_dir=dataset_dir,
+#         backdrop=backdrop.value,
+#     )
+
+
 @app.command()
 def visualize(
-    dataset_dir: DatasetDir,
-    zone_name: Annotated[Optional[str], typer.Option(help="Zone (COG stem) to plot")] = None,
-    tile_id: Annotated[Optional[int], typer.Option(help="Tile id to plot")] = None,
-    backdrop: Annotated[
-        Backdrop, typer.Option(help="Backdrop under the classification overlay")
-    ] = Backdrop.satellite,
-):
-    """Plot one tile's patches coloured by urbanisation classification."""
-    if (zone_name is None) == (tile_id is None):
-        raise typer.BadParameter("Provide exactly one of --zone-name or --tile-id.")
-
-    metadata_path = dataset_dir / "metadata.parquet"
-    label = zone_name if zone_name is not None else f"tile{tile_id}"
-    out_plot_path = (
-        dataset_dir / "classification_plots" / f"{label}_{backdrop.value}_classification.png"
-    )
-
-    visualize_classification(
-        metadata_path=metadata_path,
-        out_plot_path=out_plot_path,
-        zone_name=zone_name,
-        tile_id=tile_id,
-        dataset_dir=dataset_dir,
-        backdrop=backdrop.value,
-    )
-
-
-@app.command()
-def visualize_v2(
     dataset_dir: DatasetDir,
     out_dir: Annotated[
         Optional[Path],
@@ -198,6 +178,23 @@ def norm_stats(
     saved = write_stats_yaml(out, mean, std)
     typer.echo(f"\nSaved {saved}")
     print_table(names, mean, std)
+
+
+@app.command()
+def summary(
+    dataset_dir: DatasetDir,
+    out: Annotated[
+        Optional[Path],
+        typer.Option(help="Output summary YAML (default <dataset_dir>/dataset_summary.yaml)"),
+    ] = None,
+):
+    """Per-split biome + urbanisation ratios and road-density stats from metadata.parquet."""
+    from sentinel2data.generator.summary import summarise_metadata
+
+    metadata_path = dataset_dir / "metadata.parquet"
+    if not metadata_path.exists():
+        raise typer.BadParameter(f"metadata.parquet not found under {dataset_dir}")
+    summarise_metadata(metadata_path, out)
 
 
 if __name__ == "__main__":

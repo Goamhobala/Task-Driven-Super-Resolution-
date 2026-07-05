@@ -1,12 +1,6 @@
-"""Catalogue taggers: each adds one derived column to the metadata GeoDataFrame.
-
-A :class:`Tagger` is a swappable strategy run by the pipeline after the
-catalogue is assembled (``gdf[tagger.column] = tagger.tag(gdf)``):
-  * :class:`BiomeTagger`           -- NVM2024 biome via point-in-polygon join.
-  * :class:`UrbanisationClassifier`-- Jenks urbanisation class from road density.
-"""
+"""Metadata taggers: each adds one derived column to the metadata GeoDataFrame""" 
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from abc import ABC, abstractmethod
 import geopandas as gpd
 import jenkspy
 import numpy as np
@@ -20,27 +14,16 @@ from sentinel2data.generator.config import (
     WGS84,
 )
 
-
-@runtime_checkable
-class Tagger(Protocol):
+class Tagger(ABC):
     """Compute one catalogue column aligned to the input rows."""
-
     column: str
-
+    
+    @abstractmethod
     def tag(self, gdf: gpd.GeoDataFrame) -> pd.Series:
-        ...
+        pass
 
 
-# --------------------------------------------------------------------------- #
-# Biome
-# --------------------------------------------------------------------------- #
-def _clean_biome(s: pd.Series) -> pd.Series:
-    """Normalise the ``<Null>`` text + empty values to real NA."""
-    s = s.astype("string").str.strip()
-    return s.mask(s.str.lower().isin(NULL_TOKENS), pd.NA)
-
-
-class BiomeTagger:
+class BiomeTagger(Tagger):
     """Look up the NVM2024 biome for each tile centroid from a GeoParquet.
 
     Tiles outside the map extent (or in a null biome) become ``"Unknown"``.
@@ -53,6 +36,11 @@ class BiomeTagger:
         self.biome_col = biome_col
         self._biomes = None  # lazy
 
+    def _clean_biome(self, s: pd.Series) -> pd.Series:
+        """Normalise the ``<Null>`` text + empty values to real NA."""
+        s = s.astype("string").str.strip()
+        return s.mask(s.str.lower().isin(NULL_TOKENS), pd.NA)
+        
     def _load(self):
         if self._biomes is not None:
             return self._biomes
@@ -67,7 +55,7 @@ class BiomeTagger:
                 f"{self.biome_col!r} not in biome parquet columns: {list(gdf.columns)}"
             )
         gdf = gdf.to_crs(WGS84)
-        gdf[self.biome_col] = _clean_biome(gdf[self.biome_col])
+        gdf[self.biome_col] = self._clean_biome(gdf[self.biome_col])
         self._biomes = gdf[[self.biome_col, "geometry"]]
         return self._biomes
 
@@ -91,26 +79,28 @@ class BiomeTagger:
         print(result.value_counts(dropna=False).to_string())
         return result
 
+class UrbanisationClassifier(Tagger):
+    """Classify each tile Rural/Peri-Urban/Urban by road density.
 
-# --------------------------------------------------------------------------- #
-# Urbanisation classification (Jenks natural breaks, computed per tile)
-# --------------------------------------------------------------------------- #
-class UrbanisationClassifier:
-    """Classify each patch Rural/Peri-Urban/Urban by road density.
-
-    Breaks are computed *within each tile* (``tile_id`` group), reproducing the
-    old per-tile behaviour; patches with zero road density stay ``"Empty"``.
+    Breaks are computed *within each split* (``split_set`` group), so the class
+    ratio is reported per train/val/test set; tiles with zero road density stay
+    ``"Empty"``. Falls back to a single whole-catalogue group when the grouping
+    column is absent.
     """
 
     column = "urbanisation_classification"
 
-    def __init__(self, density_col="road_density", group_col="tile_id"):
+    def __init__(self, density_col="road_density", group_col="split_set"):
         self.density_col = density_col
         self.group_col = group_col
 
     def tag(self, gdf) -> pd.Series:
         out = pd.Series(EMPTY_LABEL, index=gdf.index, dtype=object)
-        for _, group in gdf.groupby(self.group_col):
+        if self.group_col in gdf.columns:
+            groups = (g for _, g in gdf.groupby(self.group_col))
+        else:
+            groups = [gdf]
+        for group in groups:
             labels = self._classify(group[self.density_col].to_numpy())
             out.loc[group.index] = labels
         return out.rename(self.column)

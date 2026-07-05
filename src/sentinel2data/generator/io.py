@@ -2,7 +2,6 @@
 from pathlib import Path
 import numpy as np
 import rasterio
-from sentinel2data.generator.config import RASTER_EXTS
 from sentinel2data.generator.helper import stretch_bands
 
 # Loading
@@ -44,7 +43,7 @@ def load_binary_mask(path, band=1):
     return np.where(arr > 0, 255, 0).astype(np.uint8)
 
 def is_raster(path):
-    return Path(path).suffix.lower() in RASTER_EXTS
+    return Path(path).suffix.lower() in (".tif", ".tiff")
 
 
 # Writing

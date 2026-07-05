@@ -1,30 +1,14 @@
-"""Per-band mean/std over the TRAINING split only -> frozen, no val/test leakage.
-
-Run once after the dataset is built (splits are zone-disjoint, so train stats never
-see val/test pixels). Emits a LightningCLI-mergeable YAML holding ``data.norm_mean`` /
-``data.norm_std`` -- the FULL per-band stack in 1-based order. The loaders z-score every
-train patch and every stitched val/test/predict window with these frozen stats (sliced
-to the selected ``bands``) instead of per-image stats -- see
-:func:`sentinel2data.dataset.apply_norm`.
-
-Driven by the dataset CLI:
+"""Per-band mean/std over the TRAINING split only -> frozen
+Run cli tool after the dataset is built to obtain norm_stats.yaml.
 
     python -m sentinel2data.cli norm-stats --dataset-dir <root> --out src/unet/configs/norm_stats.yaml
 
 then merge over the base config:
-
     python -m unet.cli fit --config src/unet/configs/unet.yaml --config src/unet/configs/norm_stats.yaml
-
-Band count is read from the imagery (20-band S2 or 23-band S2-V2); names come from
-:data:`S2_V2_BANDS`. nodata: a COG's declared nodata is honoured, else (``exclude_zero``)
-0 is dropped. SAR bands (VV/VH ascending+descending) can be clipped before stats so
-speckle outliers don't inflate std: ``--sar-clip LO HI`` (raw stored units; off by default).
 """
 from pathlib import Path
-
 import numpy as np
 import rasterio
-
 from sentinel2data.dataset.bands import S2_V2_BANDS
 from sentinel2data.dataset.datasets import _read_split_csv
 
@@ -89,7 +73,7 @@ def compute(dataset_dir, exclude_zero=True, sar_clip=None):
             s[b] += v.sum()
             ss[b] += (v * v).sum()
             cnt[b] += v.size
-        print(f"[stats] accumulated {Path(rel).stem}")
+        # print(f"[stats] accumulated {Path(rel).stem}")
 
     cnt[cnt == 0] = 1.0
     mean = s / cnt

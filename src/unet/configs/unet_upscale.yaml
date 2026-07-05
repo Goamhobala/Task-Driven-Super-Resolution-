@@ -1,0 +1,54 @@
+# UNet road-segmentation config -- SUPER-RESOLUTION dataloader (UpscaleRoadDataModule).
+# Reads a NATIVE V2 dataset and feeds bicubic-upsampled crops + graph-rasterised masks
+# (no super-resolution imagery stored on disk). Model patch = crop_size * upscale
+# (128 * 4 = 512). Run with the cli_upscale entry point:
+#
+#   python -m unet.cli_upscale fit  --config src/unet/configs/unet_upscale.yaml
+#   python -m unet.cli_upscale test --config src/unet/configs/unet_upscale.yaml \
+#       --ckpt_path checkpoints/unet_s2rosa_upscale_best.ckpt
+#
+# `bands`, `image_size`, `normalize` live under `data:` only (linked into the model).
+# The plain unet.yaml / `python -m unet.cli` native path is separate and unchanged.
+
+seed_everything: 42
+
+trainer:
+  max_epochs: 20
+  accelerator: auto
+  devices: auto
+  log_every_n_steps: 10
+  logger: true
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: checkpoints
+        filename: unet_s2rosa_upscale_best
+        monitor: val_iou
+        mode: max
+        save_top_k: 1
+        save_last: true
+
+model:
+  encoder_name: resnet34
+  encoder_weights: imagenet   # null -> random init
+  classes: 1
+  lr: 1.0e-4
+  pos_weight: 5.0             # weighted-BCE weight on the sparse road class
+  threshold: 0.5
+
+data:
+  dataset_dir: /kaggle/input/datasets/kelvinwei/s2rosa-v2/S2ROSA_V2
+  bands: [21, 22, 23, 4]         # enhanced RGB; raw RGB+NIR = [1, 2, 3, 4]
+  batch_size: 4                  # 512px patches -> ~4x activation memory vs 256
+  num_workers: 2
+  crop_size: 128                 # native-px crop window read from each tile
+  upscale: 4                     # bicubic factor -> model patch = crop_size*upscale = 512
+  min_road_density: 0.05         # drop TRAIN tiles below 5% road density (val/test unfiltered)
+  length: null                   # train patches/epoch (default 10 * n_train_tiles)
+  normalize: true
+  # Frozen per-band train-set stats (FULL band stack, 1-based order); sliced to `bands`
+  # at apply time and reused for val/test (no leakage). null -> per-image standardisation.
+  # Native-tile stats stay valid (bicubic upsampling preserves per-band distribution).
+  #   python -m sentinel2data.cli norm-stats --dataset-dir <root> --out src/unet/configs/norm_stats.yaml
+  norm_mean: null
+  norm_std: null

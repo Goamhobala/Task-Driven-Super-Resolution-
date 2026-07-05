@@ -1,126 +1,169 @@
-"""Road vector sourcing: extract one :class:`RoadSource` (CDNGI *or* Overture)
-into a normalized GeoParquet (or GeoPackage).
-
-The source filters to its large/medium classes, reprojects to EPSG:4326 and
-remaps its native class onto the simplified major/medium tier carried in the
-``class`` column (buffer widths per tier live in
-:data:`sentinel2data.generator.config.ROAD_TIER_BUFFER_M`). Exactly one source
-is used per output layer, so the result never stacks the duplicate centrelines
-two datasets would produce for the same road.
+"""
+Purpose of this module is to extract the desired road centrelines from raw datasets.
+Currently support CD:NGI and Overture datasets.
 """
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from abc import ABC, abstractmethod
 import geopandas as gpd
 import pandas as pd
 from sentinel2data.generator.config import (
-    CDNGI_CLASS_MAP,
-    CDNGI_ROADS_LAYER,
-    OVERTURE_CLASS_MAP,
-    OVERTURE_MAJOR_MEDIUM,
-    ROAD_VECTOR_COLUMNS,
+    CDNGI_ROAD_CLASSIFICATION,
+    OVERTURE_ROAD_CLASSIFICATION,
     WGS84,
+    flatten_classification
 )
 
+class RoadSource(ABC):
+    """Interface for different road source implementations"""
 
-@runtime_checkable
-class RoadSource(Protocol):
-    """A provider of normalized major/medium road centrelines (EPSG:4326)."""
+    data_source: str
+    gpkg_layer_name: str
 
+    @abstractmethod
     def load(self) -> "gpd.GeoDataFrame | None":
-        """Return normalized roads, or ``None`` if the source yields nothing."""
-        ...
+        """Returns roads in WGS84"""
+        pass
 
 
-class CdngiSource:
-    """Major + medium roads from one or many CDNGI GeoPackages."""
+class CdngiSource(RoadSource):
+    """Roads from CD:NGI Geopackages"""
 
-    def __init__(self, path, layer=CDNGI_ROADS_LAYER):
+    CDNGI_ROADS_LAYER = "TRAN_ROADS_EXP"
+    data_source = "cdngi"
+    gpkg_layer_name = "CDNGI_roads"
+
+    def __init__(self, path: str | Path):
+        """
+        Args:
+            path (str | Path): Path to the root directory containing CD:NGI GeoPackages.
+        """
         self.path = Path(path)
-        self.layer = layer
+        self.scale_map, self.buffer_map, self.road_class = flatten_classification(CDNGI_ROAD_CLASSIFICATION)
+
 
     def _gpkg_paths(self):
-        """Resolve ``path`` to a sorted list of .gpkg files (file or directory)."""
-        if self.path.is_dir():
-            return sorted(self.path.rglob("*.gpkg"))
-        return [self.path]
+        """Scan for list of .gpkg files"""
+        gpkg_files = sorted(self.path.rglob("*.gpkg"))
+        print(f"Found {len(gpkg_files)} CD:NGI GeoPackage files in {self.path}")
+        return gpkg_files
 
     def load(self):
-        keys = list(CDNGI_CLASS_MAP)
-        where = "FEAT_TYPE IN ({})".format(", ".join(f"'{k}'" for k in keys))
+        road_type_filter = self.road_class
+        where = "FEAT_TYPE IN ({})".format(", ".join(f"'{type}'" for type in road_type_filter))
 
-        parts = []
+        provincial_gpd_roads = []
         for gpkg in self._gpkg_paths():
-            province = gpkg.stem.split("_")[0]
+            province = gpkg.stem.split("_")[0]  # assume default naming convention: <province>_NGI_TOPODATA_<year>.gpkg
             print(f"Reading CDNGI {gpkg.name} (province {province})...")
             gdf = gpd.read_file(
-                gpkg, layer=self.layer, columns=["FEAT_TYPE"], where=where
+                gpkg, layer=CdngiSource.CDNGI_ROADS_LAYER, columns=["FEAT_TYPE"], where=where
             )
+
             if gdf.empty:
+                print(f"Warning: No roads found in {gpkg.name} (province {province}).")
                 continue
+
             gdf = gdf.to_crs(WGS84)
-            parts.append(
+            feat = gdf["FEAT_TYPE"]
+            provincial_gpd_roads.append(
                 gpd.GeoDataFrame(
                     {
-                        "source": "cdngi",
-                        "source_class": gdf["FEAT_TYPE"].to_numpy(),
-                        "class": gdf["FEAT_TYPE"].map(CDNGI_CLASS_MAP).to_numpy(),
-                        "province": province,
+                        "data_source": self.data_source,
+                        "road_class": feat.to_numpy(),
+                        "scale_class": feat.map(self.scale_map.get).to_numpy(),
+                        "buffer": feat.map(self.buffer_map.get).to_numpy(),
                         "geometry": gdf.geometry.to_numpy(),
                     },
                     crs=WGS84,
                 )
             )
 
-        if not parts:
+        if not provincial_gpd_roads:
             return None
         combined = gpd.GeoDataFrame(
-            pd.concat(parts, ignore_index=True), geometry="geometry", crs=WGS84
+            pd.concat(provincial_gpd_roads, ignore_index=True), geometry="geometry", crs=WGS84
         )
-        print(f"CDNGI: {len(combined)} major+medium road segments.")
+        print(f"CDNGI: {len(combined)} road segments.")
+
+        if combined.isna().any().any():
+            na_cols = combined.columns[combined.isna().any()].tolist()
+            raise ValueError(f"NA values found in CDNGI output columns: {na_cols} for file {self.path}.")
+        
         return combined
 
 
-class OvertureSource:
-    """Major + medium roads from an Overture roads GeoParquet (predicate pushdown)."""
+class OvertureSource(RoadSource):
+    """Road Centrelines from Overture GeoParquet file from their CLI"""
+
+    data_source = "overture"
+    gpkg_layer_name = "OVERTURE_roads"
 
     def __init__(self, path):
         self.path = Path(path)
 
+        self.road_class_filter = flatten_classification(OVERTURE_ROAD_CLASSIFICATION, exclude_class=["ignored", "links"])[2]
+        self.scale_map, self.buffer_map, self.road_class = flatten_classification(OVERTURE_ROAD_CLASSIFICATION)
+
     def load(self):
-        print(f"Reading Overture {self.path.name} (predicate pushdown)...")
+        print(f"Reading Overture {self.path.name}")
+        
         filters = [
             ("subtype", "==", "road"),
-            ("class", "in", list(OVERTURE_MAJOR_MEDIUM)),
+            ("class", "in", self.road_class_filter),
         ]
         gdf = gpd.read_parquet(
             self.path,
             columns=["subtype", "class", "subclass", "geometry"],
             filters=filters,
         )
+        
         if gdf.empty:
-            return None
+            raise ValueError(f"No roads found in Overture file {self.path}.")
+        
         gdf = gdf.to_crs(WGS84)
+
+        base = gdf["class"]
+        
+        link_key = base + "_link"
+        is_link = (
+            (gdf["subclass"].fillna("") == "link")
+        ).to_numpy()
+        unknown_links = link_key[is_link & ~link_key.isin(self.road_class)]
+        if not unknown_links.empty:
+            raise ValueError(
+                f"Unknown link roads found in Overture file {self.path}: {unknown_links.unique()}." + 
+                "\n Maybe check links in Overture Config?"
+            )
+        
+        road_class = base.where(~is_link, link_key)
+
         out = gpd.GeoDataFrame(
             {
-                "source": "overture",
-                "source_class": gdf["class"].to_numpy(),
-                "class": gdf["class"].map(OVERTURE_CLASS_MAP).to_numpy(),
-                "province": None,
+                "data_source": self.data_source,
+                "road_class": road_class.to_numpy(),
+                "scale_class": road_class.map(self.scale_map.get).to_numpy(),
+                "buffer": road_class.map(self.buffer_map.get).to_numpy(),
                 "geometry": gdf.geometry.to_numpy(),
             },
             crs=WGS84,
         )
-        print(f"Overture: {len(out)} major+medium road segments.")
+        print(f"Overture: {len(out)} road segments ({int(is_link.sum())} links).")
+
+        if out.isna().any().any():
+            na_cols = out.columns[out.isna().any()].tolist()
+            raise ValueError(f"NA values found in Overture output columns: {na_cols} for file {self.path}.")
+        
         return out
 
 
-class RoadVectorExtractor:
-    """Extract major+medium roads from one :class:`RoadSource`.
-    """
 
-    def __init__(self, out_path, source):
-        if source is None:
-            raise ValueError("RoadVectorExtractor needs exactly one RoadSource.")
+class RoadVectorExtractor:
+    """Manager for reading raw data and writing clean road centrelines."""
+
+    # Cleaned output format
+    ROAD_VECTOR_COLUMNS = ("data_source", "road_class", "scale_class", "buffer", "geometry")
+
+    def __init__(self, out_path, source: RoadSource):
         self.out_path = Path(out_path)
         self.source = source
 
@@ -130,34 +173,36 @@ class RoadVectorExtractor:
         out_path,
         cdngi_path=None,
         overture_path=None,
-        cdngi_layer=CDNGI_ROADS_LAYER,
     ):
-        """Build from one of CDNGI or Overture."""
+        """Build from CDNGI or Overture file path."""
         if (cdngi_path is None) == (overture_path is None):
             raise ValueError("Provide exactly one of cdngi_path or overture_path.")
         if cdngi_path is not None:
-            source = CdngiSource(cdngi_path, layer=cdngi_layer)
+            source = CdngiSource(cdngi_path)
         else:
             source = OvertureSource(overture_path)
         return cls(out_path, source)
 
     def build(self):
-        """Load the source and write the normalized layer. Returns the output path."""
+        """Load the source and write road centerlines. Returns the output path."""
         roads = self.source.load()
         if roads is None or roads.empty:
             raise ValueError("No road features extracted from the source.")
 
-        combined = roads[list(ROAD_VECTOR_COLUMNS)]
-        by_class = combined.groupby("class").size().to_dict()
-        print(f"Extracted {len(combined)} segments by class: {by_class}")
+        if roads.columns.difference(self.ROAD_VECTOR_COLUMNS).any():
+            raise ValueError(
+                f"Unexpected columns in extracted roads: {roads.columns.difference(self.ROAD_VECTOR_COLUMNS).tolist()}"
+            )
+
+        by_scale = roads.groupby("scale_class").size().to_dict()
+        print(f"Extracted {len(roads)} segments by scale: {by_scale}")
 
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
         print(f"Writing roads to {self.out_path}...")
+        
         if self.out_path.suffix.lower() == ".gpkg":
-            combined.to_file(self.out_path, driver="GPKG", layer="roads_major_medium")
+            roads.to_file(self.out_path, driver="GPKG", layer=self.source.gpkg_layer_name)
         else:
-            # Per-row covering bbox so downstream readers can spatially filter
-            # (RasterMaskLabeler reads a per-COG bbox window).
-            combined.to_parquet(self.out_path, write_covering_bbox=True)
+            roads.to_parquet(self.out_path, write_covering_bbox=True)
         print("Road vector extraction complete.")
         return self.out_path

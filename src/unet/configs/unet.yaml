@@ -1,9 +1,8 @@
 # Canonical UNet road-segmentation config (enhanced-RGB bands 21,22,23).
-# Drives every subcommand of `python -m unet.cli {fit,validate,test,predict}`.
+# Drives `python -m unet.cli {fit,validate,test}`.
 #
-#   fit     -> train; checkpoints on the stitched val_iou.
-#   test    -> whole-zone stitched IoU/F1 (model.test_step).
-#   predict -> per-zone COG + comparison PNG + global metrics (ZonePredictionWriter).
+#   fit  -> train; checkpoints on val_iou.
+#   test -> per-crop IoU/F1 over the test tiles (model.test_step).
 #
 # `bands`, `image_size`, `normalize` live under `data:` only and are linked into the
 # model (`in_channels = len(bands)`); do NOT add them under `model:`.
@@ -26,14 +25,6 @@ trainer:
         mode: max
         save_top_k: 1
         save_last: true
-    # Inert during fit/validate/test; writes outputs only on `predict`.
-    - class_path: unet.writer.ZonePredictionWriter
-      init_args:
-        output_dir: predictions
-        threshold: 0.5
-        write_cog: true
-        write_png: true
-        compute_metrics: true
 
 model:
   encoder_name: resnet34
@@ -41,7 +32,6 @@ model:
   classes: 1
   lr: 1.0e-4
   pos_weight: 5.0             # weighted-BCE weight on the sparse road class
-  val_overlap: 128           # val/test/predict sliding-window overlap (px); 0 = none
   threshold: 0.5
 
 data:
@@ -53,12 +43,9 @@ data:
   length: null                # train patches/epoch (default 10 * n_train_tiles)
   normalize: true
   # Frozen per-band train-set stats (FULL band stack, 1-based order); sliced to `bands`
-  # at apply time and reused for val/test/predict (no leakage). null -> per-image
+  # at apply time and reused for val/test (no leakage). null -> per-image
   # standardisation. Generate + merge:
   #   python -m sentinel2data.cli norm-stats --dataset-dir <root> --out src/unet/configs/norm_stats.yaml
   #   python -m unet.cli fit --config src/unet/configs/unet.yaml --config src/unet/configs/norm_stats.yaml
   norm_mean: null
   norm_std: null
-  predict_split: test         # split the `predict` subcommand stitches
-  zones: null                 # e.g. ["zone_a", "zone_b"] -> only these zone_name prefixes
-  max_zones: null

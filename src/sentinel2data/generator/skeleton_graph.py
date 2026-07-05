@@ -1,4 +1,7 @@
-"""Skeleton-based road-graph extraction (mask -> SAM-Road graph dict).
+"""
+This is deprecated!
+
+Skeleton-based road-graph extraction (mask -> SAM-Road graph dict).
 
 A standalone converter: it derives a graph from a *raster mask* via
 skeletonization (not from road vectors, so it is independent of the road-vector
