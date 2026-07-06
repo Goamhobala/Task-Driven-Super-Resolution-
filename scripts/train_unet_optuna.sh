@@ -67,6 +67,11 @@ BATCH_SIZES="8 16 32"
 
 # --- Full refit budget (after the search picks the winner) ------------------
 REFIT_EPOCHS=50
+REFIT_GPUS=1          # keep at 1 under interactive `salloc`+bash: `devices: auto`
+                      # would pick DDP, which stalls on SLURM's srun launcher and
+                      # segfaults on rasterio in the spawned rank. For a real
+                      # multi-GPU refit, submit via `sbatch` and launch the fit
+                      # with `srun --ntasks=<N> --gpus-per-task=1 python -m unet.cli fit ...`.
 
 WANDB_PROJECT="unet_s2rosa_baseline"
 # export WANDB_API_KEY=...   # set in your shell / ~/.bashrc before sbatch for online logging
@@ -179,6 +184,7 @@ python -m unet.cli fit \
   --data.dataset_dir "$DATASET_DIR" \
   --data.num_workers "$NUM_WORKERS" \
   --trainer.max_epochs "$REFIT_EPOCHS" \
+  --trainer.devices "$REFIT_GPUS" \
   --trainer.precision "$PRECISION" \
   --trainer.logger.init_args.project "$WANDB_PROJECT" \
   --seed_everything "$SEED"
@@ -190,6 +196,7 @@ python -m unet.cli test \
   --config "$BEST_CONFIG" \
   --data.dataset_dir "$DATASET_DIR" \
   --data.num_workers "$NUM_WORKERS" \
+  --trainer.devices 1 \
   --ckpt_path "$CKPT"
 
 echo "=== DONE ===  outputs in $RUN_DIR"

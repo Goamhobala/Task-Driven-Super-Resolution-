@@ -108,11 +108,20 @@ def _resolve_devices(v):
     return dev
 
 
+def resolve_encoder_weights(base_cfg: dict, cli_value: str | None):
+    """CLI overrides base config; map random-init aliases -> None (random init)."""
+    val = base_cfg.get("model", {}).get("encoder_weights", "imagenet") if cli_value is None else cli_value
+    if isinstance(val, str) and val.lower() in {"none", "null", "random", ""}:
+        return None
+    return val
+
+
 def build_objective(args, base_cfg: dict):
     data_cfg = _data_kwargs(base_cfg, args.dataset_dir, args.num_workers)
     model_cfg = dict(base_cfg.get("model", {}))
     bands = tuple(data_cfg["bands"])
     devices = _resolve_devices(args.devices)
+    encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
 
     def objective(trial: optuna.Trial) -> float:
         # --- search space (log-uniform where scale-free) ----------------------
@@ -137,7 +146,7 @@ def build_objective(args, base_cfg: dict):
 
         model = UNetLightning(
             encoder_name=encoder_name,
-            encoder_weights=model_cfg.get("encoder_weights", "imagenet"),
+            encoder_weights=encoder_weights,
             in_channels=len(bands),
             classes=model_cfg.get("classes", 1),
             lr=lr,
@@ -186,10 +195,17 @@ def build_objective(args, base_cfg: dict):
 # --------------------------------------------------------------------------- #
 # Output: best trial -> Lightning config overlay
 # --------------------------------------------------------------------------- #
-def write_best_overlay(study: optuna.Study, out_dir: Path) -> Path:
+def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights) -> Path:
     p = study.best_params
+    # Pin encoder_weights too, so the refit reproduces the SAME init (imagenet vs
+    # random) the search was run under -- not whatever the base config defaults to.
     overlay = {
-        "model": {"encoder_name": p["encoder_name"], "lr": p["lr"], "pos_weight": p["pos_weight"]},
+        "model": {
+            "encoder_name": p["encoder_name"],
+            "encoder_weights": encoder_weights,
+            "lr": p["lr"],
+            "pos_weight": p["pos_weight"],
+        },
         "data": {"batch_size": p["batch_size"]},
     }
     overlay_path = out_dir / "best_params.yaml"
@@ -252,6 +268,10 @@ def parse_args(argv=None):
     ap.add_argument("--pos-weight-max", type=float, default=15.0)
     ap.add_argument("--encoders", nargs="+", default=["resnet18", "resnet34", "resnet50"])
     ap.add_argument("--batch-sizes", nargs="+", type=int, default=[8, 16, 32])
+    ap.add_argument("--encoder-weights", default=None,
+                    help="Override model.encoder_weights for the whole search: "
+                         "'imagenet' = pretrained, 'none'/'random' = random init. "
+                         "Default: use the base config's value.")
     return ap.parse_args(argv)
 
 
@@ -276,9 +296,10 @@ def main(argv=None):
     )
     study.optimize(objective, n_trials=args.n_trials, timeout=args.timeout, gc_after_trial=True)
 
-    overlay_path = write_best_overlay(study, out_dir)
+    encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
+    overlay_path = write_best_overlay(study, out_dir, encoder_weights)
     print(f"\nBest {MONITOR}={study.best_value:.4f} (trial #{study.best_trial.number})")
-    print(f"Best params: {study.best_params}")
+    print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}")
     print(f"Wrote Lightning overlay -> {overlay_path}")
 
 
