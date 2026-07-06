@@ -13,23 +13,25 @@ set -euo pipefail
 # ============================ CONFIG — EDIT HERE ============================
 USER_NAME="${USER:-$(whoami)}"
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
-VENV_DIR="/scratch/${USER_NAME}/InstaRoad/.venv"
-DATASET_DIR="/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI"
+VENV_DIR="${VENV_DIR:-/scratch/${USER_NAME}/InstaRoad/.venv}"
+DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI}"
 
-SEED=0
-NUM_WORKERS=0         # 0 = load in main process; GDAL/rasterio segfault in subprocesses
-PRECISION="bf16-mixed"
+# Every knob below honours an environment override (VAR=... bash tune_only.sh),
+# so a batch wrapper can call this script twice with different settings.
+SEED="${SEED:-0}"
+NUM_WORKERS="${NUM_WORKERS:-0}"   # 0 = load in main process; GDAL/rasterio segfault in subprocesses
+PRECISION="${PRECISION:-bf16-mixed}"
 
 # --- Search budget ----------------------------------------------------------
-N_TRIALS=100          # TOTAL trials across all workers (bump this as high as you like)
-SEARCH_GPUS=2         # one tuner process per GPU; must match your allocation
-TUNE_EPOCHS=8         # short per-trial budget
-PATIENCE=3           # per-trial EarlyStopping on val_iou (0 = off)
+N_TRIALS="${N_TRIALS:-100}"       # TOTAL trials across all workers (bump as high as you like)
+SEARCH_GPUS="${SEARCH_GPUS:-2}"   # one tuner process per GPU; must match your allocation
+TUNE_EPOCHS="${TUNE_EPOCHS:-8}"   # short per-trial budget
+PATIENCE="${PATIENCE:-3}"         # per-trial EarlyStopping on val_iou (0 = off)
 
 # Pretrained vs random init for the WHOLE search. 'imagenet' or 'none'/'random'.
 # Use a DIFFERENT STUDY_TAG per setting so the two searches don't share a study.
-ENCODER_WEIGHTS="imagenet"
-STUDY_TAG="imagenet"   # e.g. set ENCODER_WEIGHTS=none + STUDY_TAG=random for random init
+ENCODER_WEIGHTS="${ENCODER_WEIGHTS:-imagenet}"
+STUDY_TAG="${STUDY_TAG:-imagenet}"   # e.g. ENCODER_WEIGHTS=none STUDY_TAG=random for random init
 
 # Search space
 LR_MIN=1e-5
@@ -65,6 +67,7 @@ fi
 # Use the scratch venv + put src/ on PYTHONPATH so `unet` resolves (source package).
 source "$VENV_DIR/bin/activate"
 export PYTHONPATH="$REPO_DIR/src:${PYTHONPATH:-}"
+export PYTHONUNBUFFERED=1             # flush stdout live -> the log fills as it runs
 echo "python=$(which python)"        # sanity: under $VENV_DIR, not base conda
 
 STORAGE="sqlite:///${RUN_DIR}/study.db"

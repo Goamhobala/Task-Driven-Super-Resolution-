@@ -8,19 +8,21 @@
 set -euo pipefail
 
 # ============================ CONFIG — EDIT HERE ============================
+# Every knob honours an environment override (VAR=... bash fit_only.sh), so the
+# train.sbatch wrapper can drive it with `KEY=VALUE` tokens.
 USER_NAME="${USER:-$(whoami)}"
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
-VENV_DIR="/scratch/${USER_NAME}/InstaRoad/.venv"
-DATASET_DIR="/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI"
+VENV_DIR="${VENV_DIR:-/scratch/${USER_NAME}/InstaRoad/.venv}"
+DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI}"
 
-SEED=0
-STUDY_TAG="imagenet"   # must match tune_only.sh's STUDY_TAG (e.g. imagenet | random)
-RUN_DIR="/scratch/${USER_NAME}/InstaRoad/runs/unet_optuna_${STUDY_TAG}_seed${SEED}"  # holds best_params.yaml
-NUM_WORKERS=0
-PRECISION="bf16-mixed"
-REFIT_EPOCHS=50
-REFIT_GPUS=1          # 1 = single GPU (no DDP). See notes in train_unet_optuna.sh.
-WANDB_PROJECT="unet_s2rosa_baseline"
+SEED="${SEED:-0}"
+STUDY_TAG="${STUDY_TAG:-imagenet}"   # must match tune_only.sh's STUDY_TAG (e.g. imagenet | random)
+RUN_DIR="${RUN_DIR:-/scratch/${USER_NAME}/InstaRoad/runs/unet_optuna_${STUDY_TAG}_seed${SEED}}"  # holds best_params.yaml
+NUM_WORKERS="${NUM_WORKERS:-0}"
+PRECISION="${PRECISION:-bf16-mixed}"
+REFIT_EPOCHS="${REFIT_EPOCHS:-50}"
+REFIT_GPUS="${REFIT_GPUS:-1}"        # 1 = single GPU (no DDP). See notes in train_unet_optuna.sh.
+WANDB_PROJECT="${WANDB_PROJECT:-unet_s2rosa_baseline}"
 # ===========================================================================
 
 BASE_CONFIG="$REPO_DIR/src/unet/configs/unet.yaml"
@@ -33,6 +35,7 @@ CKPT="${RUN_DIR}/checkpoints/unet_s2rosa_best.ckpt"
 #     `python -m unet.cli` resolves (unet is a source package, not pip-installed).
 source "$VENV_DIR/bin/activate"
 export PYTHONPATH="$REPO_DIR/src:${PYTHONPATH:-}"
+export PYTHONUNBUFFERED=1             # flush stdout live -> the log fills as it runs
 echo "python=$(which python)"        # sanity: should be under $VENV_DIR, not miniconda
 
 if [ ! -f "$BEST_CONFIG" ]; then
