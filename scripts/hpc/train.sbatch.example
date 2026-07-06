@@ -1,0 +1,8 @@
+# tune, imagenet (uses the default gpu:2 headers)
+sbatch scripts/train.sbatch --SCRIPT=tune_only.sh
+
+# tune, random init
+sbatch scripts/train.sbatch --SCRIPT=tune_only.sh ENCODER_WEIGHTS=none STUDY_TAG=random N_TRIALS=100
+
+# refit on one GPU (override the header at submit time)
+sbatch --gres=gpu:1 scripts/train.sbatch --SCRIPT=fit_only.sh STUDY_TAG=random
