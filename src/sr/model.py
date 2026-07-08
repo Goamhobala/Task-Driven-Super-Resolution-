@@ -135,12 +135,19 @@ class JointSRUNetLightning(UNetLightning):
                 f"accordingly."
             )
         x = x / REFLECTANCE_SCALE                      # DN -> reflectance
-        if self.hparams.freeze_sr:
-            with torch.no_grad():
-                hr = self.sr(x)
-        else:
-            hr = self.sr(x)
-        x_seg = (hr * REFLECTANCE_SCALE - self.band_mean) / self.band_std
+        # SEN2SR's hard constraint uses torch.fft, which has no BFloat16
+        # kernels -> "Unsupported dtype BFloat16" under bf16-mixed autocast.
+        # Run the (small, 572K-param) SR stage in fp32 with autocast disabled;
+        # the UNet below still runs under the Trainer's mixed precision.
+        # Gradients flow through the dtype casts unchanged.
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            x32 = x.float()
+            if self.hparams.freeze_sr:
+                with torch.no_grad():
+                    hr = self.sr(x32)
+            else:
+                hr = self.sr(x32)
+            x_seg = (hr * REFLECTANCE_SCALE - self.band_mean) / self.band_std
         return self.model(x_seg)
 
     # ------------------------------------------------------ two LR groups
