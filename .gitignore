@@ -19,3 +19,4 @@ data/
 
 # Dummy data for testing/benchmarking
 **/dummy_data/
+models/*

@@ -193,4 +193,4 @@ dev = [
 
 # This section tells hatchling to look inside 'src' for packages
 [tool.hatch.build.targets.wheel]
-packages = ["src/samroad", "src/sentinel2data", "src/unet", "src/terramind", "src/benchmarking"]
+packages = ["src/samroad", "src/sentinel2data", "src/unet", "src/terramind", "src/benchmarking", "src/sr"]
