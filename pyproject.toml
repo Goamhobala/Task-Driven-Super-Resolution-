@@ -70,6 +70,8 @@ unet = [
     "kagglehub",
     "wandb",
     "jsonargparse[signatures]>=4.27",   # LightningCLI config/CLI (unet.cli)
+    "optuna>=3.6",                      # hyperparameter search (unet.tune)
+    "optuna-integration>=3.6",          # PyTorchLightningPruningCallback
 ]
 
 torchgeo = [
