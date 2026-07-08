@@ -37,6 +37,8 @@ model:
 data:
   dataset_dir: /kaggle/input/datasets/kelvinwei/s2rosa-v2/S2ROSA_V2
   bands: [21, 22, 23, 4]         # enhanced RGB; raw RGB+NIR = [1, 2, 3, 4]
+  mask_dirname: null             # null -> CSVs' masks_raster (CDNGI); set
+                                 # masks_osm_10m for OSM labels (see osm_labels.yaml)
   batch_size: 16
   num_workers: 2
   image_size: 256

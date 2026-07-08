@@ -75,7 +75,8 @@ def load_base_config(paths: list[str]) -> dict:
     return merged
 
 
-def _data_kwargs(cfg: dict, dataset_dir: str | None, num_workers: int | None) -> dict:
+def _data_kwargs(cfg: dict, dataset_dir: str | None, num_workers: int | None,
+                 mask_dirname: str | None = None) -> dict:
     """Pull the fixed RoadDataModule args from the base config (search overrides later)."""
     data = dict(cfg.get("data", {}))
     if data.get("norm_mean") is None or data.get("norm_std") is None:
@@ -88,6 +89,11 @@ def _data_kwargs(cfg: dict, dataset_dir: str | None, num_workers: int | None) ->
         data["dataset_dir"] = dataset_dir
     if num_workers is not None:
         data["num_workers"] = num_workers
+    if mask_dirname is not None:
+        # Label-source override: ""/"none"/"null" -> CDNGI (masks_raster);
+        # a dir name (e.g. masks_osm_10m) -> the alternative masks beside it.
+        data["mask_dirname"] = (None if str(mask_dirname).lower() in {"", "none", "null"}
+                                else mask_dirname)
     return data
 
 
@@ -117,9 +123,11 @@ def resolve_encoder_weights(base_cfg: dict, cli_value: str | None):
 
 
 def build_objective(args, base_cfg: dict):
-    data_cfg = _data_kwargs(base_cfg, args.dataset_dir, args.num_workers)
+    data_cfg = _data_kwargs(base_cfg, args.dataset_dir, args.num_workers, args.mask_dirname)
     model_cfg = dict(base_cfg.get("model", {}))
     bands = tuple(data_cfg["bands"])
+    if data_cfg.get("mask_dirname"):
+        print(f"[unet.tune] label source: <split>/{data_cfg['mask_dirname']}/ (not CDNGI masks_raster)")
     devices = _resolve_devices(args.devices)
     encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
 
@@ -142,6 +150,7 @@ def build_objective(args, base_cfg: dict):
             normalize=data_cfg.get("normalize", True),
             norm_mean=data_cfg["norm_mean"],
             norm_std=data_cfg["norm_std"],
+            mask_dirname=data_cfg.get("mask_dirname"),
         )
 
         model = UNetLightning(
@@ -243,6 +252,9 @@ def parse_args(argv=None):
     ap.add_argument("--dataset-dir", default=None, help="Override data.dataset_dir from the base config.")
     ap.add_argument("--out", default="runs/unet_optuna", help="Where to write best_params.yaml + study.")
     ap.add_argument("--num-workers", type=int, default=None, help="Override data.num_workers (0 avoids GDAL forks).")
+    ap.add_argument("--mask-dirname", default=None,
+                    help="Override data.mask_dirname (label source). Empty/'none' -> CDNGI "
+                         "masks_raster; e.g. masks_osm_10m for OSM labels.")
 
     # study controls
     ap.add_argument("--n-trials", type=int, default=25)

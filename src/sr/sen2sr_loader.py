@@ -130,8 +130,8 @@ def load_trainable_sen2sr(model_dir) -> TrainableSEN2SR:
 class BicubicUpsampler(nn.Module):
     """Parameter-free ×`scale` bicubic upsampling — the R0 deterministic baseline.
 
-    Same forward contract as `TrainableSEN2SR` so `JointSRSegModule` can swap
-    between them via config.
+    Same forward contract as `TrainableSEN2SR` so `JointSRUNetLightning` can
+    swap between them via config.
     """
 
     def __init__(self, scale: int = SEN2SR_SCALE):

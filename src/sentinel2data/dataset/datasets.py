@@ -19,6 +19,31 @@ def _read_split_csv(dataset_dir, split):
     return pd.read_csv(csv)
 
 
+def _remap_mask_paths(df, dataset_dir, mask_dirname):
+    """Point ``mask_path`` at an alternative label set living beside the
+    pipeline's ``masks_raster/`` (e.g. ``masks_osm_10m`` written by
+    OpenStreetMapTest/dataset_hr_masks.py --scale 1). ``None`` keeps the CSV's
+    masks unchanged. The alternative masks are rasterised on each tile's own
+    grid, so dims/CRS match; every remapped file must exist — missing labels
+    are an error, not a silent filter, so label-source comparisons stay on
+    identical tile sets."""
+    if mask_dirname is None:
+        return df
+    df = df.copy()
+    df["mask_path"] = df["mask_path"].map(
+        lambda rel: str(Path(rel).parent.parent / mask_dirname / Path(rel).name))
+    missing = [rel for rel in df["mask_path"]
+               if not (Path(dataset_dir) / rel).exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"{len(missing)}/{len(df)} tiles have no mask under "
+            f"<split>/{mask_dirname}/ (first: {missing[0]}). Generate them "
+            f"with OpenStreetMapTest/dataset_hr_masks.py --scale 1 "
+            f"--out-dirname {mask_dirname}."
+        )
+    return df
+
+
 class RoadTileDataset(Dataset):
     """Use this dataset for training. Random pixel crops from the 512x512 train tiles.
 
@@ -26,9 +51,12 @@ class RoadTileDataset(Dataset):
     """
 
     def __init__(self, dataset_dir, bands=DEFAULT_BANDS, image_size=256,
-                 length=None, normalize=True, norm_mean=None, norm_std=None):
+                 length=None, normalize=True, norm_mean=None, norm_std=None,
+                 mask_dirname=None):
         self.dataset_dir = Path(dataset_dir)
-        self.df = _read_split_csv(dataset_dir, "train").reset_index(drop=True)
+        self.df = _remap_mask_paths(
+            _read_split_csv(dataset_dir, "train"), dataset_dir, mask_dirname
+        ).reset_index(drop=True)
         self.bands = list(bands)
         self.image_size = image_size
         self.normalize = normalize
@@ -77,9 +105,12 @@ class TileCropDataset(Dataset):
     """
 
     def __init__(self, dataset_dir, split, bands=DEFAULT_BANDS,
-                 normalize=True, norm_mean=None, norm_std=None):
+                 normalize=True, norm_mean=None, norm_std=None,
+                 mask_dirname=None):
         self.dataset_dir = Path(dataset_dir)
-        self.df = _read_split_csv(dataset_dir, split).reset_index(drop=True)
+        self.df = _remap_mask_paths(
+            _read_split_csv(dataset_dir, split), dataset_dir, mask_dirname
+        ).reset_index(drop=True)
         self.bands = list(bands)
         self.image_size = 256
         self.normalize = normalize
@@ -114,12 +145,21 @@ class TileCropDataset(Dataset):
 
 
 class RoadDataModule(pl.LightningDataModule):
-    """Train - random native crops; val/test - deterministic 2x2 quadrant crops."""
+    """Train - random native crops; val/test - deterministic 2x2 quadrant crops.
+
+    ``mask_dirname`` switches the label source: ``None`` (default) uses the
+    pipeline masks the split CSVs point at (``masks_raster/``, e.g. CDNGI);
+    a dir name (e.g. ``masks_osm_10m``) uses the alternative masks stored
+    beside them, applied to train/val/test alike. To cross-evaluate (train on
+    one label set, test on the other), pass a different ``--data.mask_dirname``
+    to ``unet.cli test``.
+    """
 
     def __init__(self, dataset_dir: str, bands: tuple[int, ...] = DEFAULT_BANDS,
                  batch_size: int = 16, num_workers: int = 2, image_size: int = 256,
                  length: int | None = None, normalize: bool = True,
-                 norm_mean: list[float] | None = None, norm_std: list[float] | None = None):
+                 norm_mean: list[float] | None = None, norm_std: list[float] | None = None,
+                 mask_dirname: str | None = None):
         super().__init__()
         self.dataset_dir = Path(dataset_dir)
         self.bands = tuple(bands)
@@ -130,6 +170,7 @@ class RoadDataModule(pl.LightningDataModule):
         self.normalize = normalize
         self.norm_mean = norm_mean
         self.norm_std = norm_std
+        self.mask_dirname = mask_dirname
 
         if self.norm_mean is None or self.norm_std is None:
             raise ValueError("No frozen train stats given")
@@ -137,7 +178,7 @@ class RoadDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         ds = RoadTileDataset(
             self.dataset_dir, self.bands, self.image_size, self.length, self.normalize,
-            self.norm_mean, self.norm_std,
+            self.norm_mean, self.norm_std, self.mask_dirname,
         )
         return DataLoader(
             ds,
@@ -152,7 +193,7 @@ class RoadDataModule(pl.LightningDataModule):
     def _eval_loader(self, split):
         ds = TileCropDataset(
             self.dataset_dir, split, self.bands, self.normalize,
-            self.norm_mean, self.norm_std,
+            self.norm_mean, self.norm_std, self.mask_dirname,
         )
         return DataLoader(
             ds,

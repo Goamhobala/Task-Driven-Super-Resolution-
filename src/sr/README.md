@@ -1,28 +1,41 @@
 # sr — resolution-enhancement experiments (RQ A2: R0 / R1 / R2)
 
-One LightningModule ([module.py](module.py) `JointSRSegModule`) covers all three
-configs so everything except the upsampler treatment is held constant:
+One LightningModule ([model.py](model.py) `JointSRUNetLightning`, a subclass of
+the baseline `unet.model.UNetLightning`) covers all three configs, so the
+segmentation network, its loss, the per-crop IoU/F1 metrics and the `val_iou`
+checkpoint convention are **identical to the U-Net baseline** — only the
+upsampler treatment varies:
 
-| Exp | Upsampler                    | SEN2SR weights                                                 | How to select       |
-| --- | ---------------------------- | -------------------------------------------------------------- | ------------------- |
-| R0  | bicubic ×4 (parameter-free) | –                                                             | `--experiment R0` |
-| R1  | SEN2SR-Lite RGBN ×4         | frozen (`freeze_sr=True`, runs under `no_grad`)            | `--experiment R1` |
-| R2  | SEN2SR-Lite RGBN ×4         | fine-tuned by the**segmentation loss alone** at a low LR | `--experiment R2` |
+| Exp | Upsampler                    | SEN2SR weights                                              | How to select                          |
+| --- | ---------------------------- | ---------------------------------------------------------- | -------------------------------------- |
+| R0  | bicubic ×4 (parameter-free)  | –                                                          | `model.upsampler: bicubic`             |
+| R1  | SEN2SR-Lite RGBN ×4          | frozen (`freeze_sr: true`, runs under `no_grad`)           | `model.upsampler: sen2sr` + `freeze_sr` |
+| R2  | SEN2SR-Lite RGBN ×4          | fine-tuned by the **segmentation loss alone** at a low LR  | `model.upsampler: sen2sr` (default)     |
 
 R2 is the task-driven SR variant (Haris et al.): there is **no reconstruction /
-L1 / perceptual term** — the only loss is `RoadSegLoss(logits, 2.5 m mask)`,
-and the Figure-1 `∇L_seg × α` scaling is implemented as differential learning
-rates (`--lr-sr` ≪ `--lr-seg`, α = lr_sr/lr_seg), plus an optional warm-up
-(`--freeze-sr-steps` holds the SR LR at 0, `--sr-lr-ramp-steps` ramps it up).
+L1 / perceptual term** — the only loss is the baseline's segmentation loss on
+the 2.5 m mask, and the Figure-1 `∇L_seg × α` scaling is implemented as
+differential learning rates (`model.lr_sr` ≪ `model.lr`, α = lr_sr/lr) via two
+Adam param groups in [`configure_optimizers`](model.py).
 
 ```
-# once, after building the V2 dataset (in OpenStreetMapTest):
+# once, on a node with internet (compute nodes have none):
+python -c "from sr.sen2sr_loader import download_sen2sr; download_sen2sr('<model_dir>')"
+# once, after building the V2 dataset:
+python -m sentinel2data.cli norm-stats --dataset-dir <root> --out src/unet/configs/norm_stats.yaml
+# for OSM HR labels (mask_source: raster), in OpenStreetMapTest:
 python dataset_hr_masks.py --dataset-dir <root> --scale 4
-# once: python -m sentinel2data.cli norm-stats --dataset-dir <root> --out <root>/norm_stats.yaml
 
-python -m sr.train --data <root> --experiment R2 --out runs/sr_r2
-sbatch scripts/train_sr.sh          # HPC; edit the CONFIG block
-python -m sr.smoke --sen2sr-dir <dir> [--download]   # laptop-friendly sanity checks
+# train / test (R2 by default; override model.upsampler / freeze_sr for R0 / R1):
+python -m sr.cli fit  --config src/sr/configs/joint_sr.yaml --config src/unet/configs/norm_stats.yaml
+python -m sr.cli test --config ... --ckpt_path checkpoints/unet_s2rosa_jointsr_best.ckpt
+
+# hyperparameter search (Optuna, joint LR pair) + HPC two-stage flow:
+python -m sr.tune --base-config src/sr/configs/joint_sr.yaml \
+                  --base-config src/unet/configs/norm_stats.yaml --dataset-dir <root>
+sbatch scripts/hpc/train.sbatch --SCRIPT=sr_tune_only.sh        # search  (SEN2SR: R1/R2)
+sbatch scripts/hpc/train.sbatch --SCRIPT=sr_tune_r0.sh          # search  (bicubic R0; no lr_sr)
+sbatch --gres=gpu:1 scripts/hpc/train.sbatch --SCRIPT=sr_fit_only.sh STUDY_TAG=<tag>   # refit + test
 ```
 
 ## How the trainable SEN2SR was obtained (the non-obvious part)
@@ -36,7 +49,7 @@ parameter ever receives a gradient. [sen2sr_loader.py](sen2sr_loader.py)
 instead instantiates the same architecture with `train_mode=True` and strictly
 loads the shipped `model.safetensor` (which contains the train-branch
 weights). Verified: output matches the compiled model to max|Δ| ≈ 2e-6, and
-gradients reach the SR parameters (see `sr.smoke`).
+gradients reach the SR parameters.
 
 Three further SEN2SR facts the code depends on:
 
@@ -54,67 +67,63 @@ Three further SEN2SR facts the code depends on:
    stops erroring on never-gradded parameters. ~240k of 472k params train.
 3. **`low_pass_mask` is a plain attribute** (not a registered buffer), so
    Lightning's device moves would leave it on CPU. The loader re-registers it
-   as a buffer. Its fixed 512×512 size also pins LR patches to **128×128**.
+   as a buffer. Its fixed 512×512 size also pins LR patches to **128×128**
+   (checked in `JointSRUNetLightning.forward`).
 
 ## Normalisation adapter
 
 SEN2SR consumes/produces surface reflectance (DN/10000); the baseline U-Net
-consumes per-band z-scored DN using the frozen `Data.npz` stats
-(`RoadSegDataset`). The adapter in `JointSRSegModule.forward` is exactly that
-transform — `(reflectance × 10000 − mean) / std` with the M0 slice of the same
-stats — as a differentiable buffer-based affine, so the U-Net's input
-distribution matches R0/R1 and the M-series baselines, and gradients flow
-through it into SEN2SR. (The repo baseline does **not** use ImageNet input
-normalisation; "match what R0/R1 apply" means the Data.npz z-score.)
+consumes per-band z-scored DN using the frozen train stats
+(`norm_stats.yaml`). The adapter in `JointSRUNetLightning.forward` is exactly
+that transform — `(reflectance × 10000 − mean) / std` with the `[B4,B3,B2,B8]`
+slice of the same stats — as a differentiable buffer-based affine, so the
+U-Net's input distribution matches the baseline **and** gradients flow through
+it into SEN2SR. The `JointSRDataModule` therefore feeds **raw DN** (no
+normalisation in the dataloader); `normalize` / `norm_mean` / `norm_std` are
+declared on the datamodule only so the shared `UNetCLI` links hand them to the
+model, which normalises *after* super-resolution.
 
 ## Assumptions about the on-disk layout (flag if wrong)
 
-Reads the V2 tiled layout written by `sentinel2data generate` (split CSVs
-under `<root>/splits/`, 512×512 tile COGs under `<root>/<split>/imagery/`),
-sharing the split definition with the baseline/benchmarking. **Masks are NOT
-the pipeline's** `masks_raster/` (10 m) or `masks_graph/` parquets:
+Reads the V2 tiled layout written by `sentinel2data generate` (split CSVs under
+`<root>/splits/`, 512×512 tile COGs under `<root>/<split>/imagery/`), sharing
+the split definition with the baseline/benchmarking. The dataloader
+([sentinel2data.dataset.joint_sr_dataset](../sentinel2data/dataset/joint_sr_dataset.py))
+returns **native 128 px** crops (raw DN) paired with **512 px** (2.5 m) masks
+from one of two sources (`data.mask_source`):
 
-* `<root>/<split>/masks_osm_2pt5m/{tile}.tif` are OSM road masks pre-generated
-  by `OpenStreetMapTest/dataset_hr_masks.py --scale 4` — rasterised on each
-  tile's grid upsampled by exactly 4 (dims exactly 4× the tile's). Asserted
-  per tile at dataset init; `scale` / `hr_masks_dirname` args exist on
-  `SRRoadSegDataset` if that changes. The on-disk layout is the *only*
-  contract between the two repos.
-* The V2 COGs store bands `[B4, B3, B2, B8, ...]`
-  (`sentinel2data.dataset.bands.S2_V2_BANDS`; SR uses bands 1–4 = `S2_10M`),
-  which is **already** SEN2SR's required `[B04, B03, B02, B08]` = R, G, B, NIR
-  order — used as-is, no permutation. Do **not** substitute the CLAHE+gamma
-  enhanced-RGB bands (21–23) here: SEN2SR expects raw reflectance.
+* `graph` (default): the tile's `masks_graph` parquet (the pipeline's CDNGI
+  labels) rasterised on the fly at the 2.5 m transform.
+* `raster`: pre-generated HR mask COGs at `<root>/<split>/<mask_dirname>/{tile}.tif`
+  (default `masks_osm_2pt5m`), dims **exactly `upscale`× the tile's** —
+  e.g. the OSM masks from `OpenStreetMapTest/dataset_hr_masks.py --scale 4`.
+  Asserted per tile at dataset init. Enables the OSM-vs-CDNGI label comparison.
+
+Two more contracts:
+
+* The V2 COGs store bands `[B4, B3, B2, B8, ...]` (`S2_V2_BANDS`; SR uses bands
+  1–4 = `S2_10M`), which is **already** SEN2SR's required `[B04,B03,B02,B08]` =
+  R, G, B, NIR order — used as-is, no permutation. Do **not** substitute the
+  CLAHE+gamma enhanced-RGB bands (21–23): SEN2SR expects raw reflectance.
 * Band stats come from `sentinel2data norm-stats` (`norm_stats.yaml`,
-  full-stack 1-based DN-unit mean/std; the [B4,B3,B2,B8] slice is taken for
-  the adapter). A legacy `Data.npz` is still accepted.
-* Nodata (NaN in V2 COGs; −32768 legacy) is zeroed *before* the /10000
-  scaling (== zero reflectance).
+  full-stack 1-based DN-unit mean/std; the `[B4,B3,B2,B8]` slice is taken for
+  the adapter). These are **required** — the post-SR adapter has no per-image
+  fallback, so `JointSRUNetLightning` raises without them.
 
 ## Segmentation net & loss
 
-The segmentation model is the baseline's own construction
-(`baseline.model.build_model` — smp UNet++), default encoder `resnet34`
-(proposal Table 5); keep `--encoder` identical across R0/R1/R2 — encoder
-constancy is the point of the ablation. The criterion is injectable: pass a
-built instance to `JointSRSegModule(criterion=...)` or select by name via
-`--loss` (registry in `sr.module.LOSS_REGISTRY`, default `roadseg` =
-`baseline.model.RoadSegLoss` with `pos_weight` computed from the 2.5 m train
-masks). No auxiliary losses are added anywhere.
+Inherited unchanged from `unet.model.UNetLightning` (smp U-Net, default encoder
+`resnet34`; the baseline's own loss and metrics). Keep `--model.encoder_name`
+identical across R0/R1/R2 — encoder constancy is the point of the ablation.
+No auxiliary / reconstruction losses are added anywhere.
 
-## Augmentation
+## Hyperparameter search
 
-Only the baseline's lossless default (D4 flips/rotations) is carried over,
-applied to the LR image and HR mask with the same group element via torch ops
-(Albumentations can't jointly transform an image/mask pair of different
-sizes). The photometric extras in `baseline.augment` are tuned for z-scored
-input and are deliberately not applied to reflectance.
-
-## Tests
-
-`python -m sr.smoke --sen2sr-dir <dir>` — synthetic data, no dataset needed:
-asserts the 4× output size, non-zero grads in *both* param groups for R2
-(printing per-group grad norms), zero SR grads for R1, and that a single fixed
-batch overfits (loss halves) through the joint pipeline. Pytest wrappers live
-in [tests/test_smoke.py](tests/test_smoke.py) (set `SEN2SR_DIR`; overfit is
-opt-in via `RUN_OVERFIT=1`). On a laptop use `--batch 1 --overfit-steps 30 --device cpu`; the 512×512 U-Net stage is heavy.
+[tune.py](tune.py) runs Optuna over the **joint LR pair** (`lr` for the U-Net,
+`lr_sr` for SEN2SR, both log-uniform with `lr_sr` well below `lr`), plus
+`pos_weight` and `batch_size`; the encoder is held constant. For the **R0**
+baseline (`--upsampler bicubic`) there are no SR params, so `lr_sr` is **not
+searched** — use [scripts/hpc/sr_tune_r0.sh](../../scripts/hpc/sr_tune_r0.sh)
+(or pass `--upsampler bicubic` to `sr.tune`). The best trial is written as a
+`best_params.yaml` overlay (carrying the resolved `upsampler`) that you layer
+onto the base config for the full-length refit.

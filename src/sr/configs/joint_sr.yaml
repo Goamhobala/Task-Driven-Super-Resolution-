@@ -1,0 +1,70 @@
+# Joint SR + UNet road-segmentation config (SEN2SR front-end, two LRs).
+# Mirrors unet_upscale.yaml but the upsampling is LEARNED and tuned jointly:
+# native 10 m crops -> SEN2SR x4 -> post-SR normalisation -> UNet, trained by
+# the segmentation loss alone (task-driven SR; lr_sr << lr is the alpha).
+#
+#   python -m sr.cli fit  --config src/sr/configs/joint_sr.yaml \
+#                         --config src/unet/configs/norm_stats.yaml
+#   python -m sr.cli test --config ... --ckpt_path checkpoints/unet_s2rosa_jointsr_best.ckpt
+#
+# Prefetch SEN2SR weights ONCE on a node with internet (compute nodes have none):
+#   python -c "from sr.sen2sr_loader import download_sen2sr; download_sen2sr('<model_dir>')"
+#
+# `bands`, `image_size`, `normalize`, norm stats live under `data:` only and are
+# linked into the model (which applies the normalisation AFTER super-resolution;
+# the dataloader feeds raw DN). Do NOT add them under `model:`.
+#
+# Ablation switches:
+#   model.upsampler: bicubic            -> R0 deterministic baseline (lr_sr unused)
+#   model.upsampler: sen2sr + freeze_sr: true  -> R1 frozen SR preprocessing
+#   model.upsampler: sen2sr + freeze_sr: false -> R2 joint task-driven SR (default)
+#   data.mask_source: graph|raster      -> CDNGI (pipeline) vs OSM HR labels
+
+seed_everything: 42
+
+trainer:
+  max_epochs: 20
+  accelerator: auto
+  devices: auto
+  log_every_n_steps: 10
+  logger: true
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: checkpoints
+        filename: unet_s2rosa_jointsr_best
+        monitor: val_iou
+        mode: max
+        save_top_k: 1
+        save_last: true
+
+model:
+  encoder_name: resnet34
+  encoder_weights: imagenet
+  classes: 1
+  lr: 1.0e-4                  # UNet LR (baseline convention)
+  lr_sr: 1.0e-5               # SEN2SR LR; keep well below lr (alpha = lr_sr/lr).
+                              # Starting point only — search both with sr.tune.
+  pos_weight: 5.0
+  threshold: 0.5
+  upsampler: sen2sr           # sen2sr | bicubic
+  freeze_sr: false            # true -> R1 (frozen SR preprocessing)
+  sen2sr_dir: /scratch/CHANGE_ME/InstaRoad/models/SEN2SRLite_RGBN
+
+data:
+  dataset_dir: /scratch/CHANGE_ME/InstaRoad/ROSA_Dense_CDNGI
+  bands: [1, 2, 3, 4]         # SEN2SR REQUIRES raw [B4,B3,B2,B8]; never 21-23 here
+  batch_size: 4               # 512px UNet stage is memory-heavy
+  num_workers: 2
+  crop_size: 128              # pinned to 128 by SEN2SR's shipped FFT mask
+  upscale: 4                  # -> model output & masks at crop_size*4 = 512 (2.5 m)
+  image_size: 256             # vestigial; keeps the shared CLI link resolvable
+  mask_source: graph          # graph = pipeline labels (CDNGI); raster = OSM HR masks
+  mask_dirname: masks_osm_2pt5m   # used when mask_source: raster
+  min_road_density: 0.05      # drop TRAIN tiles below 5% road (val/test unfiltered)
+  length: null
+  normalize: true             # applied INSIDE the model, after SR
+  # Frozen per-band train stats (FULL stack, 1-based) — layer norm_stats.yaml:
+  #   python -m sentinel2data.cli norm-stats --dataset-dir <root> --out src/unet/configs/norm_stats.yaml
+  norm_mean: null
+  norm_std: null

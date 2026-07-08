@@ -1,0 +1,31 @@
+# Label-source ablation overlay: train/eval the SAME UNet config on OSM masks
+# instead of the pipeline's CDNGI masks_raster. Merge over the base config:
+#
+#   python -m unet.cli fit  --config src/unet/configs/unet.yaml \
+#                           --config src/unet/configs/norm_stats.yaml \
+#                           --config src/unet/configs/osm_labels.yaml
+#   python -m unet.cli test --config ... --ckpt_path checkpoints/unet_s2rosa_osm_best.ckpt
+#
+# Prerequisite — generate the 10 m OSM masks beside each split's imagery once
+# (from the OpenStreetMapTest repo; writes <split>/masks_osm_10m/{tile}.tif):
+#
+#   python dataset_hr_masks.py --dataset-dir <root> --scale 1
+#
+# Cross-evaluation (train on one label set, test on the other): run `test`
+# with the opposite `--data.mask_dirname` (null -> CDNGI, masks_osm_10m -> OSM).
+# Everything else (bands, split, norm stats, pos_weight, seed) stays identical,
+# so metric differences are attributable to the label source alone.
+
+data:
+  mask_dirname: masks_osm_10m   # null -> the CSVs' masks_raster (CDNGI)
+
+trainer:
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: checkpoints
+        filename: unet_s2rosa_osm_best   # don't clobber the CDNGI checkpoint
+        monitor: val_iou
+        mode: max
+        save_top_k: 1
+        save_last: true
