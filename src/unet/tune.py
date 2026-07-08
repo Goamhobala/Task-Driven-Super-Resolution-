@@ -122,6 +122,14 @@ def resolve_encoder_weights(base_cfg: dict, cli_value: str | None):
     return val
 
 
+def resolve_mask_dirname(base_cfg: dict, cli_value: str | None):
+    """CLI overrides base config; ''/'none'/'null' -> None (CDNGI masks_raster)."""
+    val = base_cfg.get("data", {}).get("mask_dirname") if cli_value is None else cli_value
+    if isinstance(val, str) and val.lower() in {"", "none", "null"}:
+        return None
+    return val
+
+
 def build_objective(args, base_cfg: dict):
     data_cfg = _data_kwargs(base_cfg, args.dataset_dir, args.num_workers, args.mask_dirname)
     model_cfg = dict(base_cfg.get("model", {}))
@@ -204,10 +212,11 @@ def build_objective(args, base_cfg: dict):
 # --------------------------------------------------------------------------- #
 # Output: best trial -> Lightning config overlay
 # --------------------------------------------------------------------------- #
-def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights) -> Path:
+def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights, mask_dirname) -> Path:
     p = study.best_params
-    # Pin encoder_weights too, so the refit reproduces the SAME init (imagenet vs
-    # random) the search was run under -- not whatever the base config defaults to.
+    # Pin encoder_weights AND mask_dirname too, so the refit reproduces the SAME
+    # init (imagenet vs random) and label source (CDNGI vs OSM) the search ran
+    # under -- not whatever the base config defaults to. null = CDNGI masks_raster.
     overlay = {
         "model": {
             "encoder_name": p["encoder_name"],
@@ -215,7 +224,7 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights) -> P
             "lr": p["lr"],
             "pos_weight": p["pos_weight"],
         },
-        "data": {"batch_size": p["batch_size"]},
+        "data": {"batch_size": p["batch_size"], "mask_dirname": mask_dirname},
     }
     overlay_path = out_dir / "best_params.yaml"
     header = (
@@ -309,9 +318,10 @@ def main(argv=None):
     study.optimize(objective, n_trials=args.n_trials, timeout=args.timeout, gc_after_trial=True)
 
     encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
-    overlay_path = write_best_overlay(study, out_dir, encoder_weights)
+    mask_dirname = resolve_mask_dirname(base_cfg, args.mask_dirname)
+    overlay_path = write_best_overlay(study, out_dir, encoder_weights, mask_dirname)
     print(f"\nBest {MONITOR}={study.best_value:.4f} (trial #{study.best_trial.number})")
-    print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}")
+    print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}  mask_dirname={mask_dirname}")
     print(f"Wrote Lightning overlay -> {overlay_path}")
 
 

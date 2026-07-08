@@ -50,6 +50,12 @@ SEED=0
 NUM_WORKERS=1        # 0 = load in main process; GDAL/rasterio segfault in subprocesses
 PRECISION="bf16-mixed"
 
+# Label source. Empty (default) = the split CSVs' CDNGI masks_raster; set to a
+# mask dir beside imagery (e.g. mask_osm_10) to train/eval on OSM labels instead.
+# It is passed to the search AND baked into best_params.yaml, so the refit uses
+# the same labels automatically.
+MASK_DIRNAME="${MASK_DIRNAME:-}"
+
 # --- Optuna search budget ---------------------------------------------------
 N_TRIALS=30           # TOTAL trials across all search workers
 SEARCH_GPUS=2        # 1 = single-process search; 2+ = one tuner per GPU sharing
@@ -91,7 +97,7 @@ echo "Logging to ${LOG_FILE}"
 #     message if the data isn't visible from this node (instead of dying later
 #     as a cryptic num_samples=0 inside the DataLoader). ----------------------
 echo "host=$(hostname)  USER_NAME=${USER_NAME}  REPO_DIR=${REPO_DIR}"
-echo "DATASET_DIR=${DATASET_DIR}"
+echo "DATASET_DIR=${DATASET_DIR}  mask_dirname=${MASK_DIRNAME:-<CDNGI>}"
 if [ ! -d "${DATASET_DIR}" ]; then
   echo "ERROR: ${DATASET_DIR} not visible on $(hostname). Is /scratch mounted on this node?" >&2
   exit 1
@@ -101,6 +107,13 @@ echo "  .tif count (capped at 1000): ${n_tif}"
 if [ "${n_tif}" -eq 0 ]; then
   echo "ERROR: no .tif tiles under ${DATASET_DIR}." >&2
   exit 1
+fi
+if [ -n "${MASK_DIRNAME}" ]; then
+  n_alt=$(find "${DATASET_DIR}"/*/"${MASK_DIRNAME}" -maxdepth 1 -name '*.tif' 2>/dev/null | head -n 1 | wc -l)
+  if [ "${n_alt}" -eq 0 ]; then
+    echo "ERROR: MASK_DIRNAME=${MASK_DIRNAME} but no masks under <split>/${MASK_DIRNAME}/." >&2
+    exit 1
+  fi
 fi
 if [ ! -f "${NORM_CONFIG}" ]; then
   echo "ERROR: ${NORM_CONFIG} missing — generate it with:" >&2
@@ -128,6 +141,7 @@ run_tuner () {   # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
     --base-config "$BASE_CONFIG" \
     --base-config "$NORM_CONFIG" \
     --dataset-dir "$DATASET_DIR" \
+    --mask-dirname "$MASK_DIRNAME" \
     --out "$RUN_DIR" \
     --num-workers "$NUM_WORKERS" \
     --devices 1 \

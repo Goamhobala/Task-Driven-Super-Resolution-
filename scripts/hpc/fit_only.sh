@@ -24,8 +24,10 @@ REFIT_EPOCHS="${REFIT_EPOCHS:-50}"
 REFIT_GPUS="${REFIT_GPUS:-1}"        # 1 = single GPU (no DDP). See notes in train_unet_optuna.sh.
 WANDB_PROJECT="${WANDB_PROJECT:-unet_s2rosa_baseline}"
 
-# Label source — MUST match the search (tune_only.sh's MASK_DIRNAME). Empty =
-# CDNGI masks_raster; e.g. masks_osm_10m to refit/test on OSM labels.
+# Label source. Leave EMPTY to inherit whatever the search used -- unet.tune now
+# pins data.mask_dirname into best_params.yaml, so the refit reproduces it
+# automatically. Only set this to OVERRIDE the overlay (e.g. cross-evaluate on a
+# different label set); it must name a mask dir beside imagery, e.g. mask_osm_10.
 MASK_DIRNAME="${MASK_DIRNAME:-}"
 # ===========================================================================
 
