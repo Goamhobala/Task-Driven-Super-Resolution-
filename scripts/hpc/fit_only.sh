@@ -61,14 +61,29 @@ python -m unet.cli fit \
   --trainer.logger.init_args.project "$WANDB_PROJECT" \
   --seed_everything "$SEED"
 
+# Log the test metrics to the SAME wandb run the refit just created. The base
+# config uses the default (TensorBoard) logger, so without the wandb overlay the
+# `test` subcommand ran logger-less and test_iou/test_f1 reached only stdout ->
+# the slurm log. wandb reads the run id + resume mode from the environment, so no
+# extra jsonargparse plumbing on the WandbLogger is needed.
+if LATEST_RUN=$(readlink -f "$RUN_DIR/wandb/latest-run" 2>/dev/null) && [ -n "$LATEST_RUN" ]; then
+  export WANDB_RUN_ID="${LATEST_RUN##*-}"   # .../run-<timestamp>-<id> -> <id>
+  export WANDB_RESUME=must
+  echo "resuming wandb run ${WANDB_RUN_ID} for the test split"
+else
+  echo "WARN: could not locate the refit's wandb run; test will log to a fresh run" >&2
+fi
+
 echo "=== BENCHMARK (test split) ==="
 python -m unet.cli test \
   --config "$BASE_CONFIG" \
   --config "$NORM_CONFIG" \
+  --config "$WANDB_CONFIG" \
   --config "$BEST_CONFIG" \
   --data.dataset_dir "$DATASET_DIR" \
   --data.num_workers "$NUM_WORKERS" \
   --trainer.devices 1 \
+  --trainer.logger.init_args.project "$WANDB_PROJECT" \
   --ckpt_path "$CKPT"
 
 echo "=== DONE ===  outputs in $RUN_DIR"
