@@ -29,10 +29,10 @@ N_TRIALS="${N_TRIALS:-100}"        # total per search, split across the 2 GPUs
 
 echo "### SEARCH 1/2: ImageNet-pretrained ###"
 ENCODER_WEIGHTS=imagenet STUDY_TAG=imagenet SEARCH_GPUS=2 N_TRIALS="$N_TRIALS" \
-  bash "$REPO_DIR/scripts/tune_only.sh"
+  bash "$REPO_DIR/scripts/hpc/tune_only.sh"
 
 echo "### SEARCH 2/2: random init ###"
 ENCODER_WEIGHTS=none STUDY_TAG=random SEARCH_GPUS=2 N_TRIALS="$N_TRIALS" \
-  bash "$REPO_DIR/scripts/tune_only.sh"
+  bash "$REPO_DIR/scripts/hpc/tune_only.sh"
 
 echo "### BOTH SEARCHES DONE ###"

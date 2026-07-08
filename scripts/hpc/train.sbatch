@@ -44,7 +44,7 @@ fi
 # Resolve the inner script: bare name -> scripts/, otherwise use the given path.
 case "$SCRIPT" in
   */*) SCRIPT_PATH="$SCRIPT" ;;
-  *)   SCRIPT_PATH="$REPO_DIR/scripts/$SCRIPT" ;;
+  *)   SCRIPT_PATH="$REPO_DIR/scripts/hpc/$SCRIPT" ;;
 esac
 if [ ! -f "$SCRIPT_PATH" ]; then
   echo "ERROR: inner script not found: $SCRIPT_PATH" >&2
