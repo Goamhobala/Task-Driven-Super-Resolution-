@@ -74,7 +74,12 @@ data:
   image_size: 256             # vestigial; keeps the shared CLI link resolvable
   mask_source: graph          # graph = pipeline labels (CDNGI); raster = OSM HR masks
   mask_dirname: mask_osm_2pt5   # used when mask_source: raster
-  min_road_density: 0.05      # drop TRAIN tiles below 5% road (val/test unfiltered)
+  min_road_density: 0.0       # keep ALL train tiles. Sparse-tile balance is the
+                              # generator's job (empty_keep_ratio), and filtering
+                              # here (a) diverges from the plain unet baseline,
+                              # which has no such filter, and (b) removes the
+                              # sparse RURAL tiles the project targets. (0.05 was
+                              # inherited from unet_upscale.yaml — friend's knob.)
   length: null
   normalize: true             # applied INSIDE the model, after SR
   # Frozen per-band train stats (FULL stack, 1-based) — layer norm_stats.yaml:
