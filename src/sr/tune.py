@@ -103,7 +103,11 @@ def build_objective(args, base_cfg: dict):
         encoder_name = trial.suggest_categorical("encoder_name", args.encoders)
         batch_size = trial.suggest_categorical("batch_size", args.batch_sizes)
 
-        pl.seed_everything(args.seed, workers=True)
+        # Training seed: the base --train-seed for EVERY trial (so a trial's
+        # score doesn't depend on which parallel worker ran it); --seed only
+        # decorrelates the per-worker TPE samplers.
+        pl.seed_everything(args.train_seed if args.train_seed is not None
+                           else args.seed, workers=True)
 
         dm = JointSRDataModule(
             dataset_dir=data_cfg["dataset_dir"],
@@ -244,7 +248,12 @@ def parse_args(argv=None):
     ap.add_argument("--study-name", default="sr_optuna")
     ap.add_argument("--storage", default=None,
                     help="Optuna storage URL, e.g. sqlite:///runs/sr_optuna/study.db (enables resume).")
-    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--seed", type=int, default=42,
+                    help="TPE sampler seed — give each parallel worker a DIFFERENT "
+                         "one so they don't propose duplicate points.")
+    ap.add_argument("--train-seed", type=int, default=None,
+                    help="seed_everything() for every trial (default: --seed). Pin "
+                         "to the base seed so trial scores are worker-independent.")
 
     # per-trial training budget
     ap.add_argument("--max-epochs", type=int, default=8, help="Short budget per trial; refit longer after.")

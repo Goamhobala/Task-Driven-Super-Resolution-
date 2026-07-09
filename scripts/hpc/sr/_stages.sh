@@ -140,6 +140,7 @@ if [ "$STAGE" = "tune" ]; then
       --patience "$PATIENCE" \
       --precision "$PRECISION" \
       --seed "$seed" \
+      --train-seed "$SEED" \
       --study-name "$STUDY_NAME" \
       --storage "$STORAGE" \
       --encoder-weights "$ENCODER_WEIGHTS" \
@@ -151,14 +152,18 @@ if [ "$STAGE" = "tune" ]; then
   }
 
   echo "=== OPTUNA SEARCH (n_trials=$N_TRIALS across ${SEARCH_GPUS} GPU(s), ${TUNE_EPOCHS} epochs/trial) ==="
+  # Sampler seeds: SEED*1000+worker, so workers within a run differ (no
+  # duplicate proposals) AND no sampler seed ever recurs across SEED runs
+  # (SEED+g would make e.g. SEED=0/worker1 collide with SEED=1/worker0,
+  # correlating the startup trials of nominally independent runs).
   if [ "$SEARCH_GPUS" -le 1 ]; then
-    run_tuner "" "$N_TRIALS" "$SEED"
+    run_tuner "" "$N_TRIALS" "$(( SEED * 1000 ))"
   else
     PER_WORKER=$(( (N_TRIALS + SEARCH_GPUS - 1) / SEARCH_GPUS ))
     echo "  fanning out ${SEARCH_GPUS} workers x ${PER_WORKER} trials each"
     pids=()
     for (( g=0; g<SEARCH_GPUS; g++ )); do
-      run_tuner "$g" "$PER_WORKER" "$(( SEED + g ))" &
+      run_tuner "$g" "$PER_WORKER" "$(( SEED * 1000 + g ))" &
       pids+=($!)
       sleep 3   # stagger so worker 0 creates the study before the others attach
     done
