@@ -100,7 +100,7 @@ class JointSRRoadTileDataset(Dataset):
 
     def __init__(self, dataset_dir, bands=SR_INPUT_BANDS, crop_size=128, upscale=4,
                  length=None, min_road_density=0.0,
-                 mask_source="graph", mask_dirname="masks_osm_2pt5m"):
+                 mask_source="graph", mask_dirname="mask_osm_2pt5"):
         if mask_source not in MASK_SOURCES:
             raise ValueError(f"mask_source must be one of {MASK_SOURCES}, got {mask_source!r}")
         self.dataset_dir = Path(dataset_dir)
@@ -154,7 +154,7 @@ class JointSRTileCropDataset(Dataset):
     each tile, each paired with its HR mask (once-per-pixel coverage)."""
 
     def __init__(self, dataset_dir, split, bands=SR_INPUT_BANDS, crop_size=128,
-                 upscale=4, mask_source="graph", mask_dirname="masks_osm_2pt5m"):
+                 upscale=4, mask_source="graph", mask_dirname="mask_osm_2pt5"):
         if mask_source not in MASK_SOURCES:
             raise ValueError(f"mask_source must be one of {MASK_SOURCES}, got {mask_source!r}")
         self.dataset_dir = Path(dataset_dir)
@@ -223,7 +223,7 @@ class JointSRDataModule(pl.LightningDataModule):
                  upscale: int = 4, image_size: int = 256, length: int | None = None,
                  normalize: bool = True, norm_mean: list[float] | None = None,
                  norm_std: list[float] | None = None, min_road_density: float = 0.0,
-                 mask_source: str = "graph", mask_dirname: str = "masks_osm_2pt5m"):
+                 mask_source: str = "graph", mask_dirname: str = "mask_osm_2pt5"):
         super().__init__()
         self.dataset_dir = Path(dataset_dir)
         self.bands = tuple(bands)

@@ -21,7 +21,7 @@ def _read_split_csv(dataset_dir, split):
 
 def _remap_mask_paths(df, dataset_dir, mask_dirname):
     """Point ``mask_path`` at an alternative label set living beside the
-    pipeline's ``masks_raster/`` (e.g. ``masks_osm_10m`` written by
+    pipeline's ``masks_raster/`` (e.g. ``mask_osm_10`` written by
     OpenStreetMapTest/dataset_hr_masks.py --scale 1). ``None`` keeps the CSV's
     masks unchanged. The alternative masks are rasterised on each tile's own
     grid, so dims/CRS match; every remapped file must exist — missing labels
@@ -149,7 +149,7 @@ class RoadDataModule(pl.LightningDataModule):
 
     ``mask_dirname`` switches the label source: ``None`` (default) uses the
     pipeline masks the split CSVs point at (``masks_raster/``, e.g. CDNGI);
-    a dir name (e.g. ``masks_osm_10m``) uses the alternative masks stored
+    a dir name (e.g. ``mask_osm_10``) uses the alternative masks stored
     beside them, applied to train/val/test alike. To cross-evaluate (train on
     one label set, test on the other), pass a different ``--data.mask_dirname``
     to ``unet.cli test``.

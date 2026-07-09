@@ -8,7 +8,7 @@
 #   LABELS       cdngi | overture | osm  (label SOURCE naming — never "graph",
 #                which collides with the graph-model thread; cdngi/overture map
 #                to the pipeline's masks_graph parquets of the matching dataset,
-#                osm maps to the pre-generated <split>/masks_osm_2pt5m rasters)
+#                osm maps to the pre-generated <split>/mask_osm_2pt5 rasters)
 #   UPSAMPLER    sen2sr | bicubic
 #   FREEZE_SR    true | false
 #   SR_PAD       reflect-pad in native px (0 = off, 8 = border-artifact fix)
@@ -46,7 +46,7 @@ case "$LABELS" in
     MASK_SOURCE="graph" ;;   # = the Overture dataset's own masks_graph parquets
   osm)
     DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI}"
-    MASK_SOURCE="raster" ;;  # = <split>/masks_osm_2pt5m rasters
+    MASK_SOURCE="raster" ;;  # = <split>/mask_osm_2pt5 rasters
   *)
     echo "ERROR: LABELS must be cdngi|overture|osm, got '${LABELS}'." >&2; exit 2 ;;
 esac
@@ -100,9 +100,11 @@ if [ "${UPSAMPLER}" = "sen2sr" ] && [ ! -f "${SEN2SR_DIR}/model.safetensor" ]; t
   exit 1
 fi
 if [ "${MASK_SOURCE}" = "raster" ]; then
-  n_osm=$(find "${DATASET_DIR}"/*/masks_osm_2pt5m -maxdepth 1 -name '*.tif' 2>/dev/null | head -n 100 | wc -l)
-  if [ "${n_osm}" -eq 0 ]; then
-    echo "ERROR: LABELS=osm but no masks under <split>/masks_osm_2pt5m/." >&2
+  # -print -quit: no pipe to `head`, so `find` can't die of SIGPIPE and trip
+  # `set -o pipefail` (that silently killed the unet osm.sh check).
+  first_osm=$(find "${DATASET_DIR}"/*/mask_osm_2pt5 -maxdepth 1 -name '*.tif' -print -quit 2>/dev/null)
+  if [ -z "${first_osm}" ]; then
+    echo "ERROR: LABELS=osm but no masks under <split>/mask_osm_2pt5/." >&2
     echo "  Generate with OpenStreetMapTest/dataset_hr_masks.py --scale 4" >&2
     exit 1
   fi

@@ -7,17 +7,17 @@
 #   python -m unet.cli test --config ... --ckpt_path checkpoints/unet_s2rosa_osm_best.ckpt
 #
 # Prerequisite — generate the 10 m OSM masks beside each split's imagery once
-# (from the OpenStreetMapTest repo; writes <split>/masks_osm_10m/{tile}.tif):
+# (from the OpenStreetMapTest repo; writes <split>/mask_osm_10/{tile}.tif):
 #
 #   python dataset_hr_masks.py --dataset-dir <root> --scale 1
 #
 # Cross-evaluation (train on one label set, test on the other): run `test`
-# with the opposite `--data.mask_dirname` (null -> CDNGI, masks_osm_10m -> OSM).
+# with the opposite `--data.mask_dirname` (null -> CDNGI, mask_osm_10 -> OSM).
 # Everything else (bands, split, norm stats, pos_weight, seed) stays identical,
 # so metric differences are attributable to the label source alone.
 
 data:
-  mask_dirname: masks_osm_10m   # null -> the CSVs' masks_raster (CDNGI)
+  mask_dirname: mask_osm_10   # null -> the CSVs' masks_raster (CDNGI)
 
 trainer:
   callbacks:

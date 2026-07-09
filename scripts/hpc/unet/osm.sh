@@ -1,10 +1,10 @@
 #!/bin/bash
-# UNet baseline, OSM labels (masks_osm_10m beside each split's imagery;
+# UNet baseline, OSM labels (mask_osm_10 beside each split's imagery;
 # same CDNGI-built imagery/splits, so the metric delta vs unet/cdngi.sh is
 # attributable to the label source alone).
 #
 # Prerequisite (once): sort the 10 m OSM masks into the dataset —
-#   OpenStreetMapTest/sort_osm_masks.py --dest-dirname masks_osm_10m
+#   OpenStreetMapTest/sort_osm_masks.py --dest-dirname mask_osm_10
 #   (or dataset_hr_masks.py --scale 1)
 #
 #   sbatch scripts/hpc/train.sbatch --SCRIPT=unet/osm.sh STAGE=tune [SEED=n]
@@ -15,6 +15,6 @@ REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 
 EXP_TAG="osm"
 DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI}"
-MASK_DIRNAME="mask_osm_10m"
+MASK_DIRNAME="mask_osm_10"   # actual on-disk dir name (see `ls <split>/`)
 
 source "$REPO_DIR/scripts/hpc/unet/_stages.sh"

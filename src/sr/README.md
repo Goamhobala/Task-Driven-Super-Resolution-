@@ -95,7 +95,7 @@ from one of two sources (`data.mask_source`):
 * `graph` (default): the tile's `masks_graph` parquet (the pipeline's CDNGI
   labels) rasterised on the fly at the 2.5 m transform.
 * `raster`: pre-generated HR mask COGs at `<root>/<split>/<mask_dirname>/{tile}.tif`
-  (default `masks_osm_2pt5m`), dims **exactly `upscale`× the tile's** —
+  (default `mask_osm_2pt5`), dims **exactly `upscale`× the tile's** —
   e.g. the OSM masks from `OpenStreetMapTest/dataset_hr_masks.py --scale 4`.
   Asserted per tile at dataset init. Enables the OSM-vs-CDNGI label comparison.
 

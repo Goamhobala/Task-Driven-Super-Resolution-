@@ -73,7 +73,7 @@ data:
   upscale: 4                  # -> model output & masks at crop_size*4 = 512 (2.5 m)
   image_size: 256             # vestigial; keeps the shared CLI link resolvable
   mask_source: graph          # graph = pipeline labels (CDNGI); raster = OSM HR masks
-  mask_dirname: masks_osm_2pt5m   # used when mask_source: raster
+  mask_dirname: mask_osm_2pt5   # used when mask_source: raster
   min_road_density: 0.05      # drop TRAIN tiles below 5% road (val/test unfiltered)
   length: null
   normalize: true             # applied INSIDE the model, after SR

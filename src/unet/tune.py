@@ -91,7 +91,7 @@ def _data_kwargs(cfg: dict, dataset_dir: str | None, num_workers: int | None,
         data["num_workers"] = num_workers
     if mask_dirname is not None:
         # Label-source override: ""/"none"/"null" -> CDNGI (masks_raster);
-        # a dir name (e.g. masks_osm_10m) -> the alternative masks beside it.
+        # a dir name (e.g. mask_osm_10) -> the alternative masks beside it.
         data["mask_dirname"] = (None if str(mask_dirname).lower() in {"", "none", "null"}
                                 else mask_dirname)
     return data
@@ -263,7 +263,7 @@ def parse_args(argv=None):
     ap.add_argument("--num-workers", type=int, default=None, help="Override data.num_workers (0 avoids GDAL forks).")
     ap.add_argument("--mask-dirname", default=None,
                     help="Override data.mask_dirname (label source). Empty/'none' -> CDNGI "
-                         "masks_raster; e.g. masks_osm_10m for OSM labels.")
+                         "masks_raster; e.g. mask_osm_10 for OSM labels.")
 
     # study controls
     ap.add_argument("--n-trials", type=int, default=25)

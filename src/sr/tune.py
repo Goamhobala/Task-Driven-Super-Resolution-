@@ -119,7 +119,7 @@ def build_objective(args, base_cfg: dict):
             norm_std=data_cfg["norm_std"],
             min_road_density=data_cfg.get("min_road_density", 0.0),
             mask_source=data_cfg.get("mask_source", "graph"),
-            mask_dirname=data_cfg.get("mask_dirname", "masks_osm_2pt5m"),
+            mask_dirname=data_cfg.get("mask_dirname", "mask_osm_2pt5"),
         )
 
         model = JointSRUNetLightning(
