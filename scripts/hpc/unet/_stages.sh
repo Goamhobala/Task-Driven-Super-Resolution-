@@ -68,8 +68,10 @@ if [ ! -f "${NORM_CONFIG}" ]; then
   exit 1
 fi
 if [ -n "${MASK_DIRNAME}" ]; then
-  n_alt=$(find "${DATASET_DIR}"/*/"${MASK_DIRNAME}" -maxdepth 1 -name '*.tif' 2>/dev/null | head -n 100 | wc -l)
-  if [ "${n_alt}" -eq 0 ]; then
+  # -print -quit stops at the first hit: no pipe to `head`, so `find` can't die
+  # of SIGPIPE and trip `set -o pipefail` (that killed osm.sh silently here).
+  first_mask=$(find "${DATASET_DIR}"/*/"${MASK_DIRNAME}" -maxdepth 1 -name '*.tif' -print -quit 2>/dev/null)
+  if [ -z "${first_mask}" ]; then
     echo "ERROR: no masks under <split>/${MASK_DIRNAME}/ — generate them first" >&2
     echo "  (OpenStreetMapTest: sort_osm_masks.py / dataset_hr_masks.py --scale 1)" >&2
     exit 1

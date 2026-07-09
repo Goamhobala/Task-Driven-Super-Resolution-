@@ -15,6 +15,6 @@ REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 
 EXP_TAG="osm"
 DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI}"
-MASK_DIRNAME="masks_osm_10m"
+MASK_DIRNAME="mask_osm_10m"
 
 source "$REPO_DIR/scripts/hpc/unet/_stages.sh"
