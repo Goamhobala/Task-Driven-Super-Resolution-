@@ -1,0 +1,2 @@
+sbatch scripts/hpc/train_both.sbatch --SCRIPT=unet/cdngi.sh
+sbatch scripts/hpc/train_both.sbatch --SCRIPT=sr/r2a_cdngi.sh SEED=1

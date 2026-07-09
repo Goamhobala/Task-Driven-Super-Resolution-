@@ -37,6 +37,16 @@ trainer:
         mode: max
         save_top_k: 1
         save_last: true
+    # Stop once val_iou plateaus so the refit doesn't burn the whole SLURM
+    # wall-clock (which was killing the job before the test stage ran).
+    # max_epochs is now an UPPER bound; raise patience if val_iou is still noisy.
+    - class_path: lightning.pytorch.callbacks.EarlyStopping
+      init_args:
+        monitor: val_iou
+        mode: max
+        patience: 10
+        min_delta: 0.0
+        verbose: true
 
 model:
   encoder_name: resnet34
@@ -49,6 +59,9 @@ model:
   threshold: 0.5
   upsampler: sen2sr           # sen2sr | bicubic
   freeze_sr: false            # true -> R1 (frozen SR preprocessing)
+  sr_pad: 0                   # reflect-pad (native px) around the SR stage; output
+                              # cropped back. Mitigates the FFT border artifact
+                              # (try 8). Ckpts are pad-specific (mask buffer resizes).
   sen2sr_dir: /scratch/CHANGE_ME/InstaRoad/models/SEN2SRLite_RGBN
 
 data:

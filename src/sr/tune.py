@@ -83,11 +83,16 @@ def build_objective(args, base_cfg: dict):
     encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
     sen2sr_dir = args.sen2sr_dir or model_cfg.get("sen2sr_dir")
     upsampler = args.upsampler or model_cfg.get("upsampler", "sen2sr")
-    # Bicubic (R0) has no learnable SR params, so lr_sr is a dead search
-    # dimension -- skip it entirely rather than let TPE waste trials on it.
-    search_lr_sr = upsampler == "sen2sr"
+    freeze_sr = (model_cfg.get("freeze_sr", False) if args.freeze_sr is None
+                 else args.freeze_sr == "true")
+    sr_pad = model_cfg.get("sr_pad", 0) if args.sr_pad is None else args.sr_pad
+    # Bicubic (R0) has no learnable SR params and frozen SEN2SR (R1) never
+    # updates, so lr_sr is a dead search dimension in both -- skip it entirely
+    # rather than let TPE waste trials on it.
+    search_lr_sr = upsampler == "sen2sr" and not freeze_sr
     if not search_lr_sr:
-        print(f"[sr.tune] upsampler={upsampler!r}: lr_sr is not searched (no SR params).")
+        print(f"[sr.tune] upsampler={upsampler!r} freeze_sr={freeze_sr}: "
+              "lr_sr is not searched (no trainable SR params).")
 
     def objective(trial: optuna.Trial) -> float:
         # --- search space: the joint LR pair is the star -------------------
@@ -133,8 +138,9 @@ def build_objective(args, base_cfg: dict):
             upsampler=upsampler,
             sen2sr_dir=sen2sr_dir,
             lr_sr=lr_sr,
-            freeze_sr=model_cfg.get("freeze_sr", False),
+            freeze_sr=freeze_sr,
             upscale=upscale,
+            sr_pad=sr_pad,
         )
 
         pruning_cb = PyTorchLightningPruningCallback(trial, monitor=MONITOR)
@@ -166,14 +172,18 @@ def build_objective(args, base_cfg: dict):
 
 
 def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
-                       upsampler: str) -> Path:
+                       upsampler: str, freeze_sr: bool = False,
+                       sr_pad: int = 0) -> Path:
     p = study.best_params
-    # Record the resolved upsampler so the refit is unambiguous (an R0 overlay
-    # layered over joint_sr.yaml flips it back from sen2sr to bicubic).
+    # Record the resolved SR treatment so the refit is unambiguous from the
+    # overlay alone (an R0/R1/padded overlay layered over joint_sr.yaml fully
+    # reproduces the searched configuration).
     model_overlay = {
         "encoder_name": p["encoder_name"],
         "encoder_weights": encoder_weights,
         "upsampler": upsampler,
+        "freeze_sr": freeze_sr,
+        "sr_pad": sr_pad,
         "lr": p["lr"],
         "pos_weight": p["pos_weight"],
     }
@@ -219,6 +229,10 @@ def parse_args(argv=None):
     ap.add_argument("--upsampler", default=None, choices=["sen2sr", "bicubic"],
                     help="Override model.upsampler. 'bicubic' = R0 baseline: lr_sr "
                          "is NOT searched (no SR params) and needs no SEN2SR weights.")
+    ap.add_argument("--freeze-sr", default=None, choices=["true", "false"],
+                    help="Override model.freeze_sr (true -> R1 frozen SR preprocessing).")
+    ap.add_argument("--sr-pad", type=int, default=None,
+                    help="Override model.sr_pad (reflect-pad in native px; 8 = border-artifact fix).")
     ap.add_argument("--mask-source", default=None, choices=["graph", "raster"],
                     help="Override data.mask_source (graph = CDNGI, raster = OSM HR masks).")
     ap.add_argument("--out", default="runs/sr_optuna", help="Where to write best_params.yaml + study.")
@@ -280,8 +294,13 @@ def main(argv=None):
     study.optimize(objective, n_trials=args.n_trials, timeout=args.timeout, gc_after_trial=True)
 
     encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
-    upsampler = args.upsampler or base_cfg.get("model", {}).get("upsampler", "sen2sr")
-    overlay_path = write_best_overlay(study, out_dir, encoder_weights, upsampler)
+    model_cfg = base_cfg.get("model", {})
+    upsampler = args.upsampler or model_cfg.get("upsampler", "sen2sr")
+    freeze_sr = (model_cfg.get("freeze_sr", False) if args.freeze_sr is None
+                 else args.freeze_sr == "true")
+    sr_pad = model_cfg.get("sr_pad", 0) if args.sr_pad is None else args.sr_pad
+    overlay_path = write_best_overlay(study, out_dir, encoder_weights, upsampler,
+                                      freeze_sr, sr_pad)
     print(f"\nBest {MONITOR}={study.best_value:.4f} (trial #{study.best_trial.number})")
     print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}")
     print(f"Wrote Lightning overlay -> {overlay_path}")

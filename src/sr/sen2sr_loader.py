@@ -127,6 +127,29 @@ def load_trainable_sen2sr(model_dir) -> TrainableSEN2SR:
     return TrainableSEN2SR(sr_model, hard_constraint)
 
 
+def pad_low_pass_mask(model: TrainableSEN2SR, pad: int, scale: int = SEN2SR_SCALE):
+    """Resize the FFT hard-constraint mask so the model accepts inputs
+    reflect-padded by ``pad`` native px per side (HR size grows by
+    ``2*pad*scale``).
+
+    Valid because `HardConstraint` applies the mask in fftSHIFTED space (DC at
+    the centre): bilinear resampling of the centred radial low-pass mask keeps
+    the cutoff at the same fraction of Nyquist. In-place; returns the model.
+    """
+    if pad <= 0:
+        return model
+    m = model.hard_constraint.low_pass_mask
+    h, w = m.shape[-2:]
+    new_hw = (h + 2 * pad * scale, w + 2 * pad * scale)
+    flat = m.reshape(1, -1, h, w).float()          # (1, C*, H, W) for interpolate
+    resized = nn.functional.interpolate(flat, size=new_hw, mode="bilinear",
+                                        align_corners=False)
+    resized = resized.reshape(*m.shape[:-2], *new_hw).to(m.dtype)
+    del model.hard_constraint.low_pass_mask
+    model.hard_constraint.register_buffer("low_pass_mask", resized)
+    return model
+
+
 class BicubicUpsampler(nn.Module):
     """Parameter-free ×`scale` bicubic upsampling — the R0 deterministic baseline.
 

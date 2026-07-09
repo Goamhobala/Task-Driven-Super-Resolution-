@@ -13,15 +13,16 @@
 #SBATCH --mem-per-cpu=8G
 
 # Generic batch dispatcher: one set of SBATCH headers for every stage. Pick the
-# inner script with --SCRIPT= and pass config as KEY=VALUE tokens (exported as
-# env vars, which the inner scripts read). Anything else is forwarded as args.
+# experiment script with --SCRIPT= (resolved under scripts/hpc/) and pass config
+# as KEY=VALUE tokens (exported as env vars). Each experiment script is fully
+# self-contained; the only knobs meant to vary are SEED and STAGE (tune | fit).
 #
-#   sbatch scripts/train.sbatch --SCRIPT=tune_only.sh
-#   sbatch scripts/train.sbatch --SCRIPT=tune_only.sh ENCODER_WEIGHTS=none STUDY_TAG=random
-#   sbatch --gres=gpu:1 scripts/train.sbatch --SCRIPT=fit_only.sh STUDY_TAG=random
+#   sbatch scripts/hpc/train.sbatch --SCRIPT=unet/cdngi.sh STAGE=tune
+#   sbatch --gres=gpu:1 scripts/hpc/train.sbatch --SCRIPT=unet/cdngi.sh STAGE=fit
+#   sbatch scripts/hpc/train.sbatch --SCRIPT=sr/r2a_cdngi.sh STAGE=tune SEED=1
 #
 # The headers above are defaults; override any of them on the command line, e.g.
-# `sbatch --gres=gpu:1 --time=06:00:00 scripts/train.sbatch ...` for the refit.
+# `sbatch --gres=gpu:1 --time=06:00:00 scripts/hpc/train.sbatch ...` for the refit.
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
@@ -41,13 +42,14 @@ if [ -z "$SCRIPT" ]; then
   exit 2
 fi
 
-# Resolve the inner script: bare name -> scripts/, otherwise use the given path.
-case "$SCRIPT" in
-  */*) SCRIPT_PATH="$SCRIPT" ;;
-  *)   SCRIPT_PATH="$REPO_DIR/scripts/hpc/$SCRIPT" ;;
-esac
-if [ ! -f "$SCRIPT_PATH" ]; then
-  echo "ERROR: inner script not found: $SCRIPT_PATH" >&2
+# Resolve the inner script: names (incl. nested, e.g. unet/cdngi.sh) resolve
+# under scripts/hpc/; an existing literal/absolute path is used as given.
+if [ -f "$REPO_DIR/scripts/hpc/$SCRIPT" ]; then
+  SCRIPT_PATH="$REPO_DIR/scripts/hpc/$SCRIPT"
+elif [ -f "$SCRIPT" ]; then
+  SCRIPT_PATH="$SCRIPT"
+else
+  echo "ERROR: inner script not found: $SCRIPT (looked in $REPO_DIR/scripts/hpc/)" >&2
   exit 2
 fi
 

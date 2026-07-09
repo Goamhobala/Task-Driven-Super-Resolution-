@@ -1,0 +1,3 @@
+python -m sr.viz --image examples/Durban_r4_c3.tif \
+    --sen2sr-dir models/SEN2SRLite_RGBN --ckpt examples/unet_s2rosa_jointsr_best.ckpt \
+    --row 256 --col 128 --out durban_sr_compare.png

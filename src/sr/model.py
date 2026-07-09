@@ -33,6 +33,7 @@ from sr.sen2sr_loader import (
     SEN2SR_SCALE,
     BicubicUpsampler,
     load_trainable_sen2sr,
+    pad_low_pass_mask,
 )
 from unet.model import UNetLightning
 
@@ -67,6 +68,7 @@ class JointSRUNetLightning(UNetLightning):
         lr_sr: float = 1e-5,
         freeze_sr: bool = False,
         upscale: int = 4,
+        sr_pad: int = 0,
     ):
         super().__init__(
             encoder_name=encoder_name, encoder_weights=encoder_weights,
@@ -102,7 +104,15 @@ class JointSRUNetLightning(UNetLightning):
             self.sr = load_trainable_sen2sr(sen2sr_dir)
             # The shipped FFT low-pass mask fixes the HR size -> LR patches are
             # pinned to mask_size / scale (512 / 4 = 128). Checked in forward.
+            # (Computed BEFORE any pad-resize: it constrains the MODEL-facing
+            # input; sr_pad grows the mask so the padded input still fits.)
             self._required_lr = self.sr.hard_constraint.low_pass_mask.shape[-1] // SEN2SR_SCALE
+            if sr_pad > 0:
+                # Border-artifact mitigation: the FFT constraint assumes a
+                # periodic patch, so edge discontinuities ring at the borders.
+                # Reflect-padding the input and cropping the output moves the
+                # ring into discarded context (see forward).
+                pad_low_pass_mask(self.sr, sr_pad)
         elif upsampler == "bicubic":
             if freeze_sr:
                 raise ValueError("freeze_sr is meaningless with the parameter-free bicubic upsampler")
@@ -142,11 +152,17 @@ class JointSRUNetLightning(UNetLightning):
         # Gradients flow through the dtype casts unchanged.
         with torch.autocast(device_type=x.device.type, enabled=False):
             x32 = x.float()
+            p = self.hparams.sr_pad
+            if p:
+                x32 = torch.nn.functional.pad(x32, (p, p, p, p), mode="reflect")
             if self.hparams.freeze_sr:
                 with torch.no_grad():
                     hr = self.sr(x32)
             else:
                 hr = self.sr(x32)
+            if p:
+                q = p * self.hparams.upscale
+                hr = hr[..., q:-q, q:-q]
             x_seg = (hr * REFLECTANCE_SCALE - self.band_mean) / self.band_std
         return self.model(x_seg)
 
