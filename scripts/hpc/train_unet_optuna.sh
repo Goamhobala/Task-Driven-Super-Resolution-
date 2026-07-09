@@ -102,16 +102,24 @@ if [ ! -d "${DATASET_DIR}" ]; then
   echo "ERROR: ${DATASET_DIR} not visible on $(hostname). Is /scratch mounted on this node?" >&2
   exit 1
 fi
-n_tif=$(find "${DATASET_DIR}" -name '*.tif' 2>/dev/null | head -n 1000 | wc -l)
+# `|| true` so find's SIGPIPE (when >1000 tifs, head closes early) doesn't become
+# a silent pipefail+set -e exit.
+n_tif=$( { find "${DATASET_DIR}" -name '*.tif' 2>/dev/null || true; } | head -n 1000 | wc -l )
 echo "  .tif count (capped at 1000): ${n_tif}"
 if [ "${n_tif}" -eq 0 ]; then
   echo "ERROR: no .tif tiles under ${DATASET_DIR}." >&2
   exit 1
 fi
 if [ -n "${MASK_DIRNAME}" ]; then
-  n_alt=$(find "${DATASET_DIR}"/*/"${MASK_DIRNAME}" -maxdepth 1 -name '*.tif' 2>/dev/null | head -n 1 | wc -l)
-  if [ "${n_alt}" -eq 0 ]; then
-    echo "ERROR: MASK_DIRNAME=${MASK_DIRNAME} but no masks under <split>/${MASK_DIRNAME}/." >&2
+  # nullglob so a missing dir yields an empty array (NOT a find error that
+  # pipefail+set -e would turn into a silent 0-second exit).
+  shopt -s nullglob
+  _alt=( "${DATASET_DIR}"/*/"${MASK_DIRNAME}"/*.tif )
+  shopt -u nullglob
+  if [ "${#_alt[@]}" -eq 0 ]; then
+    echo "ERROR: MASK_DIRNAME=${MASK_DIRNAME} but no *.tif under <split>/${MASK_DIRNAME}/ in ${DATASET_DIR}." >&2
+    _split="$(ls -d "${DATASET_DIR}"/*/ 2>/dev/null | head -1)"
+    [ -n "${_split}" ] && echo "  label dirs present in ${_split}: $(ls -1 "${_split}" 2>/dev/null | tr '\n' ' ')" >&2
     exit 1
   fi
 fi

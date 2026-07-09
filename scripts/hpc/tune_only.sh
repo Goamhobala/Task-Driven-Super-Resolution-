@@ -68,10 +68,16 @@ if [ ! -d "${DATASET_DIR}" ]; then
   exit 1
 fi
 if [ -n "${MASK_DIRNAME}" ]; then
-  n_alt=$(find "${DATASET_DIR}"/*/"${MASK_DIRNAME}" -maxdepth 1 -name '*.tif' 2>/dev/null | head -n 1 | wc -l)
-  if [ "${n_alt}" -eq 0 ]; then
-    echo "ERROR: MASK_DIRNAME=${MASK_DIRNAME} but no masks under <split>/${MASK_DIRNAME}/." >&2
-    echo "  Generate with OpenStreetMapTest/dataset_hr_masks.py --scale 1 --out-dirname ${MASK_DIRNAME}" >&2
+  # nullglob so a missing dir yields an empty array (NOT a find error that
+  # pipefail+set -e would turn into a silent 0-second exit).
+  shopt -s nullglob
+  _alt=( "${DATASET_DIR}"/*/"${MASK_DIRNAME}"/*.tif )
+  shopt -u nullglob
+  if [ "${#_alt[@]}" -eq 0 ]; then
+    echo "ERROR: MASK_DIRNAME=${MASK_DIRNAME} but no *.tif under <split>/${MASK_DIRNAME}/ in ${DATASET_DIR}." >&2
+    _split="$(ls -d "${DATASET_DIR}"/*/ 2>/dev/null | head -1)"
+    [ -n "${_split}" ] && echo "  label dirs present in ${_split}: $(ls -1 "${_split}" 2>/dev/null | tr '\n' ' ')" >&2
+    echo "  (note: your folders are 'mask_osm_10' / 'mask_osm_2pt5' — singular 'mask'.)" >&2
     exit 1
   fi
 fi

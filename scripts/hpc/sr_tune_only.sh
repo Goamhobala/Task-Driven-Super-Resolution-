@@ -30,7 +30,7 @@ NUM_WORKERS="${NUM_WORKERS:-0}"   # 0 = load in main process; GDAL/rasterio segf
 PRECISION="${PRECISION:-bf16-mixed}"
 
 # --- Search budget ----------------------------------------------------------
-N_TRIALS="${N_TRIALS:-60}"        # TOTAL trials across all workers (SR trials are slower than unet's)
+N_TRIALS="${N_TRIALS:-200}"        # TOTAL trials across all workers (SR trials are slower than unet's)
 SEARCH_GPUS="${SEARCH_GPUS:-2}"   # one INDEPENDENT tuner process per GPU; match your allocation
 TUNE_EPOCHS="${TUNE_EPOCHS:-8}"   # short per-trial budget
 PATIENCE="${PATIENCE:-3}"         # per-trial EarlyStopping on val_iou (0 = off)

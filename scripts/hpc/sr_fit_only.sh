@@ -22,7 +22,7 @@ STUDY_TAG="${STUDY_TAG:-${MASK_SOURCE}}" # must match sr_tune_only.sh's STUDY_TA
 RUN_DIR="${RUN_DIR:-/scratch/${USER_NAME}/InstaRoad/runs/sr_optuna_${STUDY_TAG}_seed${SEED}}"  # holds best_params.yaml
 NUM_WORKERS="${NUM_WORKERS:-0}"
 PRECISION="${PRECISION:-bf16-mixed}"
-REFIT_EPOCHS="${REFIT_EPOCHS:-50}"
+REFIT_EPOCHS="${REFIT_EPOCHS:-100}"
 REFIT_GPUS="${REFIT_GPUS:-1}"        # 1 = single GPU (no DDP). See notes in train_unet_optuna.sh.
 WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_joint}"
 # ===========================================================================
