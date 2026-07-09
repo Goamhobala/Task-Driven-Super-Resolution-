@@ -67,16 +67,10 @@ if [ ! -f "${NORM_CONFIG}" ]; then
   echo "ERROR: ${NORM_CONFIG} missing — generate with sentinel2data.cli norm-stats." >&2
   exit 1
 fi
-if [ -n "${MASK_DIRNAME}" ]; then
-  # -print -quit stops at the first hit: no pipe to `head`, so `find` can't die
-  # of SIGPIPE and trip `set -o pipefail` (that killed osm.sh silently here).
-  first_mask=$(find "${DATASET_DIR}"/*/"${MASK_DIRNAME}" -maxdepth 1 -name '*.tif' -print -quit 2>/dev/null)
-  if [ -z "${first_mask}" ]; then
-    echo "ERROR: no masks under <split>/${MASK_DIRNAME}/ — generate them first" >&2
-    echo "  (OpenStreetMapTest: sort_osm_masks.py / dataset_hr_masks.py --scale 1)" >&2
-    exit 1
-  fi
-fi
+# NOTE: no pre-flight check that <split>/${MASK_DIRNAME}/ exists — the data
+# loader hits it within ~10s and raises a clear error anyway, so a bespoke
+# check here only adds its own failure modes (a find|head|pipefail bug once
+# killed osm.sh silently right here).
 
 source "$VENV_DIR/bin/activate"
 export PYTHONPATH="$REPO_DIR/src:${PYTHONPATH:-}"
