@@ -13,7 +13,7 @@ LABELS="cdngi"
 UPSAMPLER="sr4rs"
 FREEZE_SR="false"
 SR_PAD=0
-SEN2SR_DIR="${SEN2SR_DIR:-$HOME/InstaRoad/InstaRoadPrototype/models/SR4RS_RGBN}"
+SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SR4RS_RGBN}"
 BATCH_SIZES="${BATCH_SIZES:-2 4 8}"
 
 source "$REPO_DIR/scripts/hpc/sr/_stages.sh"
