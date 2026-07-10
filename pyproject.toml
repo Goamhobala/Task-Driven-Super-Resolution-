@@ -137,6 +137,7 @@ sr = [
     "sen2sr",
     "mlstac",
     "safetensors",
+    "mamba-ssm",             # full (Mamba-backbone) SEN2SR; compiles CUDA kernels
 ]
 
 utilities = [
@@ -170,6 +171,16 @@ environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",  # Apple Silicon Mac
     "sys_platform == 'darwin' and platform_machine == 'x86_64'"   # Intel Mac
 ]
+
+# mamba-ssm (and its optional causal-conv1d companion) `import torch` in setup.py
+# but don't declare it as a build dependency, so uv's ISOLATED build env lacks
+# torch -> "ModuleNotFoundError: No module named 'torch'". Inject it (plus the
+# other build-time imports) into their build envs. NOTE: these still COMPILE
+# CUDA kernels, so the build node also needs nvcc (`module load cuda`) and enough
+# RAM; there is no prebuilt wheel for Python 3.13, so it builds from source.
+[tool.uv.extra-build-dependencies]
+mamba-ssm = ["torch", "packaging", "setuptools", "wheel", "ninja"]
+causal-conv1d = ["torch", "packaging", "setuptools", "wheel", "ninja"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

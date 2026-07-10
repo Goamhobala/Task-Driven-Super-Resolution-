@@ -127,7 +127,7 @@ def build_objective(args, base_cfg: dict):
     # Bicubic (R0) has no learnable SR params and frozen SEN2SR (R1) never
     # updates, so lr_sr is a dead search dimension in both -- skip it entirely
     # rather than let TPE waste trials on it.
-    search_lr_sr = upsampler == "sen2sr" and not freeze_sr
+    search_lr_sr = upsampler != "bicubic" and not freeze_sr
     if not search_lr_sr:
         print(f"[sr.tune] upsampler={upsampler!r} freeze_sr={freeze_sr}: "
               "lr_sr is not searched (no trainable SR params).")
@@ -268,9 +268,11 @@ def parse_args(argv=None):
                     help="Base Lightning config(s); repeat to layer (joint_sr.yaml then norm_stats.yaml).")
     ap.add_argument("--dataset-dir", default=None, help="Override data.dataset_dir from the base config.")
     ap.add_argument("--sen2sr-dir", default=None, help="Override model.sen2sr_dir from the base config.")
-    ap.add_argument("--upsampler", default=None, choices=["sen2sr", "bicubic"],
+    ap.add_argument("--upsampler", default=None,
+                    choices=["sen2sr", "sen2sr_full", "sr4rs", "bicubic"],
                     help="Override model.upsampler. 'bicubic' = R0 baseline: lr_sr "
-                         "is NOT searched (no SR params) and needs no SEN2SR weights.")
+                         "is NOT searched (no SR params) and needs no SEN2SR weights. "
+                         "'sen2sr_full' = Mamba variant (needs mamba_ssm + its own dir).")
     ap.add_argument("--freeze-sr", default=None, choices=["true", "false"],
                     help="Override model.freeze_sr (true -> R1 frozen SR preprocessing).")
     ap.add_argument("--sr-pad", type=int, default=None,

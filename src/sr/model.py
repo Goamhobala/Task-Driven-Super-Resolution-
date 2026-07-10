@@ -33,6 +33,7 @@ from sr.sen2sr_loader import (
     SEN2SR_SCALE,
     BicubicUpsampler,
     load_trainable_sen2sr,
+    load_trainable_sen2sr_full,
     pad_low_pass_mask,
 )
 from unet.model import UNetLightning
@@ -89,10 +90,10 @@ class JointSRUNetLightning(UNetLightning):
                 "norm_std) — layer norm_stats.yaml over the base config."
             )
 
-        if upsampler == "sen2sr":
+        if upsampler in ("sen2sr", "sen2sr_full"):
             if sen2sr_dir is None:
-                raise ValueError("upsampler='sen2sr' needs sen2sr_dir "
-                                 "(prefetch with sr.sen2sr_loader.download_sen2sr)")
+                raise ValueError(f"upsampler={upsampler!r} needs sen2sr_dir "
+                                 "(Lite: prefetch with sr.sen2sr_loader.download_sen2sr)")
             if tuple(bands) != SEN2SR_BANDS:
                 raise ValueError(
                     f"SEN2SR requires raw reflectance bands {SEN2SR_BANDS} "
@@ -101,7 +102,10 @@ class JointSRUNetLightning(UNetLightning):
                 )
             if upscale != SEN2SR_SCALE:
                 raise ValueError(f"SEN2SR is a fixed x{SEN2SR_SCALE} model; got upscale={upscale}")
-            self.sr = load_trainable_sen2sr(sen2sr_dir)
+            # Lite = CNNSR via the train_mode fix; full = MambaSR via mlstac's
+            # own trainable_model (no collapse quirk; needs mamba_ssm).
+            self.sr = (load_trainable_sen2sr(sen2sr_dir) if upsampler == "sen2sr"
+                       else load_trainable_sen2sr_full(sen2sr_dir))
             # The shipped FFT low-pass mask fixes the HR size -> LR patches are
             # pinned to mask_size / scale (512 / 4 = 128). Checked in forward.
             # (Computed BEFORE any pad-resize: it constrains the MODEL-facing
@@ -113,13 +117,29 @@ class JointSRUNetLightning(UNetLightning):
                 # Reflect-padding the input and cropping the output moves the
                 # ring into discarded context (see forward).
                 pad_low_pass_mask(self.sr, sr_pad)
+        elif upsampler == "sr4rs":
+            if sen2sr_dir is None:
+                raise ValueError("upsampler='sr4rs' needs sen2sr_dir pointing at "
+                                 "the SR4RS_RGBN dir (run extract_sr4rs.py first)")
+            if tuple(bands) != SEN2SR_BANDS:
+                raise ValueError(f"SR4RS_RGBN requires raw bands {SEN2SR_BANDS}, got {tuple(bands)}")
+            if upscale != 4:
+                raise ValueError(f"SR4RS is a fixed x4 model; got upscale={upscale}")
+            from sr.sr4rs_torch import load_trainable_sr4rs
+            # Same reflectance in/out contract as SEN2SR (SR4RS's LRSC/HRSC
+            # 1e-4 scaling == our /REFLECTANCE_SCALE). Fully convolutional:
+            # no FFT mask, no input-size pin. sr_pad still applies (GAN edge
+            # effects), via the generic pad/crop in forward.
+            self.sr = load_trainable_sr4rs(sen2sr_dir)
+            self._required_lr = None
         elif upsampler == "bicubic":
             if freeze_sr:
                 raise ValueError("freeze_sr is meaningless with the parameter-free bicubic upsampler")
             self.sr = BicubicUpsampler(upscale)
             self._required_lr = None
         else:
-            raise ValueError(f"unknown upsampler {upsampler!r} (bicubic | sen2sr)")
+            raise ValueError(f"unknown upsampler {upsampler!r} "
+                             "(bicubic | sen2sr | sen2sr_full | sr4rs)")
 
         if freeze_sr:
             for p in self.sr.parameters():

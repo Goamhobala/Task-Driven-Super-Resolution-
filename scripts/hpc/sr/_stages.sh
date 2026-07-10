@@ -94,11 +94,23 @@ if [ ! -f "${NORM_CONFIG}" ]; then
   echo "ERROR: ${NORM_CONFIG} missing — generate with sentinel2data.cli norm-stats." >&2
   exit 1
 fi
-if [ "${UPSAMPLER}" = "sen2sr" ] && [ ! -f "${SEN2SR_DIR}/model.safetensor" ]; then
-  echo "ERROR: SEN2SR weights not at ${SEN2SR_DIR} — prefetch ONCE on a login node:" >&2
-  echo "  python -c \"from sr.sen2sr_loader import download_sen2sr; download_sen2sr('${SEN2SR_DIR}')\"" >&2
-  exit 1
-fi
+case "${UPSAMPLER}" in
+  sen2sr|sen2sr_full)
+    if [ ! -f "${SEN2SR_DIR}/model.safetensor" ]; then
+      echo "ERROR: SEN2SR weights not at ${SEN2SR_DIR} (upsampler=${UPSAMPLER})." >&2
+      echo "  Lite: prefetch with sr.sen2sr_loader.download_sen2sr on a login node;" >&2
+      echo "  full: download the SEN2SR (Mamba) mlstac dir there yourself." >&2
+      exit 1
+    fi ;;
+  sr4rs)
+    if [ ! -f "${SEN2SR_DIR}/gen_weights.safetensors" ]; then
+      echo "ERROR: SR4RS extracted weights not at ${SEN2SR_DIR}/gen_weights.safetensors." >&2
+      echo "  Run scripts/sr4rs/extract_sr4rs.py locally (TF venv), verify with" >&2
+      echo "  'python -m sr.sr4rs_torch --model-dir ...', then upload the three" >&2
+      echo "  gen_* files into ${SEN2SR_DIR}." >&2
+      exit 1
+    fi ;;
+esac
 if [ "${MASK_SOURCE}" = "raster" ]; then
   # -print -quit: no pipe to `head`, so `find` can't die of SIGPIPE and trip
   # `set -o pipefail` (that silently killed the unet osm.sh check).
@@ -114,6 +126,13 @@ source "$VENV_DIR/bin/activate"
 export PYTHONPATH="$REPO_DIR/src:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 echo "python=$(which python)"
+
+# The full (Mamba) SEN2SR needs the CUDA-built mamba_ssm package.
+if [ "${UPSAMPLER}" = "sen2sr_full" ] && ! python -c "import mamba_ssm" 2>/dev/null; then
+  echo "ERROR: upsampler=sen2sr_full but mamba_ssm is not importable in ${VENV_DIR}." >&2
+  echo "  Install on a GPU node with matching torch/CUDA:  uv pip install mamba-ssm" >&2
+  exit 1
+fi
 
 # ============================== STAGE: tune ==================================
 if [ "$STAGE" = "tune" ]; then

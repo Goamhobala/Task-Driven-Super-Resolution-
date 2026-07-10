@@ -57,7 +57,8 @@ model:
                               # Starting point only — search both with sr.tune.
   pos_weight: 5.0
   threshold: 0.5
-  upsampler: sen2sr           # sen2sr | bicubic
+  upsampler: sen2sr           # sen2sr (Lite/CNN) | sen2sr_full (Mamba; needs
+                              # mamba_ssm + its own sen2sr_dir) | bicubic
   freeze_sr: false            # true -> R1 (frozen SR preprocessing)
   sr_pad: 0                   # reflect-pad (native px) around the SR stage; output
                               # cropped back. Mitigates the FFT border artifact

@@ -36,8 +36,11 @@ from sr.sen2sr_loader import (
     SEN2SR_SCALE,
     BicubicUpsampler,
     load_trainable_sen2sr,
+    load_trainable_sen2sr_full,
     pad_low_pass_mask,
 )
+
+LOADERS = {"lite": load_trainable_sen2sr, "full": load_trainable_sen2sr_full}
 
 NODATA = -32768
 CROP = 128  # pinned by SEN2SR's 512x512 FFT low-pass mask
@@ -58,7 +61,7 @@ def read_patch(image_path, row, col):
     return x / REFLECTANCE_SCALE
 
 
-def load_sr_from_ckpt(ckpt_path, sen2sr_dir):
+def load_sr_from_ckpt(ckpt_path, sen2sr_dir, variant="lite"):
     """Rebuild SEN2SR + the ``sr.*`` weights from a Lightning ckpt.
 
     Returns ``(model, pad)``: if the run used ``model.sr_pad``, the ckpt's
@@ -73,7 +76,7 @@ def load_sr_from_ckpt(ckpt_path, sen2sr_dir):
             f"{ckpt_path} has no 'sr.*' keys — is this a JointSRUNetLightning "
             "checkpoint (sr.cli), not a plain unet one?"
         )
-    model = load_trainable_sen2sr(sen2sr_dir)  # architecture + buffer plumbing
+    model = LOADERS[variant](sen2sr_dir)  # architecture + buffer plumbing
     base = model.hard_constraint.low_pass_mask.shape[-1]
     ckpt_mask = sr_sd["hard_constraint.low_pass_mask"].shape[-1]
     pad = (ckpt_mask - base) // (2 * SEN2SR_SCALE)
@@ -116,6 +119,9 @@ def main():
                     help="optional .ckpt for the 2nd panel (default: shipped pretrained weights)")
     ap.add_argument("--row", type=int, default=0, help="crop row offset, native px")
     ap.add_argument("--col", type=int, default=0, help="crop col offset, native px")
+    ap.add_argument("--variant", default="lite", choices=list(LOADERS),
+                    help="SEN2SR architecture in --sen2sr-dir and the ckpts: "
+                         "lite = CNN (SEN2SRLite), full = Mamba (needs mamba_ssm).")
     ap.add_argument("--pad", type=int, default=0,
                     help="reflect-pad (native px) around the PRETRAINED panel to "
                          "suppress the FFT border ring (try 8). Ckpt panels "
@@ -133,11 +139,11 @@ def main():
     x = read_patch(args.image, args.row, args.col)
 
     if args.ckpt_pre:
-        pre_model, pre_pad = load_sr_from_ckpt(args.ckpt_pre, args.sen2sr_dir)
+        pre_model, pre_pad = load_sr_from_ckpt(args.ckpt_pre, args.sen2sr_dir, args.variant)
     else:
         pre_pad = args.pad
-        pre_model = pad_low_pass_mask(load_trainable_sen2sr(args.sen2sr_dir), pre_pad)
-    post_model, post_pad = load_sr_from_ckpt(args.ckpt, args.sen2sr_dir)
+        pre_model = pad_low_pass_mask(LOADERS[args.variant](args.sen2sr_dir), pre_pad)
+    post_model, post_pad = load_sr_from_ckpt(args.ckpt, args.sen2sr_dir, args.variant)
     if pre_pad or post_pad:
         print(f"pad: pretrained={pre_pad}px  fine-tuned={post_pad}px (from ckpt)")
 

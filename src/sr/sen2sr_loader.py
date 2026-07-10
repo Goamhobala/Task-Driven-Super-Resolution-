@@ -127,6 +127,48 @@ def load_trainable_sen2sr(model_dir) -> TrainableSEN2SR:
     return TrainableSEN2SR(sr_model, hard_constraint)
 
 
+def load_trainable_sen2sr_full(model_dir) -> TrainableSEN2SR:
+    """Load the FULL (Mamba) SEN2SR RGBN x4 from `model_dir` as trainable.
+
+    Unlike the Lite/CNN path, `MambaSR` has no train_mode/eval_conv collapse
+    quirk, so mlstac's own ``trainable_model()`` construction is sound here —
+    it supplies the architecture + weights; we only re-add the frozen FFT
+    `HardConstraint` from ``hard_constraint.safetensor`` (mlstac's raw model
+    ships without it) and wrap in the same `TrainableSEN2SR` interface as the
+    Lite loader, so `JointSRUNetLightning` treats both variants identically.
+
+    Requires the ``mamba_ssm`` package (CUDA build) in the training venv:
+        uv pip install mamba-ssm   # on a node with nvcc / matching torch
+    """
+    import mlstac
+    import safetensors.torch
+    from sen2sr.models.tricks import HardConstraint
+
+    model_dir = Path(model_dir)
+    sr_model = mlstac.load(str(model_dir)).trainable_model()
+    if not any(p.requires_grad for p in sr_model.parameters()):
+        raise RuntimeError(
+            f"mlstac's trainable_model() for {model_dir} yielded NO trainable "
+            "parameters — inspect the model dir (this loader assumes the full "
+            "MambaSR variant, which unlike Lite/CNNSR needs no train_mode fix)."
+        )
+
+    hc_path = model_dir / "hard_constraint.safetensor"
+    if not hc_path.exists():
+        raise FileNotFoundError(
+            f"{hc_path} missing — the SEN2SR method requires the FFT hard "
+            "constraint; check the model dir was downloaded completely."
+        )
+    mask = safetensors.torch.load_file(hc_path)["weights"]
+    hard_constraint = HardConstraint(low_pass_mask=mask, bands="all")
+    for p in hard_constraint.parameters():
+        p.requires_grad = False
+    del hard_constraint.low_pass_mask
+    hard_constraint.register_buffer("low_pass_mask", mask)
+
+    return TrainableSEN2SR(sr_model, hard_constraint)
+
+
 def pad_low_pass_mask(model: TrainableSEN2SR, pad: int, scale: int = SEN2SR_SCALE):
     """Resize the FFT hard-constraint mask so the model accepts inputs
     reflect-padded by ``pad`` native px per side (HR size grows by
