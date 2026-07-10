@@ -29,10 +29,48 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 import optuna
 import yaml
+
+# Substrings marking a concurrent-first-init race on a shared SQLite study
+# (two workers running create_all / creating the study row at the same time).
+_STUDY_RACE = ("already exists", "database is locked", "database is busy")
+
+
+def create_study_shared(study_name, storage, seed):
+    """optuna.create_study that tolerates N workers racing on a fresh SQLite DB.
+
+    ``load_if_exists`` only guards the study NAME; the crash we hit
+    (``table studies already exists``) happens earlier, while a second worker
+    runs the schema DDL that the first is still creating. So we retry: on the
+    next attempt the schema+study exist and load_if_exists just attaches. Also
+    raises SQLite's busy timeout so concurrent trial writes wait instead of
+    erroring with 'database is locked'."""
+    delay = 0.5
+    for attempt in range(12):
+        try:
+            store = storage
+            if storage and str(storage).startswith("sqlite"):
+                from optuna.storages import RDBStorage
+                store = RDBStorage(url=str(storage),
+                                   engine_kwargs={"connect_args": {"timeout": 60}})
+            return optuna.create_study(
+                study_name=study_name,
+                direction="maximize",
+                storage=store,
+                load_if_exists=storage is not None,
+                sampler=optuna.samplers.TPESampler(seed=seed),
+                pruner=optuna.pruners.MedianPruner(n_warmup_steps=1),
+            )
+        except Exception as e:  # noqa: BLE001 - only retry the known init race
+            if attempt < 11 and any(s in str(e).lower() for s in _STUDY_RACE):
+                time.sleep(delay)
+                delay = min(delay * 1.6, 8.0)
+                continue
+            raise
 
 try:
     from optuna_integration.pytorch_lightning import PyTorchLightningPruningCallback
@@ -292,14 +330,7 @@ def main(argv=None):
     base_cfg = load_base_config(args.base_config)
     objective = build_objective(args, base_cfg)
 
-    study = optuna.create_study(
-        study_name=args.study_name,
-        direction="maximize",
-        storage=args.storage,
-        load_if_exists=args.storage is not None,
-        sampler=optuna.samplers.TPESampler(seed=args.seed),
-        pruner=optuna.pruners.MedianPruner(n_warmup_steps=1),
-    )
+    study = create_study_shared(args.study_name, args.storage, args.seed)
     study.optimize(objective, n_trials=args.n_trials, timeout=args.timeout, gc_after_trial=True)
 
     encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
