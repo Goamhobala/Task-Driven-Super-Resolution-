@@ -66,12 +66,25 @@ class FusedUpsample(nn.Module):
     by the shipped depthwise blur (SAME padding). Mirrors the graph's
     Pad/StridedSlice/AddN/Conv2DBackpropInput/Blur2D sequence."""
 
-    def __init__(self, w_oihw, blur_2d, blur_same=True):
+    def __init__(self, w_oihw, blur_filter, blur_same=True):
         super().__init__()
         self.weight = nn.Parameter(w_oihw)      # (out, in, 3, 3) effective
-        # use the shipped filter EXACTLY as-is (extract_sr4rs.py dumps the
-        # graph's own const) — do not re-normalise.
-        self.register_buffer("blur", torch.as_tensor(blur_2d, dtype=torch.float32))
+        out_c = w_oihw.shape[0]
+        # The graph's filter_blur2d const ships in TF depthwise layout
+        # (H, W, C, mult=1); use it EXACTLY as-is (no re-normalising), stored
+        # as the torch depthwise weight (C, 1, H, W). A plain 2D (k, k)
+        # filter is also accepted and replicated per channel.
+        blur = torch.as_tensor(blur_filter, dtype=torch.float32)
+        if blur.dim() == 4:                      # (H, W, C, 1) -> (C, 1, H, W)
+            blur = blur.permute(2, 3, 0, 1).contiguous()
+        elif blur.dim() == 2:                    # (k, k) -> (C, 1, k, k)
+            k = blur.shape[-1]
+            blur = blur.view(1, 1, k, k).expand(out_c, 1, k, k).contiguous()
+        else:
+            raise ValueError(f"unexpected blur filter shape {tuple(blur.shape)}")
+        if blur.shape[0] != out_c:
+            raise ValueError(f"blur has {blur.shape[0]} channels, conv outputs {out_c}")
+        self.register_buffer("blur", blur)
         self.blur_same = blur_same
 
     def forward(self, x):
@@ -84,12 +97,11 @@ class FusedUpsample(nn.Module):
         B, C, H, W = x.shape
         y = F.conv_transpose2d(x, wt, stride=2)          # (2H+2, 2W+2)
         y = y[..., 1:-1, 1:-1]                           # -> exactly (2H, 2W); TF SAME
-        # depthwise blur
+        # depthwise blur (weight prepared as (C, 1, k, k) at init)
         k = self.blur.shape[-1]
-        f = self.blur.view(1, 1, k, k).expand(out_c, 1, k, k)
         if self.blur_same:
             y = F.pad(y, (k // 2, (k - 1) // 2, k // 2, (k - 1) // 2))
-        return F.conv2d(y, f, groups=out_c)
+        return F.conv2d(y, self.blur, groups=out_c)
 
 
 class SR4RSBlock(nn.Module):
