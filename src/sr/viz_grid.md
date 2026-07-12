@@ -13,7 +13,7 @@ Everything defaults from here. Expected contents:
 ```
 src/sr/examples/
   Durban_r4_c3.tif                        # example test tile (first .tif is used)
-  Durban_r4_c3.parquet                    # (optional) the tile's masks_graph parquet -> GT panel
+  Durban_r4_c3_mask.tif                   # GT mask (10 m or 2.5 m; auto-detected)
   model.safetensor                        # SEN2SR-Lite weights
   hard_constraint.safetensor
   unet_s2rosa_bicubic_best.ckpt           # R0
@@ -24,9 +24,10 @@ src/sr/examples/
 ```
 
 Missing ckpts keep their column but render as blank "(pending)" placeholders,
-so partial grids stay column-aligned while runs finish. For the GT panel, copy the tile's parquet from the dataset:
-`cp $DATASET_DIR/test/masks_graph/Durban_r4_c3.parquet src/sr/examples/`
-(or drop an HR raster named `Durban_r4_c3_mask.tif` instead).
+so partial grids stay column-aligned while runs finish. GT is simply
+`{tile}_mask.tif` beside the image: the 10 m pipeline mask works as-is
+(nearest-upsampled x4 for display) and a 2.5 m HR mask also works — the
+resolution is auto-detected from the mask's dimensions.
 
 ## Commands (copy-paste)
 
