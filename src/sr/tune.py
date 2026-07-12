@@ -202,7 +202,15 @@ def build_objective(args, base_cfg: dict):
             log_every_n_steps=10,
             callbacks=callbacks,
         )
-        trainer.fit(model, datamodule=dm)
+        try:
+            trainer.fit(model, datamodule=dm)
+        finally:
+            # OOM (an expected outcome for the larger searched batch sizes with
+            # heavy SR nets) leaves the allocator full — release before the
+            # next trial runs in this same process.
+            del model, dm
+            import gc; gc.collect()
+            import torch; torch.cuda.empty_cache()
         pruning_cb.check_pruned()
 
         value = trainer.callback_metrics.get(MONITOR)
@@ -333,7 +341,12 @@ def main(argv=None):
     objective = build_objective(args, base_cfg)
 
     study = create_study_shared(args.study_name, args.storage, args.seed)
-    study.optimize(objective, n_trials=args.n_trials, timeout=args.timeout, gc_after_trial=True)
+    # catch OOM: batch_size is a searched dimension, so exceeding VRAM is an
+    # expected per-trial outcome (recorded as FAIL), not a reason to kill the
+    # worker and its remaining trial budget.
+    import torch
+    study.optimize(objective, n_trials=args.n_trials, timeout=args.timeout,
+                   gc_after_trial=True, catch=(torch.cuda.OutOfMemoryError,))
 
     encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
     model_cfg = base_cfg.get("model", {})

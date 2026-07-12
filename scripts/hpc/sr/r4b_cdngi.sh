@@ -14,6 +14,7 @@ UPSAMPLER="sr4rs"
 FREEZE_SR="false"
 SR_PAD=0
 SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SR4RS_RGBN}"
-BATCH_SIZES="${BATCH_SIZES:-2 4 8}"
+BATCH_SIZES="${BATCH_SIZES:-1 2 4}"  # 8 OOMs on 44GB: SR4RS runs 256-ch convs
+                                     # (incl. a 9x9) at the full 512px grid
 
 source "$REPO_DIR/scripts/hpc/sr/_stages.sh"

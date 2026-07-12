@@ -353,7 +353,11 @@ def main(argv=None):
     objective = build_objective(args, base_cfg)
 
     study = create_study_shared(args.study_name, args.storage, args.seed)
-    study.optimize(objective, n_trials=args.n_trials, timeout=args.timeout, gc_after_trial=True)
+    # catch OOM: batch_size is searched, so exceeding VRAM is a per-trial FAIL,
+    # not a reason to kill the worker and its remaining trial budget.
+    import torch
+    study.optimize(objective, n_trials=args.n_trials, timeout=args.timeout,
+                   gc_after_trial=True, catch=(torch.cuda.OutOfMemoryError,))
 
     encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
     mask_dirname = resolve_mask_dirname(base_cfg, args.mask_dirname)
