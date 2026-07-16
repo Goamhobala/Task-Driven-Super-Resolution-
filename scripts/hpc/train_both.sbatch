@@ -12,20 +12,22 @@
 #SBATCH --output=slurm-%j.out
 #SBATCH --mem-per-cpu=8G
 
-# End-to-end dispatcher: run STAGE=tune then STAGE=fit for one experiment in a
-# SINGLE allocation. Same interface as train.sbatch (--SCRIPT= + KEY=VALUE), but
-# you don't hand-submit the fit once the search finishes — this does both.
+# End-to-end dispatcher: run STAGE=tune, then fit, then bench for one experiment
+# in a SINGLE allocation. Same interface as train.sbatch (--SCRIPT= + KEY=VALUE),
+# but you don't hand-submit each stage — this does all three.
 #
 #   sbatch scripts/hpc/train_both.sbatch --SCRIPT=unet/cdngi.sh
 #   sbatch scripts/hpc/train_both.sbatch --SCRIPT=sr/r2a_cdngi.sh SEED=1
 #
 # Notes vs train.sbatch:
-#   * gpu:2 so the tune stage fans out across both GPUs; the fit stage uses one
-#     GPU (REFIT_GPUS=1) and leaves the other idle — the price of one job.
-#   * --time is bumped (search + full refit + test back-to-back). Override on the
-#     command line if your experiment needs more/less.
+#   * gpu:2 so the tune stage fans out across both GPUs; fit and bench use one
+#     GPU (REFIT_GPUS=1) and leave the other idle — the price of one job.
+#   * --time is bumped (search + full refit + test + benchmark back-to-back).
+#     Override on the command line if your experiment needs more/less.
 #   * STAGE is driven internally; passing STAGE=... is ignored (a warning prints).
-#   * If tune fails, fit is skipped and the job exits non-zero.
+#   * Stages run in sequence; the first failure skips the rest, job exits non-zero.
+#   * bench writes per-chip metrics to the SHARED store (STORE_DIR, default
+#     /scratch/$USER/InstaRoad/benchmarks) for compare/variance/report.
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
@@ -67,4 +69,7 @@ STAGE=tune bash "$SCRIPT_PATH" ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}
 echo "### ==> STAGE=fit ###"
 STAGE=fit bash "$SCRIPT_PATH" ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}
 
-echo "### train_both.sbatch: DONE (tune + fit) ###"
+echo "### ==> STAGE=bench ###"
+STAGE=bench bash "$SCRIPT_PATH" ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}
+
+echo "### train_both.sbatch: DONE (tune + fit + bench) ###"

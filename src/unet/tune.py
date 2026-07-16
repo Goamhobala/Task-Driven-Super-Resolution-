@@ -50,7 +50,21 @@ def create_study_shared(study_name, storage, seed):
     for attempt in range(12):
         try:
             store = storage
-            if storage and str(storage).startswith("sqlite"):
+            if storage and str(storage).startswith("journal://"):
+                # NFS-safe multi-NODE sharing (see sr.tune for rationale):
+                # STORAGE=journal://<runs>/study.journal
+                path = str(storage)[len("journal://"):]
+                from optuna.storages import JournalStorage
+                try:    # optuna >= 4
+                    from optuna.storages.journal import (JournalFileBackend,
+                                                         JournalFileOpenLock)
+                    backend = JournalFileBackend(path, lock_obj=JournalFileOpenLock(path))
+                except ImportError:  # optuna 3.x
+                    from optuna.storages import (JournalFileOpenLock,
+                                                 JournalFileStorage)
+                    backend = JournalFileStorage(path, lock_obj=JournalFileOpenLock(path))
+                store = JournalStorage(backend)
+            elif storage and str(storage).startswith("sqlite"):
                 from optuna.storages import RDBStorage
                 store = RDBStorage(url=str(storage),
                                    engine_kwargs={"connect_args": {"timeout": 60}})
@@ -82,55 +96,17 @@ from lightning.pytorch.callbacks import EarlyStopping
 
 # Same imports the LightningCLI uses -- keep the search and the real fit identical.
 from sentinel2data.dataset.datasets import RoadDataModule
+# Config plumbing shared with unet.train_ablation (moved to unet.config_utils).
+from unet.config_utils import (
+    data_kwargs as _data_kwargs,
+    load_base_config,
+    resolve_encoder_weights,
+    resolve_mask_dirname,
+)
 from unet.model import UNetLightning
 
 MONITOR = "val_iou"          # maximise per-crop IoU on the val quadrants
 MONITOR_MODE = "max"
-
-
-# --------------------------------------------------------------------------- #
-# Config plumbing
-# --------------------------------------------------------------------------- #
-def _deep_merge(base: dict, overlay: dict) -> dict:
-    """Recursively merge ``overlay`` into ``base`` (overlay wins), like Lightning."""
-    out = dict(base)
-    for k, v in overlay.items():
-        if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = _deep_merge(out[k], v)
-        else:
-            out[k] = v
-    return out
-
-
-def load_base_config(paths: list[str]) -> dict:
-    """Deep-merge one or more YAML configs the same way ``--config a --config b`` does."""
-    merged: dict = {}
-    for p in paths:
-        with open(p) as fh:
-            merged = _deep_merge(merged, yaml.safe_load(fh) or {})
-    return merged
-
-
-def _data_kwargs(cfg: dict, dataset_dir: str | None, num_workers: int | None,
-                 mask_dirname: str | None = None) -> dict:
-    """Pull the fixed RoadDataModule args from the base config (search overrides later)."""
-    data = dict(cfg.get("data", {}))
-    if data.get("norm_mean") is None or data.get("norm_std") is None:
-        raise SystemExit(
-            "Base config has no frozen norm stats. Pass the norm-stats overlay too, e.g.\n"
-            "  --base-config src/unet/configs/unet.yaml "
-            "--base-config src/unet/configs/norm_stats.yaml"
-        )
-    if dataset_dir:
-        data["dataset_dir"] = dataset_dir
-    if num_workers is not None:
-        data["num_workers"] = num_workers
-    if mask_dirname is not None:
-        # Label-source override: ""/"none"/"null" -> CDNGI (masks_raster);
-        # a dir name (e.g. mask_osm_10) -> the alternative masks beside it.
-        data["mask_dirname"] = (None if str(mask_dirname).lower() in {"", "none", "null"}
-                                else mask_dirname)
-    return data
 
 
 # --------------------------------------------------------------------------- #
@@ -148,22 +124,6 @@ def _resolve_devices(v):
             "same --storage, each pinned with CUDA_VISIBLE_DEVICES."
         )
     return dev
-
-
-def resolve_encoder_weights(base_cfg: dict, cli_value: str | None):
-    """CLI overrides base config; map random-init aliases -> None (random init)."""
-    val = base_cfg.get("model", {}).get("encoder_weights", "imagenet") if cli_value is None else cli_value
-    if isinstance(val, str) and val.lower() in {"none", "null", "random", ""}:
-        return None
-    return val
-
-
-def resolve_mask_dirname(base_cfg: dict, cli_value: str | None):
-    """CLI overrides base config; ''/'none'/'null' -> None (CDNGI masks_raster)."""
-    val = base_cfg.get("data", {}).get("mask_dirname") if cli_value is None else cli_value
-    if isinstance(val, str) and val.lower() in {"", "none", "null"}:
-        return None
-    return val
 
 
 def build_objective(args, base_cfg: dict):

@@ -13,9 +13,13 @@
 #   FREEZE_SR    true | false
 #   SR_PAD       reflect-pad in native px (0 = off, 8 = border-artifact fix)
 #
-# STAGE=tune  Optuna search, one INDEPENDENT tuner per GPU, shared sqlite study
-#             (no DDP — that's the Optuna constraint). Default headers = gpu:2.
-# STAGE=fit   Refit best config on ONE GPU + test. Submit with --gres=gpu:1.
+# STAGE=tune   Optuna search, one INDEPENDENT tuner per GPU, shared sqlite study
+#              (no DDP — that's the Optuna constraint). Default headers = gpu:2.
+# STAGE=fit    Refit best config on ONE GPU + wandb test. Submit with --gres=gpu:1.
+# STAGE=bench  Score the fitted checkpoint into the SHARED benchmark store
+#              (per-chip confusion-matrix metrics at 2.5 m against the SAME GT
+#              source the model trained on). Standalone on any existing
+#              checkpoint; train_both.sbatch chains it. Submit with --gres=gpu:1.
 #
 # Replication contract: only SEED and STAGE are meant to vary at submit time.
 set -euo pipefail
@@ -136,7 +140,13 @@ fi
 
 # ============================== STAGE: tune ==================================
 if [ "$STAGE" = "tune" ]; then
-  STORAGE="sqlite:///${RUN_DIR}/study.db"
+  # Default: sqlite (fine for ONE job/node). To run TWO sbatch jobs on the
+  # same study concurrently (different nodes), BOTH must use the NFS-safe
+  # journal backend and the 2nd job must offset its sampler seeds:
+  #   job1: STORAGE=journal://<runs dir>/study.journal
+  #   job2: STORAGE=journal://<same path> SAMPLER_OFFSET=500
+  STORAGE="${STORAGE:-sqlite:///${RUN_DIR}/study.db}"
+  SAMPLER_OFFSET="${SAMPLER_OFFSET:-0}"
   STUDY_NAME="sr_${EXP_TAG}_seed${SEED}"
 
   run_tuner () {   # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
@@ -176,13 +186,13 @@ if [ "$STAGE" = "tune" ]; then
   # (SEED+g would make e.g. SEED=0/worker1 collide with SEED=1/worker0,
   # correlating the startup trials of nominally independent runs).
   if [ "$SEARCH_GPUS" -le 1 ]; then
-    run_tuner "" "$N_TRIALS" "$(( SEED * 1000 ))"
+    run_tuner "" "$N_TRIALS" "$(( SEED * 1000 + SAMPLER_OFFSET ))"
   else
     PER_WORKER=$(( (N_TRIALS + SEARCH_GPUS - 1) / SEARCH_GPUS ))
     echo "  fanning out ${SEARCH_GPUS} workers x ${PER_WORKER} trials each"
     pids=()
     for (( g=0; g<SEARCH_GPUS; g++ )); do
-      run_tuner "$g" "$PER_WORKER" "$(( SEED * 1000 + g ))" &
+      run_tuner "$g" "$PER_WORKER" "$(( SEED * 1000 + SAMPLER_OFFSET + g ))" &
       pids+=($!)
       sleep 3   # stagger so worker 0 creates the study before the others attach
     done
@@ -195,9 +205,65 @@ if [ "$STAGE" = "tune" ]; then
   exit 0
 fi
 
+# ============================== STAGE: bench =================================
+# Score the fitted checkpoint into the shared benchmark store, evaluated at
+# 2.5 m against the experiment's own GT (LABELS -> mask_source), through the
+# same joint_sr_dataset helpers training used — eval GT cannot drift from
+# train GT. --sen2sr-dir overrides the training node's path baked into hparams.
+if [ "$STAGE" = "bench" ]; then
+  CKPT="${RUN_DIR}/checkpoints/unet_s2rosa_jointsr_best.ckpt"
+  if [ ! -f "$CKPT" ]; then
+    if [ -f "${RUN_DIR}/checkpoints/last.ckpt" ]; then
+      echo "WARN: best checkpoint missing; benchmarking last.ckpt instead." >&2
+      CKPT="${RUN_DIR}/checkpoints/last.ckpt"
+    else
+      echo "ERROR: no checkpoint under ${RUN_DIR}/checkpoints/ — run STAGE=fit first." >&2
+      exit 1
+    fi
+  fi
+
+  STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}"   # SHARED across experiments
+  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}}"      # {family}_{exp}: what the stats pair/group on
+  LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"      # cdngi | overture | osm
+  BENCH_SPLIT="${BENCH_SPLIT:-test}"
+  TILE_METRICS="${TILE_METRICS:-apls}"           # comma-separated plugins; '' disables.
+                                                 # apls is the resolution-robust
+                                                 # cross-family comparison metric.
+
+  CONFIG_ARGS=()
+  [ -f "${RUN_DIR}/best_params.yaml" ] && CONFIG_ARGS=(--config-yaml "${RUN_DIR}/best_params.yaml")
+  MASK_ARGS_BENCH=(--mask-source "$MASK_SOURCE")
+  [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_BENCH+=(--mask-dirname "mask_osm_2pt5")
+  METRIC_ARGS=()
+  if [ -n "${TILE_METRICS}" ]; then
+    IFS=',' read -r -a _TMS <<< "${TILE_METRICS}"
+    for _tm in "${_TMS[@]}"; do METRIC_ARGS+=(--tile-metric "${_tm}"); done
+  fi
+
+  echo "=== BENCH (ckpt=$(basename "$CKPT"), model_name=${MODEL_NAME}, seed=${SEED}, gt=${MASK_SOURCE}, tile_metrics=${TILE_METRICS:-none}) ==="
+  python -m benchmarking.cli eval \
+    --dataset-dir "$DATASET_DIR" \
+    --checkpoint "$CKPT" \
+    --model sr \
+    --model-name "$MODEL_NAME" \
+    --seed "$SEED" \
+    --store-dir "$STORE_DIR" \
+    --split "$BENCH_SPLIT" \
+    --sen2sr-dir "$SEN2SR_DIR" \
+    --exp-tag "$EXP_TAG" \
+    --label-source "$LABEL_SOURCE" \
+    ${METRIC_ARGS[@]+"${METRIC_ARGS[@]}"} \
+    ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"} \
+    "${MASK_ARGS_BENCH[@]}"
+
+  echo "=== BENCH DONE ===  store: ${STORE_DIR}"
+  echo "Report: python -m benchmarking.cli report --store-dir ${STORE_DIR}"
+  exit 0
+fi
+
 # ============================== STAGE: fit ===================================
 if [ "$STAGE" != "fit" ]; then
-  echo "ERROR: STAGE must be tune or fit, got '${STAGE}'." >&2
+  echo "ERROR: STAGE must be tune, fit or bench, got '${STAGE}'." >&2
   exit 2
 fi
 

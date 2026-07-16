@@ -53,7 +53,23 @@ def create_study_shared(study_name, storage, seed):
     for attempt in range(12):
         try:
             store = storage
-            if storage and str(storage).startswith("sqlite"):
+            if storage and str(storage).startswith("journal://"):
+                # NFS-safe multi-NODE sharing (Optuna's recommended file
+                # backend for shared filesystems; sqlite locking across nodes
+                # on /scratch is unreliable). Use for >1 concurrent sbatch job
+                # on one study: STORAGE=journal://<runs>/study.journal
+                path = str(storage)[len("journal://"):]
+                from optuna.storages import JournalStorage
+                try:    # optuna >= 4
+                    from optuna.storages.journal import (JournalFileBackend,
+                                                         JournalFileOpenLock)
+                    backend = JournalFileBackend(path, lock_obj=JournalFileOpenLock(path))
+                except ImportError:  # optuna 3.x
+                    from optuna.storages import (JournalFileOpenLock,
+                                                 JournalFileStorage)
+                    backend = JournalFileStorage(path, lock_obj=JournalFileOpenLock(path))
+                store = JournalStorage(backend)
+            elif storage and str(storage).startswith("sqlite"):
                 from optuna.storages import RDBStorage
                 store = RDBStorage(url=str(storage),
                                    engine_kwargs={"connect_args": {"timeout": 60}})
