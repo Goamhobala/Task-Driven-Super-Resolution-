@@ -71,7 +71,8 @@ unet = [
     "wandb",
     "jsonargparse[signatures]>=4.27",   # LightningCLI config/CLI (unet.cli)
     "optuna>=3.6",                      # hyperparameter search (unet.tune)
-    "optuna-integration>=3.6",          # PyTorchLightningPruningCallback
+    "optuna-integration>=3.6",
+    "opencv-python",          # PyTorchLightningPruningCallback
 ]
 
 torchgeo = [
@@ -90,6 +91,7 @@ benchmarking = [
     "eotdl",
     "pandas>=2.0",
     "scipy>=1.11",
+    "networkx>=3.0",        # apls tile metric (benchmarking.graph_metrics)
     "pyarrow>=14.0",
     "pyyaml",
     "typer>=0.24.1",        # benchmarking.cli
@@ -167,7 +169,6 @@ explicit = true
 
 [tool.uv]
 environments = [
-    "sys_platform == 'linux' and platform_machine == 'x86_64'",
     "sys_platform == 'darwin' and platform_machine == 'arm64'",  # Apple Silicon Mac
     "sys_platform == 'darwin' and platform_machine == 'x86_64'"   # Intel Mac
 ]

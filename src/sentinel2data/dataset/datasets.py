@@ -48,11 +48,16 @@ class RoadTileDataset(Dataset):
     """Use this dataset for training. Random pixel crops from the 512x512 train tiles.
 
     Length by default is 10 * len(train_tiles)
+
+    ``transform`` is an optional Albumentations pipeline (see
+    ``sentinel2data.dataset.augment.build_transform``) applied per patch AFTER
+    normalisation — the photometric magnitudes are tuned for z-scored input.
+    Image and mask go through the same call, so geometry stays aligned.
     """
 
     def __init__(self, dataset_dir, bands=DEFAULT_BANDS, image_size=256,
                  length=None, normalize=True, norm_mean=None, norm_std=None,
-                 mask_dirname=None):
+                 mask_dirname=None, transform=None):
         self.dataset_dir = Path(dataset_dir)
         self.df = _remap_mask_paths(
             _read_split_csv(dataset_dir, "train"), dataset_dir, mask_dirname
@@ -63,6 +68,7 @@ class RoadTileDataset(Dataset):
         self.norm_mean = norm_mean  # frozen train stats (or None -> per-image)
         self.norm_std = norm_std
         self.length = length if length is not None else 10 * len(self.df)
+        self.transform = transform
 
         if self.norm_mean is None or self.norm_std is None:
             raise ValueError("No frozen train stats given")
@@ -91,6 +97,10 @@ class RoadTileDataset(Dataset):
 
         if self.normalize:
             img = apply_norm(img, self.bands, self.norm_mean, self.norm_std)
+        if self.transform is not None:
+            aug = self.transform(image=img.transpose(1, 2, 0), mask=mask)
+            img = aug["image"].transpose(2, 0, 1)
+            mask = aug["mask"]
         image = torch.from_numpy(np.ascontiguousarray(img))
         mask = torch.from_numpy(np.ascontiguousarray(mask)).unsqueeze(0)
         return image, mask, f"{row['zone_name']}_{top}_{left}.png"
@@ -153,13 +163,22 @@ class RoadDataModule(pl.LightningDataModule):
     beside them, applied to train/val/test alike. To cross-evaluate (train on
     one label set, test on the other), pass a different ``--data.mask_dirname``
     to ``unet.cli test``.
+
+    ``aug_*`` toggles build the Albumentations pipeline of
+    ``sentinel2data.dataset.augment`` for the TRAIN split only (val/test are
+    never augmented). All off by default; ``aug_flip`` (lossless D4
+    flips/rotations) is the safe one to start with. The photometric toggles
+    each fire with probability ``aug_p``.
     """
 
     def __init__(self, dataset_dir: str, bands: tuple[int, ...] = DEFAULT_BANDS,
                  batch_size: int = 16, num_workers: int = 2, image_size: int = 256,
                  length: int | None = None, normalize: bool = True,
                  norm_mean: list[float] | None = None, norm_std: list[float] | None = None,
-                 mask_dirname: str | None = None):
+                 mask_dirname: str | None = None,
+                 aug_flip: bool = False, aug_sharpen: bool = False,
+                 aug_noise: bool = False, aug_blur: bool = False,
+                 aug_colour: bool = False, aug_p: float = 0.5):
         super().__init__()
         self.dataset_dir = Path(dataset_dir)
         self.bands = tuple(bands)
@@ -171,14 +190,25 @@ class RoadDataModule(pl.LightningDataModule):
         self.norm_mean = norm_mean
         self.norm_std = norm_std
         self.mask_dirname = mask_dirname
+        self.aug_flags = dict(flip=aug_flip, sharpen=aug_sharpen, noise=aug_noise,
+                              blur=aug_blur, colour=aug_colour)
+        self.aug_p = aug_p
 
         if self.norm_mean is None or self.norm_std is None:
             raise ValueError("No frozen train stats given")
+
+    def _train_transform(self):
+        if not any(self.aug_flags.values()):
+            return None
+        from sentinel2data.dataset.augment import build_transform
+
+        return build_transform(**self.aug_flags, p=self.aug_p)
 
     def train_dataloader(self):
         ds = RoadTileDataset(
             self.dataset_dir, self.bands, self.image_size, self.length, self.normalize,
             self.norm_mean, self.norm_std, self.mask_dirname,
+            transform=self._train_transform(),
         )
         return DataLoader(
             ds,
