@@ -52,7 +52,7 @@ LABEL_SOURCE="${LABEL_SOURCE:-all}"   # comparability tag; uniform across arms
 
 # --- Train budget (protocol Appendix B; fixed across arms) -------------------
 EPOCHS="${EPOCHS:-100}"
-LR="${LR:-1e-3}"
+LR="${LR:-5e-4}"
 BATCH_SIZE="${BATCH_SIZE:-}"          # empty = the base config's batch_size
 ENCODER="${ENCODER:-}"                # empty = base config (resnet34, protocol-fixed)
 AUGMENT="${AUGMENT:-true}"            # protocol-fixed D4 flip on the train crops

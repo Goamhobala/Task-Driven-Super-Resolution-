@@ -53,7 +53,16 @@ equally drivable from the plain LightningCLI
 ## Running on the HPC (staged, one script per arm)
 
 The arms run through the same `scripts/hpc/` staging mechanism as the unet and
-sr experiments. `scripts/hpc/loss/` holds one self-contained script per
+sr experiments. Under the cluster's concurrent-job cap, prefer
+`scripts/hpc/train_pair.sbatch` — it runs TWO arms in one gpu:2 job (one per
+GPU, each chaining fit→bench, per-side env via `A.KEY=V` / `B.KEY=V`):
+
+```sh
+sbatch scripts/hpc/train_pair.sbatch --A=loss/l1_all.sh --B=loss/la0_all.sh
+sbatch scripts/hpc/train_pair.sbatch --A=loss/l2_all.sh --B=loss/l3_all.sh
+sbatch scripts/hpc/train_pair.sbatch --A=loss/la0_all.sh --B=loss/la0_all.sh A.SEED=1 B.SEED=2
+```
+ `scripts/hpc/loss/` holds one self-contained script per
 arm-table entry, plus the shared `_stages.sh` engine they source. Everything an
 arm needs lives in its script; the only knobs meant to vary at submit time are
 `SEED`, `STAGE`, and (for a within-arm hyperparameter grid) the relevant hp env
