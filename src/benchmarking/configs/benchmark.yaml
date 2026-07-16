@@ -2,21 +2,25 @@
 # config for each command (explicit flags still override):
 #
 #   python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml \
-#       eval --checkpoint checkpoints/unet_seed0/last.ckpt --model-name unet --seed 0
-#   python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml variance --model-name unet
-#   python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml compare --model-a unet_a --model-b unet_b
-#   python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml report
+#       eval --checkpoint checkpoints/unet_seed0/last.ckpt --model-name unet_cdngi --seed 0
+#   python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml variance --model-name unet_cdngi
+#   python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml compare --model-a unet_cdngi --model-b sr_r0_cdngi
+#   python -m benchmarking.cli --config src/benchmarking/configs/benchmark.yaml report --out benchmarks/report.md
 
-# Score a checkpoint over the split's non-overlapping chips -> store.
-# checkpoint / model_name / seed come from the CLI (per-seed, from run_seeds.bash).
+# Score a checkpoint over the split's footprint chips -> the sharded store.
+# checkpoint / model-name / seed / model come from the CLI (per-run knobs).
 eval:
   dataset_dir: /Volumes/MacOSFiles/ROSA_CDNGI_dense
   store_dir: benchmarks
   split: test
-  chip_size: 256
-  model: unet
+  cell_m: 2560.0        # footprint chip edge: 256 px @ 10 m = 1024 px @ 2.5 m
+  batch_size: 8
+  check: first          # tp+fn-vs-mask invariant on the first tile
+  tile_metric: [apls]   # tile-level plugins (benchmarking.tile_metrics);
+                        # apls -> tiles/ shard, paired on tile_id downstream
 
 # Paired bootstrap CI + Wilcoxon between two model_names (pass --model-a/--model-b).
+# Refuses cross-GT comparisons (different gt_res_m / label_source) unless --force.
 compare:
   store_dir: benchmarks
   metric: f1
@@ -28,8 +32,10 @@ variance:
   metric: iou
   aggregation: micro
 
-# Per-model mean +/- std + all pairwise comparisons.
+# Per-model mean +/- std + all pairwise comparisons; repeat --metric for more.
+# NB `apls` requires the store's runs to have been evaluated with
+# `tile_metric: [apls]`; drop it here for stores benched without the plugin.
 report:
   store_dir: benchmarks
-  metric: iou
+  metric: [iou, f1, apls]
   aggregation: micro

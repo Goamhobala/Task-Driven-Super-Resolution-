@@ -4,7 +4,7 @@ Reference for the benchmarking module: what is implemented, how the modules fit 
 
 ## Status
 
-The pixel-metrics and statistical analysis layers are implemented and tested. The orchestration layer (runner, store, CLI) is planned but not yet implemented. The data loader is implemented externally and is out of scope for this module.
+All layers are implemented and tested (`tests/test_stats.py`, `tests/test_runner_integration.py` — the latter runs real random-init checkpoints through `evaluate()` end to end). The data loader is implemented externally and is out of scope for this module; the runner reuses its reading/normalisation/mask helpers so eval cannot drift from training.
 
 | layer | module | status |
 | ----- | ------ | ------ |
@@ -12,9 +12,12 @@ The pixel-metrics and statistical analysis layers are implemented and tested. Th
 | statistical analysis | `stats.py` | implemented |
 | demo harness | `dummy_pipeline.py` | implemented |
 | demo analysis | `example.py` | implemented |
-| runner | `runner.py` | planned |
-| parquet store | `store.py` | planned |
-| CLI | `cli.py` | planned |
+| runner (unet + sr families) | `runner.py` | implemented |
+| sharded parquet store | `store.py` | implemented |
+| CLI (eval/compare/variance/report) | `cli.py` | implemented |
+| tile-metric plugin seam | `tile_metrics.py` | implemented |
+| APLS (connectivity) | `graph_metrics.py` | implemented (`--tile-metric apls`, on by default in the HPC bench stages) |
+| HPC integration (STAGE=bench) | `scripts/hpc/*/_stages.sh` | implemented |
 | data loader | external | out of scope |
 
 ## Module overview
@@ -57,6 +60,37 @@ t-interval of a dataset-level metric across seeds for one fixed configuration, q
 With a single seed, `std` and the CI bounds are `NaN` (undefined, not zero). Returns `{"mean", "std", "ci_lo", "ci_hi", "n_seeds", "per_seed_values"}`.
 
 Input: same long-form DataFrame, plus a `seed` column (and count columns for micro).
+
+### `runner.py`
+
+`evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, ...)` scores one checkpoint over a split's **footprint chips** and writes the sharded store. Two model families are supported through a predictor registry:
+
+- `model="unet"` — `UNetLightning`; image + mask read at the same native (10 m) window; normalisation replays the checkpoint's frozen train stats from `hparams`.
+- `model="sr"` — `JointSRUNetLightning`; the native window is fed as raw DN (the forward normalises internally, after super-resolution) and scored at 2.5 m against HR ground truth. `mask_source="graph"` rasterises the tile's `masks_graph` parquet, `"raster"` reads `<split>/<mask_dirname>/` COGs — the training dataloader's own helpers. SEN2SR's pinned 128 px LR input is handled by running each cell as a grid of pinned sub-windows and stitching the HR outputs; bicubic/sr4rs predict a cell in one pass. `--sen2sr-dir` overrides the weights path baked into `hparams` at training time.
+
+**Footprint grid.** The evaluation chip is a ground cell of `cell_m` metres (default 2560 m = 256 px @ 10 m = 1024 px @ 2.5 m), derived per tile from the raster transform. `chip_id` (`{tile_stem}_r{ri}_c{ci}`) therefore names the same geography at every resolution — this is what lets the paired stats line up chips across model families.
+
+**Edge chips.** Ragged border cells are padded up to a valid model input (next /32 for unet — the smp decoder constraint; the full zero-padded cell for sr, matching the SR training loader) and the logits are cropped back to the true extent *before* scoring, so counts never include pad pixels.
+
+**Invariants.** The grid must partition each tile exactly (always checked), and the chips' summed `tp+fn` must equal the tile mask's road-pixel count, read independently of the chip loop (`check=first|all|off`, default `first`). A windowing/GT bug fails the run loudly instead of producing plausible wrong numbers.
+
+**Timing.** `inference_ms` is `cuda.synchronize()`-bracketed and amortised over the batch (`batch_size` chips per forward pass for unet).
+
+### `store.py`
+
+One shard per run — `runs/<run_id>.parquet`, `chips/<run_id>.parquet`, `tiles/<run_id>.parquet` — written tmp-then-`os.replace` (atomic on one filesystem, Lustre included). Concurrent SLURM jobs sharing a `STORE_DIR` cannot lose each other's rows, and append-only comes free: an existing shard for a `run_id` is an error. Loaders (`load_runs` / `load_chips` / `load_tiles` / `load_joined`) glob the shards and still read the legacy flat files (`runs.parquet`, `chip_metrics.parquet`) for back-compat.
+
+### `tile_metrics.py`
+
+The seam graph metrics drop into. A plugin registered with `@register("name")` receives, per tile, the stitched binary prediction + GT at GT resolution, the geotransform, and the footprint grid, and returns tile-level values (-> `tiles/` shard) plus optional per-chip values (merged onto chip rows as nullable columns). Request plugins with repeatable `--tile-metric name`. `road_frac` is the trivial reference plugin.
+
+### `graph_metrics.py` — APLS
+
+`--tile-metric apls` scores Average Path Length Similarity (Van Etten et al. 2019): both masks are skeletonized and chain-traced into road graphs (pure numpy/networkx — no sknw/numba), control points are injected every 500 m along edges, snapped across graphs within 30 m, and shortest-path lengths compared in ground metres; the score is the harmonic mean of the two directions (CosmiQ convention). Emitted at BOTH levels, `road_frac`-style: **per-chip `apls`** merges onto the chip rows so the paired bootstrap/Wilcoxon resample the same `chip_id` unit as the pixel metrics (chips resolve first in the CLI; each 2560 m chip is scored independently — SpaceNet precedent used 400 m cells), and a **tile-level `apls`** row (plus the two directional scores and graph sizes) in `tiles/`. Chip APLS measures within-chip connectivity only — paths crossing a chip border are never sampled — so the tile row is the longer-range routing measure and the convenient rollup. NaN where a unit's masks are both road-free, 0.0 when exactly one is empty — the stats drop NaN pairs. Deterministic (sorted nodes, seeded subsampling). Defaults are GSD-aware via the transform; see the module docstring to retune (`SNAP_DIST_M`, `CONTROL_DELTA_M`, `MIN_SPUR_M`, `MAX_NODES`). Skeletonization noise is systematic — it hits every model and the GT identically — so between-model comparisons stay fair. Unit tests: `src/benchmarking/tests/test_graph_metrics.py` (torch-free).
+
+### `cli.py`
+
+`eval` / `compare` / `variance` / `report`. Metrics resolve against the chips table first, then the tiles table (tile metrics pair on `tile_id`). `compare` and `report` check the runs metadata and **refuse cross-GT pixel comparisons** (different `gt_res_m`, `label_source`, `mask_source`, `dataset_split`, or `cell_m`) unless `--force` — pixel metrics are only comparable within one ground truth; graph metrics are the cross-GT route. `report` takes repeatable `--metric` and exports markdown or CSV via `--out`.
 
 ### `dummy_pipeline.py`
 
@@ -123,71 +157,95 @@ pairing on 144 chips across 1 tile(s) (chip is the bootstrap unit, tile_id is th
 ## System architecture
 
 ```
-                   Training (external)
+             Training (HPC: STAGE=tune -> STAGE=fit)
                           |
-                          | checkpoint + sidecar (train/val losses)
+                          | checkpoint (+ best_params.yaml)
                           v
-    CLI / YAML  -->    Runner
+    CLI / YAML  -->    Runner  (STAGE=bench / benchmarking.cli eval)
     (config)             per tile:
-                           1. DataLoader yields (img, gt_mask)   <- external
-                           2. logits = tiled_inference(model, img)   whole-tile, blended
-                           3. probs  = logits_to_road_prob(logits)
-                           4. per chip in score_in_chips(probs, mask):
+                           1. footprint grid from the raster transform (cell_m)
+                           2. per cell: predictor.predict -> sigmoid probs
+                              (unet: native window; sr: raw-DN window -> 4x HR)
+                           3. GT via the training loaders' own mask helpers
+                           4. per cell:
                                   counts = confusion_counts          } confusion_matrix.py
                                   pixel  = pixel_metrics_from_counts
-                           5. apls   = apls_metric (on full tile)
-                           6. append chip rows to chip_metrics
+                           5. tile plugins (e.g. apls) on the stitched
+                              prediction + GT -> tile rows / chip columns
+                           6. tp+fn-vs-mask invariant
                          finalise runs row
                           |
                           v
-                       Store
-                    (parquet I/O)
+                       Store  (sharded parquet, concurrency-safe)
+                  runs/<run_id>.parquet
+                  chips/<run_id>.parquet   one row per (run_id, chip_id)
+                  tiles/<run_id>.parquet   one row per (run_id, tile_id)
                           |
                           v
-                  runs.parquet
-                  chip_metrics.parquet   one row per (run_id, chip_id)
-                          |
-                          v
-                       stats.py
+                    stats.py  (via cli compare / variance / report)
                   cross_seed_ci           -> CIs for training instability
                   bootstrap_paired_diff   -> CI on model difference
                   wilcoxon_paired         -> p-value on model difference
 ```
 
-The split between Runner (orchestration, side effects) and `confusion_matrix.py` / `stats.py` (pure, no I/O) is the key invariant. The metric and stats code can be tested in isolation against synthetic DataFrames; the runner is exercised separately with real fixture data.
+The split between Runner (orchestration, side effects) and `confusion_matrix.py` / `stats.py` / `tile_metrics.py` plugins (pure, no I/O) is the key invariant. The metric and stats code test in isolation against synthetic DataFrames; the runner is exercised by `tests/test_runner_integration.py` with real (random-init) checkpoints over real GeoTIFF fixtures.
+
+## Running on the HPC
+
+Every experiment engine (`scripts/hpc/unet/_stages.sh`, `scripts/hpc/sr/_stages.sh`) has a `bench` stage beside `tune`/`fit`. It locates the experiment's fitted checkpoint and evaluates it into the **shared** store (`STORE_DIR`, default `/scratch/$USER/InstaRoad/benchmarks`) with `model_name = {family}_{EXP_TAG}` (e.g. `unet_cdngi`, `sr_r2a_cdngi`) — the name the stats pair and group on — plus `--exp-tag` / `--label-source` metadata for the comparability guardrail. The SR engine passes its `LABELS -> mask_source` mapping and `--sen2sr-dir`, so bench GT always matches training GT.
+
+```sh
+# score an already-trained checkpoint (no retraining)
+sbatch --gres=gpu:1 scripts/hpc/train.sbatch --SCRIPT=unet/cdngi.sh STAGE=bench SEED=0
+
+# full pipeline in one allocation: tune -> fit -> bench
+sbatch scripts/hpc/train_both.sbatch --SCRIPT=sr/r2a_cdngi.sh SEED=1
+
+# afterwards, on any node with the venv
+python -m benchmarking.cli report --store-dir /scratch/$USER/InstaRoad/benchmarks \
+    --metric iou --metric f1 --out report.md
+```
+
+`STAGE=fit` still logs torchmetrics IoU/F1 to wandb (training-time telemetry); the store is the source of truth for model-wise comparison — every stored row flows through `confusion_counts` / `pixel_metrics_from_counts`, and the sharded store is safe under concurrent SLURM jobs.
 
 ## On-disk schema
 
-### `runs.parquet`
+Sharded: each run writes its own file under `runs/`, `chips/` and (when tile plugins ran) `tiles/`. The loaders concatenate the shards; the legacy flat files (`runs.parquet`, `chip_metrics.parquet`) are still read if present.
+
+### `runs/<run_id>.parquet`
 
 One row per evaluated checkpoint.
 
 | column | type | description |
 | ------ | ---- | ----------- |
-| `run_id` | string (UUID) | Primary key. Generated when the run starts. |
-| `run_started_at` | timestamp (UTC) | Set at the start of inference. |
-| `run_finished_at` | timestamp (UTC) | Set when all chips complete. NaT if the run failed mid-way. |
-| `model_name` | string | Architecture identifier, e.g. `unet_resnet50`, `terramind_v1_base`. |
-| `config_hash` | string | First 12 characters of the SHA-256 of the canonicalised training config dict. Two rows with the same `config_hash` came from identical configurations. |
-| `config_yaml` | string | Full training config serialised as YAML. Kept for reproducibility. |
-| `seed` | int64 | Random seed used at training time. Several seeds per `config_hash` are expected and used to derive confidence intervals. |
-| `loss_fn` | string | Loss function identifier, e.g. `focal_tversky`, `cldice_bce`, `dice`. Surfaced as its own column to make the loss-function pilot study trivial to query. |
-| `loss_params` | string (JSON) | Parameters for the loss function. JSON string so the structure can vary per loss. |
-| `checkpoint_path` | string | Absolute path to the `.pth` file evaluated by this run. |
-| `train_loss_final` | float64 | Training loss at the final epoch. |
-| `val_loss_final` | float64 | Validation loss at the final epoch. |
-| `val_loss_best` | float64 | Validation loss at the epoch the saved checkpoint was taken from. |
-| `best_epoch` | int64 | Epoch index (0-based) at which `val_loss_best` was recorded. |
-| `dataset_split` | string | Which split was evaluated: `train`, `val`, or `test`. Almost always `test`. |
-| `resolution` | string | Ground-truth resolution: `10m` or `2.5m`. One resolution per run; evaluating the same checkpoint at a second resolution produces a new `run_id`. APLS is always computed against the skeletonised 10m mask regardless of this field. |
-| `threshold` | float64 | Sigmoid threshold used to binarise predictions. |
-| `n_chips` | int64 | Number of chips scored in the run. |
+| `run_id` | string (UUID) | Primary key. Generated when the run starts; also the shard filename. |
+| `run_started_at` / `run_finished_at` | timestamp (UTC) | Wall-clock bounds of the run. |
+| `model_name` | string | The identifier the stats pair/group on, `{family}_{exp_tag}` by convention (e.g. `unet_cdngi`, `sr_r2a_cdngi`). |
+| `model_family` | string | Loader family: `unet` or `sr`. |
+| `exp_tag` | string | Experiment tag (`cdngi`, `osm`, `r2a_cdngi`, ...). |
+| `label_source` | string | GT label provenance (`cdngi`, `osm`, `overture`). Guardrail key. |
+| `mask_source` | string | How GT was read: `csv` (unet), `graph` or `raster` (sr). Guardrail key. |
+| `mask_dirname` | string | Alternative mask dir, when used (`mask_osm_10`, `mask_osm_2pt5`). |
+| `config_hash` | string | First 12 hex chars of the SHA-256 of the canonicalised (parsed, key-sorted) `--config-yaml`. Empty when no config was passed. |
+| `config_yaml` | string | The config file's full text, inline for reproducibility. |
+| `seed` | int64 | Training seed. Several seeds per config feed the cross-seed CIs. |
+| `checkpoint_path` | string | Absolute path to the evaluated `.ckpt`. |
+| `dataset_dir` | string | Absolute dataset root. |
+| `dataset_split` | string | Evaluated split. Almost always `test`. |
+| `cell_m` | float64 | Footprint cell edge in metres (the chip unit). |
+| `chip_px` | int64 | Cell edge in native pixels, derived from the transform (or `--chip-px`). |
+| `gt_res_m` | float64 | Ground-truth resolution in metres: native pixel size / family scale (10.0 for unet, 2.5 for sr). Guardrail key. |
+| `threshold` | float64 | Sigmoid threshold used to binarise predictions: the checkpoint's hparams, or the `--threshold` override (e.g. the θ* a loss-ablation run tuned on val — see `docs/loss_ablation.md`). |
+| `batch_size` | int64 | Chips per forward pass (unet family). |
+| `device` | string | `cuda` or `cpu`. |
+| `tile_metrics` | string | Comma-joined plugin names that ran (empty if none). |
+| `n_tiles` / `n_chips` | int64 | Tiles and chips scored in the run. |
 
-### `chip_metrics.parquet`
+### `chips/<run_id>.parquet`
 
 One row per `(run_id, chip_id)`. Long-form: every chip is its own row.
 
-The `chip_id` is a foreign key into the dataset's per-patch metadata catalogue (`DatasetManager`'s `metadata.parquet`), which holds the chip's geometry, split membership, urbanisation class, and other attributes that do not change across runs. Those attributes are not duplicated here; join on `chip_id` when you need them. `tile_id` is denormalised onto every row as a convenience for rolling chips up to tiles or resampling at tile granularity.
+`chip_id` has the format `{tile_stem}_r{ri}_c{ci}` where `ri`/`ci` index **footprint cells** (`cell_m` ground metres), so the same `chip_id` names the same geography for a 10 m unet run and a 2.5 m sr run — the cross-family pairing key. `tile_id` is denormalised onto every row as a convenience for rolling chips up to tiles or resampling at tile granularity.
 
 | column | type | description |
 | ------ | ---- | ----------- |
@@ -207,24 +265,25 @@ The `chip_id` is a foreign key into the dataset's per-patch metadata catalogue (
 | `precision` | float64 | Precision. |
 | `recall` | float64 | Recall. |
 | `accuracy` | float64 | Pixel accuracy. |
-| `apls` | float64 | Average Path Length Similarity. Nullable: NaN when graph metric was not computed. |
-| `n_pred_nodes` | int64 | Nodes in the predicted graph. Nullable. |
-| `n_pred_edges` | int64 | Edges in the predicted graph. Nullable. |
-| `inference_ms` | float64 | Wall-clock time for the model forward pass on this tile, in milliseconds. Excludes data loading and metric computation. |
+| `inference_ms` | float64 | `cuda.synchronize()`-bracketed forward-pass time, amortised over the batch. Excludes data loading and metric computation. |
+| *(plugin columns)* | float64 | Per-chip values returned by tile-metric plugins (e.g. `apls`). Nullable: NaN where the metric is undefined on that chip. |
 
 The raw counts (`tp`, `fp`, `fn`, `tn`) are kept alongside the derived metrics. Any new pixel metric (Matthews correlation, Cohen's kappa, balanced accuracy) can be recomputed from the counts without rerunning inference.
+
+### `tiles/<run_id>.parquet`
+
+One row per `(run_id, tile_id)`, written only when tile-metric plugins ran. Columns: `run_id`, `tile_id`, `model_name`, `seed`, plus whatever the plugins returned (e.g. `apls`, `pred_road_frac`). Tile metrics pair on `tile_id` in `compare`/`report` (the CLI resolves the table automatically from the metric name).
 
 ## Joining the tables
 
 ```python
-import pandas as pd
+from benchmarking.store import load_chips, load_joined, load_runs, load_tiles
 
-runs = pd.read_parquet("benchmarks/runs.parquet")
-chips = pd.read_parquet("benchmarks/chip_metrics.parquet")
-df = runs.merge(chips, on="run_id")
+df = load_joined("benchmarks")      # chips + their run context
+tiles = load_tiles("benchmarks")    # tile-level plugin metrics
 ```
 
-Once joined, every per-chip row carries its full run context (`model_name`, `seed`, `loss_fn`, etc.) and is ready for arbitrary slicing.
+Once joined, every per-chip row carries its full run context (`model_name`, `seed`, `label_source`, `gt_res_m`, etc.) and is ready for arbitrary slicing.
 
 To bring in chip-level attributes from the dataset catalogue:
 
@@ -303,9 +362,13 @@ A Friedman test (multi-group analogue of Wilcoxon) is appropriate when comparing
 
 ## Design notes
 
-### Chip is the evaluation unit; tile is the inference unit
+### Chip is the evaluation unit; the footprint cell defines it
 
-Inference runs whole-tile so the sliding-window blending avoids edge artifacts. Scoring runs per-chip so there are enough units for the paired tests to resample over. With a real multi-image dataset you would resample over `tile_id` instead of `chip_id` because chips from one image are spatially correlated. Chips are the pragmatic proxy when you have one image.
+Scoring runs per non-overlapping footprint cell so there are enough units for the paired tests to resample over, and so the unit is *geographic* rather than pixel-based: `cell_m` metres of ground per chip regardless of resolution. Inference granularity is a family detail hidden behind the predictor (unet: the cell itself; SEN2SR: pinned 128 px sub-windows stitched to the cell). With few tiles, remember chips within one tile are spatially correlated; tile-level rollups (`tile_id`) are one groupby away.
+
+### Native GT per family; guardrailed comparisons
+
+Each family is scored against the ground truth it trained on, at its own resolution (unet: 10 m, sr: 2.5 m). Pixel metrics therefore compare directly only *within* one GT; `compare`/`report` enforce this via the runs metadata (`gt_res_m`, `label_source`, `mask_source`, ...) and `--force` overrides. Cross-family and cross-label claims ride on tile-level graph metrics (APLS), which are resolution-robust by construction.
 
 ### Chip attributes live in the dataset catalogue, not here
 
@@ -313,7 +376,7 @@ Inference runs whole-tile so the sliding-window blending avoids edge artifacts. 
 
 ### One resolution per run
 
-Pixel metrics for a single run are computed against a single ground-truth resolution. To evaluate the same checkpoint against 2.5m and 10m ground truth, run benchmarking twice; the two results land in separate rows of `runs.parquet` with different `run_id`s. APLS is always computed against the skeletonised 10m mask, independent of the `resolution` field.
+Pixel metrics for a single run are computed against a single ground-truth resolution (`gt_res_m`). To evaluate the same checkpoint against a second GT, run benchmarking twice; the two results land in separate run shards with different `run_id`s.
 
 ### Why parquet, not CSV
 
@@ -323,13 +386,13 @@ Parquet preserves int64/float64/datetime/nullable types, compresses well, and re
 
 Adding a new model, a new seed, or a new loss-function variant requires no schema migration; it produces new rows under the existing columns. Wide-form schemas (one column per model's IoU) couple the schema to the experiment matrix and break this property.
 
-### Append-only, never overwrite
+### Append-only, sharded, never overwrite
 
-The runner will refuse to write a `run_id` that already exists. Reruns are explicit new runs with new IDs. This makes results auditable: every checkpoint evaluation is preserved, including failed ones.
+Each run writes its own shard (tmp-file-then-`os.replace`, atomic on one filesystem); a `run_id` whose shard already exists is an error. Reruns are explicit new runs with new IDs, results are auditable, and concurrent SLURM jobs sharing a store cannot clobber each other — the old flat-file read-concat-rewrite append could lose rows under parallel writers.
 
 ### `config_hash` semantics
 
-`config_hash` is the SHA-256 (first 12 characters) of the training config dict after canonicalisation: keys sorted recursively, floats round-tripped through string form, augmentation pipelines serialised via `albumentations.to_dict`. Two runs with the same hash were produced by identical configurations and are directly comparable. The full `config_yaml` is kept inline for inspection.
+`config_hash` is the SHA-256 (first 12 characters) of the `--config-yaml` file after canonicalisation: parsed, keys sorted recursively, re-serialised. Formatting and key order don't change the hash; two runs with the same hash were produced by identical configurations and are directly comparable. The full `config_yaml` text is kept inline for inspection. The HPC bench stage passes the experiment's `best_params.yaml` automatically.
 
 ### NaN semantics for pixel metrics
 
