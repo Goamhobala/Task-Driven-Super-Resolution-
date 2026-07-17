@@ -10,7 +10,6 @@
 #SBATCH --mail-user=yhxjin001@myuct.ac.za
 #SBATCH --mail-type=ALL
 #SBATCH --output=slurm-%j.out
-#SBATCH --mem-per-cpu=8G
 
 # End-to-end dispatcher: run STAGE=tune, then fit, then bench for one experiment
 # in a SINGLE allocation. Same interface as train.sbatch (--SCRIPT= + KEY=VALUE),

@@ -10,7 +10,7 @@
 #SBATCH --mail-user=yhxjin001@myuct.ac.za
 #SBATCH --mail-type=ALL
 #SBATCH --output=slurm-%j.out
-#SBATCH --mem-per-cpu=8G
+
 
 # Pair dispatcher: run TWO independent single-GPU experiments in ONE job,
 # one per GPU, each chaining STAGE=fit -> STAGE=bench. Exists because the
