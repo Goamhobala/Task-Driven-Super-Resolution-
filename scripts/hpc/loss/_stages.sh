@@ -61,7 +61,8 @@ AUGMENT="${AUGMENT:-true}"            # protocol-fixed D4 flip on the train crop
 PSTAR="${PSTAR:-bce}"                 # pixel slot for pstar_* arms (set to P*)
 GAP_R="${GAP_R:-5}"                   # GapLoss buffer radius (Appendix B centre)
 GAP_K="${GAP_K:-60.0}"               # GapLoss K (paper)
-TL_ELL="${TL_ELL:-5}"                 # TL filter length (paper centre; grid {3,5,7})
+TL_ELL="${TL_ELL:-5}"                 # TL/T2/T4 filter length (paper centre; grid {3,5,7})
+TL_THETA="${TL_THETA:-0.5}"           # TL/T2/T4 binarization θ (papers: 0.375; grid {0.375,0.5})
 TVERSKY_ALPHA="${TVERSKY_ALPHA:-0.7}"
 CL_ALPHA="${CL_ALPHA:-0.3}"
 CL_ITERS="${CL_ITERS:-5}"
@@ -89,7 +90,8 @@ NORM_CONFIG="${NORM_CONFIG:-$REPO_DIR/src/unet/configs/norm_stats.yaml}"
 # distinct benchmark model_names instead of colliding under one EXP_TAG.
 case "$ARM" in
   *gap_ce*)                HP_SLUG="_r${GAP_R}" ;;
-  *tl_ce*|*t2_ce*|*t4_ce*) HP_SLUG="_l${TL_ELL}" ;;
+  *tl_ce*|*t2_ce*|*t4_ce*) HP_SLUG="_l${TL_ELL}"
+                           [ "$TL_THETA" != "0.5" ] && HP_SLUG="${HP_SLUG}_th${TL_THETA}" ;;
   pstar_dice|pstar_tversky) HP_SLUG="_p${PSTAR}" ;;
   *)                       HP_SLUG="" ;;
 esac
@@ -218,7 +220,7 @@ python -m unet.train_ablation \
   --arm "$ARM" \
   --pstar "$PSTAR" \
   --gap-r "$GAP_R" --gap-k "$GAP_K" \
-  --tl-ell "$TL_ELL" \
+  --tl-ell "$TL_ELL" --tl-theta "$TL_THETA" \
   --tversky-alpha "$TVERSKY_ALPHA" \
   --cl-alpha "$CL_ALPHA" --cl-iters "$CL_ITERS" \
   --sr-w "$SR_W" --sr-radius "$SR_RADIUS" \

@@ -81,7 +81,12 @@ def parse_args(argv=None):
     ap.add_argument("--pstar", default="bce", help="pixel slot for pstar_* arms")
     ap.add_argument("--gap-r", type=int, default=4, help="GapLoss buffer radius (paper 9x9 => 4)")
     ap.add_argument("--gap-k", type=float, default=60.0, help="GapLoss K (paper: 60)")
-    ap.add_argument("--tl-ell", type=int, default=5, help="TL filter length (paper: 5)")
+    ap.add_argument("--tl-ell", type=int, default=5,
+                    help="TL/T2/T4 filter length (paper: 5; also sizes the "
+                         "curvature kernels for t2_ce/t4_ce)")
+    ap.add_argument("--tl-theta", type=float, default=0.5,
+                    help="TL/T2/T4 weight-map binarization threshold "
+                         "(papers: 0.375; protocol grid {0.375, 0.5})")
     ap.add_argument("--tversky-alpha", type=float, default=0.7)
     ap.add_argument("--cl-alpha", type=float, default=0.3)
     ap.add_argument("--cl-iters", type=int, default=5)
@@ -99,10 +104,13 @@ def parse_args(argv=None):
 
 def make_run_name(args) -> str:
     hp_bits = []
+    tl_like = ("tl_ce", "t2_ce", "t4_ce")
     if args.arm.startswith("gap_ce") or args.pstar == "gap_ce":
         hp_bits.append(f"r{args.gap_r}")
-    if args.arm.startswith("tl_ce") or args.pstar == "tl_ce":
+    if args.arm.startswith(tl_like) or args.pstar in tl_like:
         hp_bits.append(f"l{args.tl_ell}")
+        if args.tl_theta != 0.5:
+            hp_bits.append(f"th{args.tl_theta}")
     return args.run_name or "_".join(
         [args.arm.replace("+", "-"), *hp_bits, f"s{args.seed}"])
 
@@ -179,6 +187,7 @@ def main(argv=None):
         gap_r=args.gap_r,
         gap_k=args.gap_k,
         tl_ell=args.tl_ell,
+        tl_theta=args.tl_theta,
         tversky_alpha=args.tversky_alpha,
         cl_alpha=args.cl_alpha,
         cl_iters=args.cl_iters,
@@ -197,7 +206,8 @@ def main(argv=None):
         "mask_dirname": data_cfg.get("mask_dirname"),
         "selection": "val_f1@0.5",
         "hp": {"pstar": args.pstar, "gap_r": args.gap_r, "gap_k": args.gap_k,
-               "tl_ell": args.tl_ell, "tversky_alpha": args.tversky_alpha,
+               "tl_ell": args.tl_ell, "tl_theta": args.tl_theta,
+               "tversky_alpha": args.tversky_alpha,
                "cl_alpha": args.cl_alpha, "cl_iters": args.cl_iters,
                "sr_w": args.sr_w, "sr_radius": args.sr_radius,
                "warmup_start": args.warmup_start, "warmup_ramp": args.warmup_ramp},
