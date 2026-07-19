@@ -84,9 +84,10 @@ def parse_args(argv=None):
     ap.add_argument("--tl-ell", type=int, default=5,
                     help="TL/T2/T4 filter length (paper: 5; also sizes the "
                          "curvature kernels for t2_ce/t4_ce)")
-    ap.add_argument("--tl-theta", type=float, default=0.5,
-                    help="TL/T2/T4 weight-map binarization threshold "
-                         "(papers: 0.375; protocol grid {0.375, 0.5})")
+    ap.add_argument("--tl-theta", type=float, default=0.375,
+                    help="TL/T2/T4/gap_tl weight-map binarization threshold "
+                         "(default = papers' 0.375 = Appendix-B centre; "
+                         "protocol grid {0.375, 0.5})")
     ap.add_argument("--tversky-alpha", type=float, default=0.7)
     ap.add_argument("--cl-alpha", type=float, default=0.3)
     ap.add_argument("--cl-iters", type=int, default=5)
@@ -103,14 +104,17 @@ def parse_args(argv=None):
 
 
 def make_run_name(args) -> str:
+    # the "effective" pixel slot: the arm's own head, or P* for pstar_* arms
+    head = args.arm.partition("+")[0]
+    eff = args.pstar if head.startswith("pstar") else head
     hp_bits = []
-    tl_like = ("tl_ce", "t2_ce", "t4_ce")
-    if args.arm.startswith("gap_ce") or args.pstar == "gap_ce":
+    if "gap" in eff:
         hp_bits.append(f"r{args.gap_r}")
-    if args.arm.startswith(tl_like) or args.pstar in tl_like:
+    if any(t in eff for t in ("tl_ce", "t2_ce", "t4_ce")):
+        # θ always in the name: the legacy pre-knob l3 run (θ=0.5, unnamed)
+        # must never collide with new explicit-θ runs
         hp_bits.append(f"l{args.tl_ell}")
-        if args.tl_theta != 0.5:
-            hp_bits.append(f"th{args.tl_theta}")
+        hp_bits.append(f"th{args.tl_theta}")
     return args.run_name or "_".join(
         [args.arm.replace("+", "-"), *hp_bits, f"s{args.seed}"])
 

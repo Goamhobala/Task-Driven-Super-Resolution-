@@ -11,7 +11,8 @@ import torch
 from unet.losses import (
     ComposedLoss, DiceLoss, FocalTverskyLoss, SkeletonRecallLoss, SoftclDice,
     TverskyLoss, WeightedCE, build_loss, gap_weight_map, make_gap_ce,
-    make_tl_ce, tl_weight_map,
+    make_gap_tl_ce, make_tl_ce, t2_cells, t2_kernels, t4_cells, t4_kernels,
+    tl_weight_map,
 )
 
 H = W = 96
@@ -103,6 +104,59 @@ def test_tl_ell_grid_runs(ell):
     p = logits_from(hline_with_gap()).sigmoid()
     Wmap = tl_weight_map(p, ell=ell)
     assert Wmap.shape == p.shape and torch.isfinite(Wmap).all()
+
+
+# ------------------------------------------------------- t2/t4 curvature
+
+def test_t2_base_kernel_matches_eq4():
+    """Eq. 4, n=5, (i0,j0)=(0,1), t=0..2(n-2): the quarter-circle staircase."""
+    assert sorted(t2_cells(5)) == sorted(
+        [(0, 1), (1, 1), (1, 2), (2, 2), (2, 3), (3, 3), (3, 4)])
+    assert len(t2_cells(5)) == 2 * (5 - 2) + 1
+
+
+def test_t4_base_kernel_matches_eq5():
+    """Eq. 5, n=5: zig-zag down (Tb=3), middle run L=3, mirrored ascent."""
+    assert sorted(t4_cells(5)) == sorted(
+        [(0, 0), (1, 0), (1, 1),            # descent
+         (2, 1), (2, 2), (2, 3),            # middle row m=2
+         (1, 3), (1, 4), (0, 4)])           # ascent
+    with pytest.raises(ValueError):
+        t4_cells(4)  # n must be odd (protocol grid)
+
+
+@pytest.mark.parametrize("maker", [t2_kernels, t4_kernels])
+@pytest.mark.parametrize("n", [3, 5, 7])
+def test_curvature_kernels_are_four_distinct_rotations(maker, n):
+    ks = maker(n)
+    assert len(ks) == 4 and all(k.shape == (n, n) for k in ks)
+    keys = {k.numpy().tobytes() for k in ks}
+    assert len(keys) == 4
+    # closed under 180-deg rotation: cross-correlation with the SET equals
+    # true convolution with the SET, so F.conv2d reproduces the paper's W
+    assert all(torch.rot90(k, 2, dims=(0, 1)).numpy().tobytes() in keys for k in ks)
+
+
+@pytest.mark.parametrize("maker", [t2_kernels, t4_kernels])
+def test_curvature_weight_map_conv_xcorr_invariance(maker):
+    """W must be identical whether the kernel set is fed as-is or 180-rotated
+    (the permutation argument in `_rotations`)."""
+    p = logits_from(hline_with_gap()).sigmoid()
+    ks = maker(5)
+    W1 = tl_weight_map(p, ell=5, extra_kernels=ks)
+    W2 = tl_weight_map(p, ell=5, extra_kernels=[torch.rot90(k, 2, dims=(0, 1)) for k in ks])
+    assert torch.equal(W1, W2)
+
+
+@pytest.mark.parametrize("arm", ["t2_ce", "t4_ce"])
+def test_t2_t4_background_base_reset(arm):
+    """With 8 filters the non-endpoint floor is W==8 -> reset to 1."""
+    m = np.zeros((H, W), np.float32)
+    m[10:48, 48] = 1
+    ks = t2_kernels(5) if arm == "t2_ce" else t4_kernels(5)
+    Wmap = tl_weight_map(logits_from(m).sigmoid(), ell=5, extra_kernels=ks)[0, 0]
+    assert Wmap[70:90, 5:20].max() == 1      # far background floor reset
+    assert Wmap[44:54, 44:53].max() == 10    # free end still weighted up
 
 
 # ------------------------------------------------- §4.4 scale normalization
@@ -208,9 +262,23 @@ def test_skelrec_additive_weights():
     assert loss.w_pix == 0.5 and loss.w_reg == 0.5 and loss.w_skel == 1.0
 
 
-@pytest.mark.parametrize("arm", ["bce", "gap_ce", "tl_ce", "bce_dice",
-                                 "pstar_dice", "pstar_tversky", "focal_tversky",
-                                 "bce_dice+cldice", "bce_dice+skelrec"])
+def test_gap_tl_blend_is_exact_average():
+    """make_gap_tl_ce must equal 0.5·gap_ce + 0.5·tl_ce exactly: mean-1 maps
+    summed inside one normalized weighted CE = the average of the two
+    normalized losses (the algebra that keeps it a single pixel-slot arm)."""
+    lg = logits_from(hline_with_gap()).float()
+    tgt = torch.from_numpy(hline_with_gap(gap=(0, 0)))[None, None]
+    combined = make_gap_tl_ce(r=4, K=60.0, ell=5, theta=0.375)(lg, tgt)
+    g = make_gap_ce(r=4, K=60.0)(lg, tgt)
+    t = make_tl_ce(ell=5, theta=0.375)(lg, tgt)
+    assert torch.allclose(combined, 0.5 * (g + t), atol=1e-5)
+
+
+@pytest.mark.parametrize("arm", ["bce", "gap_ce", "tl_ce", "gap_tl_ce",
+                                 "t2_ce", "t4_ce",
+                                 "bce_dice", "pstar_dice", "pstar_tversky",
+                                 "focal_tversky", "bce_dice+cldice",
+                                 "bce_dice+skelrec"])
 def test_all_arms_build_and_run(arm):
     loss = build_loss(arm, pstar="gap_ce")
     lg = logits_from(hline_with_gap()).requires_grad_(True)
@@ -220,6 +288,14 @@ def test_all_arms_build_and_run(arm):
     assert torch.isfinite(out) and torch.isfinite(lg.grad).all()
 
 
-def test_t2_t4_pending():
-    with pytest.raises(NotImplementedError):
-        build_loss("t2_ce")
+def test_tl_theta_is_plumbed():
+    """θ=0.375 must reach the weight map (borderline pixels binarize
+    differently). Verified via a probability sitting between the two θs."""
+    m = np.zeros((H, W), np.float32)
+    m[10:60, 48] = 1
+    lg = torch.where(torch.from_numpy(m)[None, None] > 0.5,
+                     torch.tensor(-0.3), torch.tensor(LO))  # sigmoid(-0.3)=0.43
+    tgt = torch.from_numpy(m)[None, None]
+    lo = build_loss("tl_ce", tl_theta=0.375)(lg, tgt)   # 0.43 > 0.375: skeleton
+    hi = build_loss("tl_ce", tl_theta=0.5)(lg, tgt)     # 0.43 < 0.5: empty skel
+    assert not torch.allclose(lo, hi)

@@ -3,8 +3,8 @@
 # TL's 4 line filters + 4 quarter-circle filters, base 8 -> 1), exploratory;
 # replaces tl_ce only if it beats it. ROSA_all dataset.
 #
-# TL_THETA=0.375 reproduces the paper's binarization (default 0.5 matches the
-# already-trained l3_tl_ce run; protocol grid {0.375, 0.5}).
+# Default TL_THETA=0.375 = the paper's binarization (Appendix-B centre;
+# grid {0.375, 0.5}). NB the legacy pre-knob l3_tl_ce run trained at 0.5.
 #
 #   sbatch scripts/hpc/train_pair.sbatch --A=loss/l4a_all.sh --B=loss/l4b_all.sh
 #   sbatch scripts/hpc/train_both.sbatch --SCRIPT=loss/l4a_all.sh

@@ -62,7 +62,8 @@ PSTAR="${PSTAR:-bce}"                 # pixel slot for pstar_* arms (set to P*)
 GAP_R="${GAP_R:-5}"                   # GapLoss buffer radius (Appendix B centre)
 GAP_K="${GAP_K:-60.0}"               # GapLoss K (paper)
 TL_ELL="${TL_ELL:-5}"                 # TL/T2/T4 filter length (paper centre; grid {3,5,7})
-TL_THETA="${TL_THETA:-0.5}"           # TL/T2/T4 binarization θ (papers: 0.375; grid {0.375,0.5})
+TL_THETA="${TL_THETA:-0.375}"         # TL/T2/T4/gap_tl binarization θ (papers + Appendix B:
+                                      # 0.375; grid {0.375,0.5}; legacy l3 ran 0.5 pre-knob)
 TVERSKY_ALPHA="${TVERSKY_ALPHA:-0.7}"
 CL_ALPHA="${CL_ALPHA:-0.3}"
 CL_ITERS="${CL_ITERS:-5}"
@@ -89,9 +90,9 @@ NORM_CONFIG="${NORM_CONFIG:-$REPO_DIR/src/unet/configs/norm_stats.yaml}"
 # A short hp slug so a within-arm grid (r/ℓ/pstar/…) lands as distinct runs and
 # distinct benchmark model_names instead of colliding under one EXP_TAG.
 case "$ARM" in
+  *gap_tl_ce*)             HP_SLUG="_r${GAP_R}_l${TL_ELL}_th${TL_THETA}" ;;
   *gap_ce*)                HP_SLUG="_r${GAP_R}" ;;
-  *tl_ce*|*t2_ce*|*t4_ce*) HP_SLUG="_l${TL_ELL}"
-                           [ "$TL_THETA" != "0.5" ] && HP_SLUG="${HP_SLUG}_th${TL_THETA}" ;;
+  *tl_ce*|*t2_ce*|*t4_ce*) HP_SLUG="_l${TL_ELL}_th${TL_THETA}" ;;
   pstar_dice|pstar_tversky) HP_SLUG="_p${PSTAR}" ;;
   *)                       HP_SLUG="" ;;
 esac

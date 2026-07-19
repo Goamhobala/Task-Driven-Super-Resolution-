@@ -57,6 +57,7 @@ class UNetLightning(pl.LightningModule):
         gap_r: int = 4,
         gap_k: float = 60.0,
         tl_ell: int = 5,
+        tl_theta: float = 0.375,
         tversky_alpha: float = 0.7,
         cl_alpha: float = 0.3,
         cl_iters: int = 5,
@@ -73,6 +74,7 @@ class UNetLightning(pl.LightningModule):
 
             self.criterion = build_loss(
                 loss_arm, pstar=pstar, gap_r=gap_r, gap_k=gap_k, tl_ell=tl_ell,
+                tl_theta=tl_theta,
                 tversky_alpha=tversky_alpha, cl_alpha=cl_alpha, cl_iters=cl_iters,
                 sr_w=sr_w, sr_radius=sr_radius,
                 warmup_start=warmup_start, warmup_ramp=warmup_ramp,

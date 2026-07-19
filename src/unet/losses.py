@@ -168,7 +168,7 @@ def t4_kernels(n: int = 5) -> list[torch.Tensor]:
     return _rotations(_cells_to_kernel(t4_cells(n), n))
 
 
-def tl_weight_map(prob: torch.Tensor, ell: int = 5, thresh: float = 0.5,
+def tl_weight_map(prob: torch.Tensor, ell: int = 5, thresh: float = 0.375,
                   base_reset: bool = True,
                   extra_kernels: list[torch.Tensor] | None = None) -> torch.Tensor:
     """Topological Loss weight map (Nanni et al. 2024, Algorithm 1).
@@ -238,15 +238,41 @@ def make_gap_ce(r: int = 4, K: float = 60.0, normalize: bool = True) -> Weighted
     return WeightedCE(lambda p: gap_weight_map(p, r=r, K=K), normalize=normalize)
 
 
-def make_tl_ce(ell: int = 5, normalize: bool = True, theta: float = 0.5,
+def make_tl_ce(ell: int = 5, normalize: bool = True, theta: float = 0.375,
                extra_kernels: list[torch.Tensor] | None = None) -> WeightedCE:
     """TL / T2 / T4 weighted CE. ``theta`` is the binarization threshold the
-    weight map is built at: the Giannini/Nanni papers hard-code 0.375; the
-    protocol searches θ ∈ {0.375, 0.5} (Appendix B). Default 0.5 matches the
-    already-trained l3_tl_ce run — pass 0.375 explicitly for paper fidelity."""
+    weight map is built at. Default 0.375 = the Giannini/Nanni papers'
+    hard-coded value AND the protocol's Appendix-B centre; the protocol grid
+    is θ ∈ {0.375, 0.5}. NB the first l3_tl_ce run predates this knob and
+    trained at 0.5 — treat it as the θ=0.5 grid point (run names now always
+    carry θ, so it cannot be confused with new runs)."""
     return WeightedCE(
         lambda p: tl_weight_map(p, ell=ell, thresh=theta, extra_kernels=extra_kernels),
         normalize=normalize)
+
+
+def make_gap_tl_ce(r: int = 4, K: float = 60.0, ell: int = 5,
+                   theta: float = 0.375, normalize: bool = True,
+                   extra_kernels: list[torch.Tensor] | None = None) -> WeightedCE:
+    """GL+TL blended pixel slot (Nanni et al. 2024, Table 2: GL+TL and
+    GL+TL+DI are their best compounds on 3 of 4 datasets).
+
+    NOT a slot-taxonomy violation: both parents are weighted CEs over the
+    SAME ce map, so their average is itself a single weighted CE whose
+    attention map blends endpoint buffers (GL) with directional corridors
+    (TL). Each map is normalized to mean 1 before summing, which makes this
+    EXACTLY 0.5·gap_ce + 0.5·tl_ce under the §4.4 normalization (unit test
+    asserts the identity), with equal expected contribution from each parent
+    despite their wildly different raw scales (GL up to K·N vs TL's cap 10).
+    GL keeps its own 0.5 binarization (Yuan & Xu); θ applies to the TL side.
+    The paper's GL+TL+DI is then Phase B's ``pstar_dice`` with this as P*.
+    """
+    def blend(p: torch.Tensor) -> torch.Tensor:
+        wg = gap_weight_map(p, r=r, K=K)
+        wt = tl_weight_map(p, ell=ell, thresh=theta, extra_kernels=extra_kernels)
+        return wg / wg.mean().clamp_min(1e-8) + wt / wt.mean().clamp_min(1e-8)
+
+    return WeightedCE(blend, normalize=normalize)
 
 
 # --------------------------------------------------------------------------
@@ -446,7 +472,11 @@ def _pixel_slot(name: str, hp: dict) -> nn.Module:
     if name == "gap_ce":
         return make_gap_ce(r=hp.get("gap_r", 4), K=hp.get("gap_k", 60.0))
     if name == "tl_ce":
-        return make_tl_ce(ell=hp.get("tl_ell", 5), theta=hp.get("tl_theta", 0.5))
+        return make_tl_ce(ell=hp.get("tl_ell", 5), theta=hp.get("tl_theta", 0.375))
+    if name == "gap_tl_ce":
+        return make_gap_tl_ce(r=hp.get("gap_r", 4), K=hp.get("gap_k", 60.0),
+                              ell=hp.get("tl_ell", 5),
+                              theta=hp.get("tl_theta", 0.375))
     if name in ("t2_ce", "t4_ce"):
         # Giannini et al. 2026: TL's four line filters + four curvature filters
         # (T2 quarter-circles / T4 semicircles), base weight 8 -> reset to 1.
@@ -454,7 +484,7 @@ def _pixel_slot(name: str, hp: dict) -> nn.Module:
         # receptive-field consistency with TL; same argument at our GSD).
         n = hp.get("tl_ell", 5)
         extra = t2_kernels(n) if name == "t2_ce" else t4_kernels(n)
-        return make_tl_ce(ell=n, theta=hp.get("tl_theta", 0.5), extra_kernels=extra)
+        return make_tl_ce(ell=n, theta=hp.get("tl_theta", 0.375), extra_kernels=extra)
     raise ValueError(f"unknown pixel slot {name!r}")
 
 
@@ -472,7 +502,7 @@ def build_loss(arm: str, **hp) -> ComposedLoss:
     wu = dict(warmup_start=hp.get("warmup_start", 30),
               warmup_ramp=hp.get("warmup_ramp", 10))
 
-    if base in ("bce", "gap_ce", "tl_ce", "t2_ce", "t4_ce"):
+    if base in ("bce", "gap_ce", "tl_ce", "gap_tl_ce", "t2_ce", "t4_ce"):
         cfg = dict(pixel=_pixel_slot(base, hp), w_pix=1.0)
     elif base == "bce_dice":
         cfg = dict(pixel=_pixel_slot("bce", hp), region=DiceLoss(),
@@ -509,4 +539,4 @@ def build_loss(arm: str, **hp) -> ComposedLoss:
     return ComposedLoss(**cfg)
 
 
-PHASE_A_ARMS = ["bce", "gap_ce", "tl_ce", "t2_ce", "t4_ce"]
+PHASE_A_ARMS = ["bce", "gap_ce", "tl_ce", "gap_tl_ce", "t2_ce", "t4_ce"]
