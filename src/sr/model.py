@@ -1,8 +1,9 @@
 """Joint SR + UNet Lightning module — the unet baseline with an SR front-end.
 
 Subclasses :class:`unet.model.UNetLightning` so the segmentation network, the
-Dice + weighted-BCE loss, the per-crop IoU/F1 metrics and the ``val_iou``
-monitoring convention are IDENTICAL to the baseline; the only differences are:
+loss (legacy Dice + weighted-BCE, or any ``unet.losses.build_loss`` arm via
+``loss_arm``), the per-crop IoU/F1 metrics and the ``val_iou`` monitoring
+convention are IDENTICAL to the baseline; the only differences are:
 
   * ``forward`` prepends an upsampler: raw-DN input / 10000 -> SEN2SR (or
     parameter-free bicubic) -> x 10000 -> frozen per-band z-score -> UNet.
@@ -70,13 +71,45 @@ class JointSRUNetLightning(UNetLightning):
         freeze_sr: bool = False,
         upscale: int = 4,
         sr_pad: int = 0,
+        reflectance_scale: float = 10000.0,
+        # --- loss (unet.losses.build_loss pass-through) ---------------------
+        # Same names/defaults as UNetLightning. None = legacy Dice + weighted
+        # BCE. NB sr_w/sr_radius are the Skeleton-Recall loss knobs (parent's
+        # naming), NOT super-resolution knobs — the SR net's are lr_sr/sr_pad.
+        loss_arm: str | None = None,
+        pstar: str = "bce",
+        gap_r: int = 4,
+        gap_k: float = 60.0,
+        tl_ell: int = 5,
+        tl_theta: float = 0.375,
+        tversky_alpha: float = 0.7,
+        cl_alpha: float = 0.3,
+        cl_iters: int = 5,
+        sr_w: float = 1.0,
+        sr_radius: int = 1,
+        warmup_start: int = 30,
+        warmup_ramp: int = 10,
     ):
+        # reflectance_scale: divisor mapping the dataloader's raw values to the
+        # 0-1 reflectance the SR nets expect. 10000.0 for DN-valued COGs;
+        # **1.0 for the ROSA V2 datasets, whose COGs already store 0-1
+        # reflectance** (verified: tile values ~0.02-0.6, norm_stats means
+        # ~0.05-0.24). With the wrong 10000.0 on reflectance data the SR nets
+        # receive ~1e-5 inputs: bicubic/R0 is unaffected (linear ops cancel),
+        # but SEN2SR degenerates to its DC-anchored bicubic and SR4RS emits its
+        # zero-input pattern. Old ckpts (no such hparam) load with 10000.0,
+        # matching how they were trained.
         super().__init__(
             encoder_name=encoder_name, encoder_weights=encoder_weights,
             in_channels=in_channels, classes=classes, lr=lr,
             pos_weight=pos_weight, bands=bands, image_size=image_size,
             threshold=threshold, normalize=normalize,
             norm_mean=norm_mean, norm_std=norm_std,
+            loss_arm=loss_arm, pstar=pstar, gap_r=gap_r, gap_k=gap_k,
+            tl_ell=tl_ell, tl_theta=tl_theta, tversky_alpha=tversky_alpha,
+            cl_alpha=cl_alpha, cl_iters=cl_iters, sr_w=sr_w,
+            sr_radius=sr_radius, warmup_start=warmup_start,
+            warmup_ramp=warmup_ramp,
         )
         # NOTE: no second save_hyperparameters() call — the parent's call
         # already captures this subclass's full init signature (Lightning
@@ -164,7 +197,7 @@ class JointSRUNetLightning(UNetLightning):
                 f"{self._required_lr}px, got {x.shape[-1]} — set data.crop_size "
                 f"accordingly."
             )
-        x = x / REFLECTANCE_SCALE                      # DN -> reflectance
+        x = x / self.hparams.reflectance_scale         # raw -> 0-1 reflectance
         # SEN2SR's hard constraint uses torch.fft, which has no BFloat16
         # kernels -> "Unsupported dtype BFloat16" under bf16-mixed autocast.
         # Run the (small, 572K-param) SR stage in fp32 with autocast disabled;
@@ -183,7 +216,8 @@ class JointSRUNetLightning(UNetLightning):
             if p:
                 q = p * self.hparams.upscale
                 hr = hr[..., q:-q, q:-q]
-            x_seg = (hr * REFLECTANCE_SCALE - self.band_mean) / self.band_std
+            x_seg = (hr * self.hparams.reflectance_scale
+                     - self.band_mean) / self.band_std
         return self.model(x_seg)
 
     # ------------------------------------------------------ two LR groups

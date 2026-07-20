@@ -88,7 +88,7 @@ class FusedUpsample(nn.Module):
         self.blur_same = blur_same
 
     def forward(self, x):
-        out_c, in_c = self.weight.shape[:2]
+        out_c = self.weight.shape[0]
         # shifted-sum: pad 3x3 -> 4x4 (per StyleGAN2 upsample_conv_2d)
         w = F.pad(self.weight, (1, 1, 1, 1))
         w = (w[..., 1:, 1:] + w[..., :-1, 1:] + w[..., 1:, :-1] + w[..., :-1, :-1])
@@ -100,7 +100,10 @@ class FusedUpsample(nn.Module):
         # depthwise blur (weight prepared as (C, 1, k, k) at init)
         k = self.blur.shape[-1]
         if self.blur_same:
-            y = F.pad(y, (k // 2, (k - 1) // 2, k // 2, (k - 1) // 2))
+            # TF SAME puts the SMALLER pad first: ((k-1)//2 before, k//2 after).
+            # Identical for the shipped odd 3x3 blur; ordered correctly anyway
+            # so an even blur kernel could never silently shift the output.
+            y = F.pad(y, ((k - 1) // 2, k // 2, (k - 1) // 2, k // 2))
         return F.conv2d(y, self.blur, groups=out_c)
 
 
@@ -213,5 +216,5 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model-dir", required=True)
     ap.add_argument("--atol", type=float, default=1e-4)
-    raise SystemExit(0 if verify(ap.parse_args().model_dir,
-                                 ap.parse_args().atol) else 1)
+    args = ap.parse_args()
+    raise SystemExit(0 if verify(args.model_dir, args.atol) else 1)

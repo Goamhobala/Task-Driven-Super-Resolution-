@@ -13,6 +13,17 @@
 #   FREEZE_SR    true | false
 #   SR_PAD       reflect-pad in native px (0 = off, 8 = border-artifact fix)
 #
+# Optional (submit-time or experiment-script):
+#   LOSS_ARM     any unet.losses.build_loss arm (bce | gap_ce | tl_ce |
+#                gap_tl_ce | t2_ce | t4_ce | bce_dice | pstar_dice |
+#                pstar_tversky | focal_tversky | <base>+cldice |
+#                <base>+skelrec). Empty (default) = legacy Dice + pos-weighted
+#                BCE. When set: pos_weight is not searched, and the run dir /
+#                study / benchmark model_name gain a loss tag so arms never
+#                collide. Loss hps: PSTAR GAP_R GAP_K TL_ELL TL_THETA
+#                TVERSKY_ALPHA CL_ALPHA CL_ITERS SKEL_W SKEL_RADIUS
+#                WARMUP_START WARMUP_RAMP.
+#
 # STAGE=tune   Optuna search, one INDEPENDENT tuner per GPU, shared sqlite study
 #              (no DDP — that's the Optuna constraint). Default headers = gpu:2.
 # STAGE=fit    Refit best config on ONE GPU + wandb test. Submit with --gres=gpu:1.
@@ -21,7 +32,9 @@
 #              source the model trained on). Standalone on any existing
 #              checkpoint; train_both.sbatch chains it. Submit with --gres=gpu:1.
 #
-# Replication contract: only SEED and STAGE are meant to vary at submit time.
+# Replication contract: only SEED, STAGE and the loss block (LOSS_ARM + hps —
+# tagged into the run dir/study/model_name, so arms never mix) are meant to
+# vary at submit time.
 set -euo pipefail
 
 USER_NAME="${USER:-$(whoami)}"
@@ -74,19 +87,51 @@ BATCH_SIZES="${BATCH_SIZES:-2 4 8}"   # 512px UNet stage is memory-heavy
 REFIT_EPOCHS="${REFIT_EPOCHS:-100}"
 REFIT_GPUS="${REFIT_GPUS:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_joint}"
+
+# --- Loss (unet.losses.build_loss; empty = legacy Dice + pos-weighted BCE) ---
+LOSS_ARM="${LOSS_ARM:-}"
+PSTAR="${PSTAR:-bce}"
+GAP_R="${GAP_R:-4}";                 GAP_K="${GAP_K:-60.0}"
+TL_ELL="${TL_ELL:-5}";               TL_THETA="${TL_THETA:-0.375}"
+TVERSKY_ALPHA="${TVERSKY_ALPHA:-0.7}"
+CL_ALPHA="${CL_ALPHA:-0.3}";         CL_ITERS="${CL_ITERS:-5}"
+SKEL_W="${SKEL_W:-1.0}";             SKEL_RADIUS="${SKEL_RADIUS:-1}"
+WARMUP_START="${WARMUP_START:-30}";  WARMUP_RAMP="${WARMUP_RAMP:-10}"
+
+LOSS_TAG=""
+LOSS_ARGS_TUNE=()   # sr.tune flags (argparse)
+LOSS_ARGS_FIT=()    # sr.cli fit/test flags (LightningCLI --model.*)
+if [ -n "$LOSS_ARM" ]; then
+  # '+' is not filesystem/wandb-friendly -> bce_dice+cldice => bce_dice-cldice
+  LOSS_TAG="_$(echo "$LOSS_ARM" | tr '+' '-')"
+  LOSS_ARGS_TUNE=(--loss-arm "$LOSS_ARM" --pstar "$PSTAR"
+                  --gap-r "$GAP_R" --gap-k "$GAP_K"
+                  --tl-ell "$TL_ELL" --tl-theta "$TL_THETA"
+                  --tversky-alpha "$TVERSKY_ALPHA"
+                  --cl-alpha "$CL_ALPHA" --cl-iters "$CL_ITERS"
+                  --skel-w "$SKEL_W" --skel-radius "$SKEL_RADIUS"
+                  --warmup-start "$WARMUP_START" --warmup-ramp "$WARMUP_RAMP")
+  LOSS_ARGS_FIT=(--model.loss_arm "$LOSS_ARM" --model.pstar "$PSTAR"
+                 --model.gap_r "$GAP_R" --model.gap_k "$GAP_K"
+                 --model.tl_ell "$TL_ELL" --model.tl_theta "$TL_THETA"
+                 --model.tversky_alpha "$TVERSKY_ALPHA"
+                 --model.cl_alpha "$CL_ALPHA" --model.cl_iters "$CL_ITERS"
+                 --model.sr_w "$SKEL_W" --model.sr_radius "$SKEL_RADIUS"
+                 --model.warmup_start "$WARMUP_START" --model.warmup_ramp "$WARMUP_RAMP")
+fi
 # =============================================================================
 
 BASE_CONFIG="$REPO_DIR/src/sr/configs/joint_sr.yaml"
 NORM_CONFIG="$REPO_DIR/src/unet/configs/norm_stats.yaml"
 WANDB_CONFIG="$REPO_DIR/src/unet/configs/wandb.yaml"
-RUN_DIR="/scratch/${USER_NAME}/InstaRoad/runs/sr_${EXP_TAG}_seed${SEED}"
+RUN_DIR="/scratch/${USER_NAME}/InstaRoad/runs/sr_${EXP_TAG}${LOSS_TAG}_seed${SEED}"
 mkdir -p "$RUN_DIR"
 
 LOG_FILE="${RUN_DIR}/${STAGE}_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Logging to ${LOG_FILE}"
 echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}"
-echo "labels=${LABELS} (mask_source=${MASK_SOURCE})  upsampler=${UPSAMPLER}  freeze_sr=${FREEZE_SR}  sr_pad=${SR_PAD}"
+echo "labels=${LABELS} (mask_source=${MASK_SOURCE})  upsampler=${UPSAMPLER}  freeze_sr=${FREEZE_SR}  sr_pad=${SR_PAD}  loss_arm=${LOSS_ARM:-legacy}"
 echo "DATASET_DIR=${DATASET_DIR}"
 
 # --- Fail fast ---------------------------------------------------------------
@@ -147,7 +192,7 @@ if [ "$STAGE" = "tune" ]; then
   #   job2: STORAGE=journal://<same path> SAMPLER_OFFSET=500
   STORAGE="${STORAGE:-sqlite:///${RUN_DIR}/study.db}"
   SAMPLER_OFFSET="${SAMPLER_OFFSET:-0}"
-  STUDY_NAME="sr_${EXP_TAG}_seed${SEED}"
+  STUDY_NAME="sr_${EXP_TAG}${LOSS_TAG}_seed${SEED}"
 
   run_tuner () {   # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
     local gpu="$1" ntrials="$2" seed="$3" pin=""
@@ -177,7 +222,8 @@ if [ "$STAGE" = "tune" ]; then
       --lr-sr-min "$LR_SR_MIN" --lr-sr-max "$LR_SR_MAX" \
       --pos-weight-min "$POS_WEIGHT_MIN" --pos-weight-max "$POS_WEIGHT_MAX" \
       --encoders $ENCODERS \
-      --batch-sizes $BATCH_SIZES
+      --batch-sizes $BATCH_SIZES \
+      ${LOSS_ARGS_TUNE[@]+"${LOSS_ARGS_TUNE[@]}"}
   }
 
   echo "=== OPTUNA SEARCH (n_trials=$N_TRIALS across ${SEARCH_GPUS} GPU(s), ${TUNE_EPOCHS} epochs/trial) ==="
@@ -201,7 +247,7 @@ if [ "$STAGE" = "tune" ]; then
     [ "$fail" -eq 0 ] || { echo "ERROR: an Optuna search worker failed (see log above)." >&2; exit 1; }
   fi
   echo "=== SEARCH DONE ===  best_params.yaml + study.db in $RUN_DIR"
-  echo "Next: sbatch --gres=gpu:1 scripts/hpc/train.sbatch --SCRIPT=sr/${EXP_TAG}.sh STAGE=fit SEED=${SEED}"
+  echo "Next: sbatch --gres=gpu:1 scripts/hpc/train.sbatch --SCRIPT=sr/${EXP_TAG}.sh STAGE=fit SEED=${SEED}${LOSS_ARM:+ LOSS_ARM=${LOSS_ARM}}"
   exit 0
 fi
 
@@ -223,7 +269,7 @@ if [ "$STAGE" = "bench" ]; then
   fi
 
   STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}"   # SHARED across experiments
-  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}}"      # {family}_{exp}: what the stats pair/group on
+  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${LOSS_TAG}}"  # {family}_{exp}[_{loss}]: what the stats pair/group on
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"      # cdngi | overture | osm
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
   TILE_METRICS="${TILE_METRICS:-apls}"           # comma-separated plugins; '' disables.
@@ -278,10 +324,14 @@ echo "--- best hyperparameters ---"; cat "$BEST_CONFIG"
 # Refit from inside RUN_DIR so the base config's relative `checkpoints/` lands here.
 cd "$RUN_DIR"
 
-# The experiment's SR treatment is passed explicitly (belt) even though the
-# best_params overlay records it too (braces) — drift is impossible.
+# The experiment's SR treatment (and loss arm, if set) is passed explicitly
+# (belt) even though the best_params overlay records it too (braces) — drift
+# is impossible.
 MODEL_ARGS=(--model.upsampler "$UPSAMPLER" --model.freeze_sr "$FREEZE_SR"
             --model.sr_pad "$SR_PAD" --model.sen2sr_dir "$SEN2SR_DIR")
+if [ -n "$LOSS_ARM" ]; then
+  MODEL_ARGS+=("${LOSS_ARGS_FIT[@]}")
+fi
 
 echo "=== REFIT (best config, ${REFIT_EPOCHS} epochs, ${REFIT_GPUS} GPU) ==="
 python -m sr.cli fit \

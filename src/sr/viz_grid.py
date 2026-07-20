@@ -75,7 +75,7 @@ def read_patch(image_path, row, col):
                      window=Window(col, row, CROP, CROP)).astype("float32")
     x[x == NODATA] = 0.0
     np.nan_to_num(x, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-    return x / REFLECTANCE_SCALE
+    return x  # RAW values as stored (V2 COGs: already 0-1 reflectance)
 
 
 def read_gt(image_path, mask_path, row, col, upscale=4):
@@ -123,18 +123,19 @@ def run_experiment(ckpt, sen2sr_dir, x, threshold, device):
     saw, up to normalisation."""
     model = JointSRUNetLightning.load_from_checkpoint(
         str(ckpt), map_location=device, sen2sr_dir=str(sen2sr_dir)).eval().to(device)
-    t = torch.from_numpy(x)[None].float().to(device)   # reflectance (for the SR net)
+    t = torch.from_numpy(x)[None].float().to(device)   # RAW values (as the dataloader feeds)
+    # Each ckpt carries its own raw->reflectance divisor (old ckpts default to
+    # 10000.0, matching how they were trained; new runs on the V2 reflectance
+    # datasets use 1.0). Replicate the SR stage with the ckpt's own scale.
+    rs = float(getattr(model.hparams, "reflectance_scale", 10000.0))
+    t_ref = t / rs
     p = int(model.hparams.sr_pad)
-    t_sr = torch.nn.functional.pad(t, (p,) * 4, mode="reflect") if p else t
+    t_sr = torch.nn.functional.pad(t_ref, (p,) * 4, mode="reflect") if p else t_ref
     hr = model.sr(t_sr)
     if p:
         q = p * int(model.hparams.upscale)
         hr = hr[..., q:-q, q:-q]
-    # The full module expects RAW DN (its forward divides by REFLECTANCE_SCALE
-    # itself, matching the datamodule) — feeding reflectance here would
-    # double-scale the input to ~1e-8 and collapse every prediction to
-    # background. Scale back up for the faithful end-to-end forward.
-    logits = model(t * REFLECTANCE_SCALE)
+    logits = model(t)  # faithful end-to-end: forward divides by its own scale
     pred = (torch.sigmoid(logits)[0, 0] > threshold).float().cpu().numpy()
     return hr[0].cpu().numpy(), pred
 

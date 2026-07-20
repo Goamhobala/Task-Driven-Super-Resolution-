@@ -63,6 +63,11 @@ model:
   sr_pad: 0                   # reflect-pad (native px) around the SR stage; output
                               # cropped back. Mitigates the FFT border artifact
                               # (try 8). Ckpts are pad-specific (mask buffer resizes).
+  reflectance_scale: 1.0      # raw-COG -> 0-1 reflectance divisor. The ROSA V2
+                              # COGs ALREADY store 0-1 reflectance -> 1.0.
+                              # (10000.0 only for DN-valued datasets. The old
+                              # default silently starved the SR nets with ~1e-5
+                              # inputs; R0 was unaffected, R1-R4 were not.)
   sen2sr_dir: /scratch/CHANGE_ME/InstaRoad/models/SEN2SRLite_RGBN
 
 data:

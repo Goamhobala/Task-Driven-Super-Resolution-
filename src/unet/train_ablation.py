@@ -262,6 +262,15 @@ def main(argv=None):
         {"run": run_name, "best_epoch": best_epoch, "best_threshold": best_t,
          "sweep": {str(t): v for t, v in sweep.items()}}, indent=1))
 
+    # wandb identity for the bench stage: STAGE=bench resumes THIS run and
+    # writes the benchmark metrics (incl. val APLS) into its summary, so the
+    # wandb table carries pixel AND connectivity columns per arm.
+    wandb_info = None
+    if logger:
+        exp = logger.experiment
+        wandb_info = {"id": exp.id, "project": exp.project,
+                      "entity": getattr(exp, "entity", None), "name": run_name}
+
     (out / "train_meta.json").write_text(json.dumps({
         "run_name": run_name, "arm": args.arm, "seed": args.seed,
         "bands": list(bands), "in_channels": len(bands),
@@ -270,6 +279,7 @@ def main(argv=None):
         "checkpoint": str(Path(ckpt_cb.best_model_path).resolve()),
         "dataset_dir": str(data_cfg["dataset_dir"]),
         "mask_dirname": data_cfg.get("mask_dirname"),
+        "wandb": wandb_info,
         "hp": resolved["hp"],
     }, indent=2))
 

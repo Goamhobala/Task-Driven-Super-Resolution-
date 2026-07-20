@@ -117,6 +117,77 @@ def _md_table(headers, rows) -> str:
     return "\n".join([head, sep, *body])
 
 
+def _bench_summary(store_dir, run_id: str, split: str) -> dict:
+    """Flat ``bench_<split>/…`` summary of one benchmark run: chip-level pixel
+    means (at the run's θ), chip- and tile-level APLS means (NaN-skipping),
+    plus θ and the store run_id for cross-reference. Pure — no wandb here, so
+    it tests without one."""
+    from benchmarking.store import load_chips, load_runs, load_tiles
+
+    prefix = f"bench_{split}/"
+    chips = load_chips(store_dir)
+    chips = chips[chips["run_id"] == run_id]
+    summary = {}
+    for m in ("iou", "f1", "precision", "recall"):
+        if m in chips.columns:
+            summary[prefix + m] = float(chips[m].mean())   # pandas mean skips NaN
+    if "apls" in chips.columns:
+        summary[prefix + "apls_chip"] = float(chips["apls"].mean())
+    try:
+        tiles = load_tiles(store_dir)
+        tiles = tiles[tiles["run_id"] == run_id]
+        for col in ("apls", "apls_gt_to_prop", "apls_prop_to_gt"):
+            if col in tiles.columns:
+                summary[prefix + col] = float(tiles[col].mean())
+    except FileNotFoundError:
+        pass  # no tile-metric plugins ran
+    runs = load_runs(store_dir)
+    row = runs[runs["run_id"] == run_id].iloc[0]
+    summary[prefix + "threshold"] = float(row["threshold"])
+    summary[prefix + "n_chips"] = int(row["n_chips"])
+    summary[prefix + "store_run_id"] = run_id
+    return summary
+
+
+def _push_bench_to_wandb(meta_path: Path, run_id: str, store_dir, split: str):
+    """Resume the FIT stage's wandb run (id recorded in train_meta.json by
+    unet.train_ablation) and update its summary with the benchmark metrics —
+    this is how val APLS reaches the wandb table alongside train/val curves."""
+    import json
+    import os
+
+    meta = yaml.safe_load(Path(meta_path).read_text()) if str(meta_path).endswith(
+        (".yaml", ".yml")) else json.loads(Path(meta_path).read_text())
+    info = meta.get("wandb") or {}
+    if not info.get("id"):
+        # Legacy runs: fits from before train_meta.json carried a wandb block.
+        # WandbLogger(save_dir=run_dir) leaves wandb/run-<ts>-<id>/ next to the
+        # meta — recover the id from the newest one.
+        run_dirs = sorted(Path(meta_path).parent.glob("wandb/run-*"))
+        if run_dirs:
+            import os as _os
+            info = {"id": run_dirs[-1].name.rsplit("-", 1)[-1],
+                    "project": _os.environ.get("WANDB_PROJECT"),
+                    "entity": None, "name": meta.get("run_name")}
+            typer.echo(f"wandb: no block in train_meta.json; recovered legacy "
+                       f"run id {info['id']} from {run_dirs[-1].name}")
+    if not info.get("id"):
+        typer.secho("WARN: no wandb run id found (fit ran with wandb disabled?) "
+                    "— skipping wandb push", fg=typer.colors.YELLOW, err=True)
+        return
+    summary = _bench_summary(store_dir, run_id, split)
+
+    import wandb
+
+    run = wandb.init(project=info.get("project"), entity=info.get("entity"),
+                     id=info["id"], resume="allow",
+                     mode=os.environ.get("WANDB_MODE") or None)
+    run.summary.update(summary)
+    run.finish()
+    typer.echo(f"wandb: pushed {len(summary)} bench metrics onto run "
+               f"{info.get('name') or info['id']}")
+
+
 # --------------------------------------------------------------------------- #
 # commands
 # --------------------------------------------------------------------------- #
@@ -142,11 +213,12 @@ def run_eval(
     check: Annotated[str, typer.Option(help="tp+fn-vs-mask invariant: first | all | off")] = "first",
     device: Annotated[Optional[str], typer.Option(help="cuda | cpu (default: auto)")] = None,
     threshold: Annotated[Optional[float], typer.Option(help="Override the checkpoint's binarisation threshold (e.g. a tuned θ*)")] = None,
+    wandb_meta: Annotated[Optional[Path], typer.Option(help="train_meta.json with a `wandb` block: resume that run and push the bench metrics (incl. APLS) to its summary")] = None,
 ):
     """Score a checkpoint over the split's footprint chips -> the sharded store."""
     from benchmarking.runner import evaluate
 
-    evaluate(
+    run_id = evaluate(
         dataset_dir=dataset_dir, checkpoint=checkpoint, model_name=model_name,
         seed=seed, store_dir=store_dir, split=split, model=model, cell_m=cell_m,
         chip_px=chip_px, batch_size=batch_size, mask_source=mask_source,
@@ -155,6 +227,8 @@ def run_eval(
         tile_metrics=tuple(tile_metric or ()), check=check, device=device,
         threshold=threshold,
     )
+    if wandb_meta is not None:
+        _push_bench_to_wandb(wandb_meta, run_id, store_dir, split)
 
 
 @app.command()

@@ -6,17 +6,27 @@ probability heatmap with --prob). A checkpoint that does not exist (arm not
 trained yet, fit still running) leaves its cell BLANK, so one fixed grid
 layout can be re-rendered as runs land.
 
-Checkpoints come from either/both of:
+Checkpoints come from any of:
   * --ckpt "label=path"      explicit entries, in order (repeatable)
   * --runs DIR               scan the staged engine's run dirs
                              (DIR/loss_*_seed*/checkpoints/best_f1.ckpt);
                              labels are the dir names minus the loss_ prefix
   * --expect LABEL           with --runs: fix the grid to these labels (substring
                              match on run-dir name); unmatched -> blank cell
+  * neither                  scan --ckpt-dir (default models/loss_ablations)
+                             for flat *.ckpt files; labels are the file stems
+                             minus a trailing _f1
+
+The patch comes from either a ROSA dataset (--dataset-dir + --split/--tile) or,
+by default, directly from a GeoTIFF: --image (mask = sibling {stem}_mask.tif or
+--mask), falling back to the first tile in src/unet/examples/. So the zero-arg
+invocation renders the loss-ablation grid on the bundled example tile:
 
 Per-model plumbing is read from the checkpoint itself (bands, norm stats) and
 its sibling train_meta.json (tuned θ*; falls back to 0.5) — so arms with
 different band sets or thresholds render correctly in one grid.
+
+    python -m unet.viz_grid                     # loss-ablation grid, zero args
 
 Examples:
     python -m unet.viz_grid --dataset-dir /scratch/$USER/InstaRoad/ROSA_all \
@@ -33,12 +43,22 @@ from pathlib import Path
 
 import numpy as np
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CKPT_DIR = REPO_ROOT / "models" / "loss_ablations"
+EXAMPLES_DIR = Path(__file__).resolve().parent / "examples"
+
 
 # --------------------------------------------------------------------- cells
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--dataset-dir", required=True, help="ROSA root (splits/<split>.csv)")
+    ap.add_argument("--dataset-dir", default=None, help="ROSA root (splits/<split>.csv)")
+    ap.add_argument("--image", default=None,
+                    help="direct tile GeoTIFF (no dataset needed); default when "
+                         "--dataset-dir is absent: first non-mask .tif in "
+                         f"{EXAMPLES_DIR}")
+    ap.add_argument("--mask", default=None,
+                    help="GT raster for --image (default: sibling {stem}_mask.tif)")
     ap.add_argument("--split", default="val", help="train | val | test")
     ap.add_argument("--tile", default="0",
                     help="tile row index in the split CSV, or a substring of the "
@@ -54,6 +74,9 @@ def parse_args(argv=None):
     ap.add_argument("--ckpt", action="append", default=[], metavar="LABEL=PATH",
                     help="explicit checkpoint cell (repeatable; blank if missing)")
     ap.add_argument("--runs", default=None, help="run-dir root to scan (loss_*_seed*)")
+    ap.add_argument("--ckpt-dir", default=str(DEFAULT_CKPT_DIR),
+                    help="flat *.ckpt folder scanned when neither --ckpt nor "
+                         "--runs is given; labels = stems minus trailing _f1")
     ap.add_argument("--expect", action="append", default=[], metavar="LABEL",
                     help="with --runs: fixed cell order; blank where no run matches")
     ap.add_argument("--threshold", type=float, default=None,
@@ -93,8 +116,13 @@ def collect_models(args) -> list[dict]:
         else:
             for d in run_dirs:
                 models.append(_run_cell(d.name.removeprefix("loss_"), d))
+    if not models and args.ckpt_dir:
+        for p in sorted(Path(args.ckpt_dir).glob("*.ckpt")):
+            models.append({"label": p.stem.removesuffix("_f1"), "ckpt": p,
+                           "theta": _theta_for(p)})
     if not models:
-        raise SystemExit("no checkpoints requested: pass --ckpt and/or --runs")
+        raise SystemExit("no checkpoints found: pass --ckpt/--runs, or put "
+                         f"*.ckpt files in {args.ckpt_dir or DEFAULT_CKPT_DIR}")
     return models
 
 
@@ -204,29 +232,49 @@ def main(argv=None):
 
     from sentinel2data.dataset.augment import _overlay_mask, _rgb_for_display
 
-    # split CSV + optional mask remap (mirrors sentinel2data.dataset.datasets,
-    # inlined so the grid renders without the lightning training stack)
-    csv = Path(args.dataset_dir) / "splits" / f"{args.split}.csv"
-    if not csv.exists():
-        raise SystemExit(f"Split CSV not found: {csv}")
-    df = pd.read_csv(csv)
-    if args.mask_dirname:
-        df = df.copy()
-        df["mask_path"] = df["mask_path"].map(
-            lambda rel: str(Path(rel).parent.parent / args.mask_dirname / Path(rel).name))
-    if args.tile.isdigit():
-        row = df.iloc[int(args.tile)]
+    if args.dataset_dir:
+        # split CSV + optional mask remap (mirrors sentinel2data.dataset.datasets,
+        # inlined so the grid renders without the lightning training stack)
+        csv = Path(args.dataset_dir) / "splits" / f"{args.split}.csv"
+        if not csv.exists():
+            raise SystemExit(f"Split CSV not found: {csv}")
+        df = pd.read_csv(csv)
+        if args.mask_dirname:
+            df = df.copy()
+            df["mask_path"] = df["mask_path"].map(
+                lambda rel: str(Path(rel).parent.parent / args.mask_dirname / Path(rel).name))
+        if args.tile.isdigit():
+            row = df.iloc[int(args.tile)]
+        else:
+            hits = df[df["image_path"].map(lambda p: args.tile in Path(p).stem)]
+            if hits.empty:
+                raise SystemExit(f"no {args.split} tile matches {args.tile!r}")
+            row = hits.iloc[0]
+        img_path = Path(args.dataset_dir) / row["image_path"]
+        mask_path = Path(args.dataset_dir) / row["mask_path"]
+        origin = args.split
     else:
-        hits = df[df["image_path"].map(lambda p: args.tile in Path(p).stem)]
-        if hits.empty:
-            raise SystemExit(f"no {args.split} tile matches {args.tile!r}")
-        row = hits.iloc[0]
-    tile_id = Path(row["image_path"]).stem
+        # direct mode: a single GeoTIFF, GT beside it — no dataset plumbing
+        if args.image:
+            img_path = Path(args.image)
+        else:
+            tifs = sorted(t for t in EXAMPLES_DIR.glob("*.tif")
+                          if not t.stem.endswith("_mask"))
+            if not tifs:
+                raise SystemExit(f"no example tile in {EXAMPLES_DIR} — "
+                                 "pass --image or --dataset-dir")
+            img_path = tifs[0]
+        mask_path = (Path(args.mask) if args.mask
+                     else img_path.parent / f"{img_path.stem}_mask.tif")
+        if not img_path.is_file():
+            raise SystemExit(f"image not found: {img_path}")
+        if not mask_path.is_file():
+            raise SystemExit(f"mask not found: {mask_path} (pass --mask)")
+        origin = "example"
+    tile_id = Path(img_path).stem
     s = args.size
     top = args.top if args.top is not None else (args.quadrant // 2) * s
     left = args.left if args.left is not None else (args.quadrant % 2) * s
-    img_path = Path(args.dataset_dir) / row["image_path"]
-    mask_path = Path(args.dataset_dir) / row["mask_path"]
 
     rgb = _rgb_for_display(read_patch(img_path, list(args.rgb_bands), top, left, s))
     gt = (read_patch(mask_path, [1], top, left, s)[0] > 0).astype("uint8")
@@ -255,7 +303,7 @@ def main(argv=None):
                           (probs >= theta).astype("uint8")))
 
     n_blank = sum(1 for _, img in cells if img is None)
-    sup = f"{args.split}/{tile_id}  quadrant ({top},{left})  " \
+    sup = f"{origin}/{tile_id}  quadrant ({top},{left})  " \
           f"[{'prob' if args.prob else 'binary @ θ*'}]"
     out = render(cells, args.out, args.ncols, sup)
     print(f"wrote {out}  ({len(cells) - 2} model cells, {n_blank} blank)")

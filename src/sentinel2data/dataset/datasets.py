@@ -176,7 +176,7 @@ class RoadDataModule(pl.LightningDataModule):
                  length: int | None = None, normalize: bool = True,
                  norm_mean: list[float] | None = None, norm_std: list[float] | None = None,
                  mask_dirname: str | None = None,
-                 aug_flip: bool = False, aug_sharpen: bool = False,
+                 aug_flip: bool = True, aug_sharpen: bool = False,
                  aug_noise: bool = False, aug_blur: bool = False,
                  aug_colour: bool = False, aug_p: float = 0.5):
         super().__init__()

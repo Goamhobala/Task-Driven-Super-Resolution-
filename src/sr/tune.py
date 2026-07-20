@@ -147,13 +147,37 @@ def build_objective(args, base_cfg: dict):
     if not search_lr_sr:
         print(f"[sr.tune] upsampler={upsampler!r} freeze_sr={freeze_sr}: "
               "lr_sr is not searched (no trainable SR params).")
+    # Loss arm (unet.losses.build_loss). The protocol's arms use PLAIN CE —
+    # pos_weight is itself a distribution-slot reweighting, so with an arm set
+    # it is a dead search dimension too (UNetLightning ignores it): skip it.
+    loss_arm = args.loss_arm if args.loss_arm is not None else model_cfg.get("loss_arm")
+    loss_hp = dict(
+        pstar=args.pstar, gap_r=args.gap_r, gap_k=args.gap_k,
+        tl_ell=args.tl_ell, tl_theta=args.tl_theta,
+        tversky_alpha=args.tversky_alpha, cl_alpha=args.cl_alpha,
+        cl_iters=args.cl_iters, sr_w=args.skel_w, sr_radius=args.skel_radius,
+        warmup_start=args.warmup_start, warmup_ramp=args.warmup_ramp,
+    )
+    search_pos_weight = not loss_arm
+    if loss_arm:
+        print(f"[sr.tune] loss_arm={loss_arm!r}: pos_weight is not searched "
+              "(protocol arms use plain CE).")
+        if "+" in loss_arm and args.warmup_start >= args.max_epochs:
+            print(f"[sr.tune] WARNING: warmup_start={args.warmup_start} >= "
+                  f"max_epochs={args.max_epochs}: the skeleton slot never "
+                  "activates inside the short tuning trials — trials score the "
+                  "base compound only. Consider --warmup-start/--warmup-ramp "
+                  "scaled to the trial budget.")
 
     def objective(trial: optuna.Trial) -> float:
         # --- search space: the joint LR pair is the star -------------------
         lr = trial.suggest_float("lr", args.lr_min, args.lr_max, log=True)
         lr_sr = (trial.suggest_float("lr_sr", args.lr_sr_min, args.lr_sr_max, log=True)
                  if search_lr_sr else args.lr_sr_min)  # bicubic ignores lr_sr
-        pos_weight = trial.suggest_float("pos_weight", args.pos_weight_min, args.pos_weight_max)
+        pos_weight = (trial.suggest_float("pos_weight", args.pos_weight_min,
+                                          args.pos_weight_max)
+                      if search_pos_weight
+                      else model_cfg.get("pos_weight", 5.0))  # unused by arms
         encoder_name = trial.suggest_categorical("encoder_name", args.encoders)
         batch_size = trial.suggest_categorical("batch_size", args.batch_sizes)
 
@@ -199,6 +223,9 @@ def build_objective(args, base_cfg: dict):
             freeze_sr=freeze_sr,
             upscale=upscale,
             sr_pad=sr_pad,
+            reflectance_scale=model_cfg.get("reflectance_scale", 10000.0),
+            loss_arm=loss_arm,
+            **loss_hp,
         )
 
         pruning_cb = PyTorchLightningPruningCallback(trial, monitor=MONITOR)
@@ -239,11 +266,12 @@ def build_objective(args, base_cfg: dict):
 
 def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
                        upsampler: str, freeze_sr: bool = False,
-                       sr_pad: int = 0) -> Path:
+                       sr_pad: int = 0, loss_arm: str | None = None,
+                       loss_hp: dict | None = None) -> Path:
     p = study.best_params
-    # Record the resolved SR treatment so the refit is unambiguous from the
-    # overlay alone (an R0/R1/padded overlay layered over joint_sr.yaml fully
-    # reproduces the searched configuration).
+    # Record the resolved SR treatment AND loss so the refit is unambiguous
+    # from the overlay alone (an R0/R1/padded/arm overlay layered over
+    # joint_sr.yaml fully reproduces the searched configuration).
     model_overlay = {
         "encoder_name": p["encoder_name"],
         "encoder_weights": encoder_weights,
@@ -251,8 +279,12 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
         "freeze_sr": freeze_sr,
         "sr_pad": sr_pad,
         "lr": p["lr"],
-        "pos_weight": p["pos_weight"],
     }
+    if loss_arm:
+        model_overlay["loss_arm"] = loss_arm
+        model_overlay.update(loss_hp or {})
+    else:
+        model_overlay["pos_weight"] = p["pos_weight"]  # legacy loss only
     has_lr_sr = "lr_sr" in p  # absent for R0 (bicubic) searches
     if has_lr_sr:
         model_overlay["lr_sr"] = p["lr_sr"]
@@ -276,6 +308,7 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
                 "best_trial": study.best_trial.number,
                 "best_params": p,
                 "upsampler": upsampler,
+                "loss_arm": loss_arm,
                 "alpha_lr_sr_over_lr": (p["lr_sr"] / p["lr"]) if has_lr_sr else None,
                 "n_trials": len(study.trials),
                 "monitor": MONITOR,
@@ -303,6 +336,30 @@ def parse_args(argv=None):
                     help="Override model.sr_pad (reflect-pad in native px; 8 = border-artifact fix).")
     ap.add_argument("--mask-source", default=None, choices=["graph", "raster"],
                     help="Override data.mask_source (graph = CDNGI, raster = OSM HR masks).")
+
+    # loss arm + hyperparameters (unet.losses.build_loss; mirrors
+    # unet.train_ablation). Default None = legacy Dice + pos-weighted BCE.
+    ap.add_argument("--loss-arm", default=None,
+                    help="bce | gap_ce | tl_ce | gap_tl_ce | t2_ce | t4_ce | "
+                         "bce_dice | pstar_dice | pstar_tversky | focal_tversky "
+                         "| <base>+cldice | <base>+skelrec. When set, pos_weight "
+                         "is NOT searched (arms use plain CE).")
+    ap.add_argument("--pstar", default="bce", help="pixel slot for pstar_* arms")
+    ap.add_argument("--gap-r", type=int, default=4, help="GapLoss buffer radius")
+    ap.add_argument("--gap-k", type=float, default=60.0, help="GapLoss K")
+    ap.add_argument("--tl-ell", type=int, default=5, help="TL/T2/T4 filter length")
+    ap.add_argument("--tl-theta", type=float, default=0.375,
+                    help="TL/T2/T4/gap_tl weight-map binarization threshold")
+    ap.add_argument("--tversky-alpha", type=float, default=0.7)
+    ap.add_argument("--cl-alpha", type=float, default=0.3)
+    ap.add_argument("--cl-iters", type=int, default=5)
+    ap.add_argument("--skel-w", type=float, default=1.0,
+                    help="Skeleton-Recall weight (build_loss's sr_w; renamed here "
+                         "to avoid clashing with the SR-net flags)")
+    ap.add_argument("--skel-radius", type=int, default=1,
+                    help="Skeleton-Recall tube radius (build_loss's sr_radius)")
+    ap.add_argument("--warmup-start", type=int, default=30)
+    ap.add_argument("--warmup-ramp", type=int, default=10)
     ap.add_argument("--out", default="runs/sr_optuna", help="Where to write best_params.yaml + study.")
     ap.add_argument("--num-workers", type=int, default=None, help="Override data.num_workers (0 avoids GDAL forks).")
 
@@ -370,8 +427,16 @@ def main(argv=None):
     freeze_sr = (model_cfg.get("freeze_sr", False) if args.freeze_sr is None
                  else args.freeze_sr == "true")
     sr_pad = model_cfg.get("sr_pad", 0) if args.sr_pad is None else args.sr_pad
+    loss_arm = args.loss_arm if args.loss_arm is not None else model_cfg.get("loss_arm")
+    loss_hp = dict(
+        pstar=args.pstar, gap_r=args.gap_r, gap_k=args.gap_k,
+        tl_ell=args.tl_ell, tl_theta=args.tl_theta,
+        tversky_alpha=args.tversky_alpha, cl_alpha=args.cl_alpha,
+        cl_iters=args.cl_iters, sr_w=args.skel_w, sr_radius=args.skel_radius,
+        warmup_start=args.warmup_start, warmup_ramp=args.warmup_ramp,
+    )
     overlay_path = write_best_overlay(study, out_dir, encoder_weights, upsampler,
-                                      freeze_sr, sr_pad)
+                                      freeze_sr, sr_pad, loss_arm, loss_hp)
     print(f"\nBest {MONITOR}={study.best_value:.4f} (trial #{study.best_trial.number})")
     print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}")
     print(f"Wrote Lightning overlay -> {overlay_path}")
