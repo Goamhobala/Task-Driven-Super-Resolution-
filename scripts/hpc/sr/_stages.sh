@@ -229,6 +229,21 @@ if [ "$STAGE" = "tune" ]; then
       ${LOSS_ARGS_TUNE[@]+"${LOSS_ARGS_TUNE[@]}"}
   }
 
+  # Cap the fan-out at the GPUs actually visible in THIS allocation. A worker
+  # pinned to a nonexistent ordinal (CUDA_VISIBLE_DEVICES=1 on a 1-GPU job)
+  # masks CUDA entirely: eager-CUDA loaders (sen2sr_full's mlstac card) die
+  # with "No CUDA GPUs are available", everything else silently trains on CPU.
+  N_GPUS=$(python -c "import torch; print(torch.cuda.device_count())")
+  if [ "${N_GPUS}" -eq 0 ]; then
+    echo "ERROR: no CUDA device visible on $(hostname) (CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES-<unset>}')." >&2
+    echo "  Did the job request GPUs (--gres=gpu:N)?" >&2
+    exit 1
+  fi
+  if [ "${SEARCH_GPUS}" -gt "${N_GPUS}" ]; then
+    echo "WARN: SEARCH_GPUS=${SEARCH_GPUS} but only ${N_GPUS} GPU(s) visible — capping to ${N_GPUS}." >&2
+    SEARCH_GPUS="${N_GPUS}"
+  fi
+
   echo "=== OPTUNA SEARCH (n_trials=$N_TRIALS across ${SEARCH_GPUS} GPU(s), ${TUNE_EPOCHS} epochs/trial) ==="
   # Sampler seeds: SEED*1000+worker, so workers within a run differ (no
   # duplicate proposals) AND no sampler seed ever recurs across SEED runs

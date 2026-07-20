@@ -131,11 +131,28 @@ def load_trainable_sen2sr_full(model_dir) -> TrainableSEN2SR:
     """Load the FULL (Mamba) SEN2SR RGBN x4 from `model_dir` as trainable.
 
     Unlike the Lite/CNN path, `MambaSR` has no train_mode/eval_conv collapse
-    quirk, so mlstac's own ``trainable_model()`` construction is sound here —
-    it supplies the architecture + weights; we only re-add the frozen FFT
-    `HardConstraint` from ``hard_constraint.safetensor`` (mlstac's raw model
-    ships without it) and wrap in the same `TrainableSEN2SR` interface as the
-    Lite loader, so `JointSRUNetLightning` treats both variants identically.
+    quirk, so mlstac's ``trainable_model()`` supplies sound architecture +
+    weights — but its model card needs TWO corrections at load time:
+
+      * ``device="cpu"`` must be passed explicitly. The FULL card defaults to
+        ``device="cuda:0"`` (the Lite card defaults to ``"cpu"``) and eagerly
+        ``.to()``s at construction — inside ``JointSRUNetLightning.__init__``,
+        i.e. before Lightning does any device placement. In any process where
+        CUDA is masked (e.g. a tune worker pinned to a nonexistent ordinal)
+        that dies with torch's "No CUDA GPUs are available". Construct on CPU
+        and let Lightning move things, exactly like the Lite/SR4RS loaders.
+      * the returned object is upstream's ``srmodel`` wrapper (SR net + its
+        own `HardConstraint` INSIDE forward). We must unwrap ``.sr_model``:
+        keeping the wrapper would (a) apply the FFT constraint twice (ours on
+        top of its), (b) leave its plain-attribute mask stranded on the
+        construction device after Lightning moves the model, and (c) bypass
+        `pad_low_pass_mask`, so any ``sr_pad > 0`` run would crash on a
+        mask/input FFT size mismatch (r3a: pad 8 -> 576px vs 512 mask).
+
+    We then re-add the frozen FFT `HardConstraint` from
+    ``hard_constraint.safetensor`` as a movable buffer and wrap in the same
+    `TrainableSEN2SR` interface as the Lite loader, so `JointSRUNetLightning`
+    treats both variants identically.
 
     Requires the ``mamba_ssm`` package (CUDA build) in the training venv:
         uv pip install mamba-ssm   # on a node with nvcc / matching torch
@@ -145,7 +162,10 @@ def load_trainable_sen2sr_full(model_dir) -> TrainableSEN2SR:
     from sen2sr.models.tricks import HardConstraint
 
     model_dir = Path(model_dir)
-    sr_model = mlstac.load(str(model_dir)).trainable_model()
+    wrapper = mlstac.load(str(model_dir)).trainable_model(device="cpu")
+    # srmodel wrapper -> raw MambaSR; tolerate a future card returning the
+    # bare model (getattr falls through, and we add our own constraint below).
+    sr_model = getattr(wrapper, "sr_model", wrapper)
     if not any(p.requires_grad for p in sr_model.parameters()):
         raise RuntimeError(
             f"mlstac's trainable_model() for {model_dir} yielded NO trainable "
