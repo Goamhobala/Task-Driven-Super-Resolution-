@@ -46,11 +46,40 @@ def np_gap_weights(prob: np.ndarray, r: int = 4, K: float = 60.0,
     return np.where(cnt > 0, K * cnt, 1.0)
 
 
-def np_tl_weights(prob: np.ndarray, ell: int = 5, thresh: float = 0.5,
-                  base_reset: bool = True) -> np.ndarray:
-    """Topological Loss (Nanni et al. 2024 Alg. 1) + Giannini base reset."""
+def np_t2_kernels(n: int = 5) -> list[np.ndarray]:
+    """T2 quarter-circle filters (Giannini et al. 2026 Eq. 4) + 3 rotations."""
+    base = np.zeros((n, n), np.float32)
+    for t in range(2 * (n - 2) + 1):
+        base[(t + 1) // 2, 1 + t // 2] = 1.0
+    return [np.rot90(base, k).copy() for k in range(4)]
+
+
+def np_t4_kernels(n: int = 5) -> list[np.ndarray]:
+    """T4 semicircle filters (Giannini et al. 2026 Eq. 5) + 3 rotations."""
+    m, L = (n - 1) // 2, 3
+    j0, tb, te = m - 1, 2 * m - 1, n
+    je = j0 + L - 1
+    base = np.zeros((n, n), np.float32)
+    for t in range(n + tb + 1):
+        if t < tb:
+            base[(t + 1) // 2, t // 2] = 1.0
+        elif t <= te:
+            base[m, j0 + (t - tb)] = 1.0
+        else:
+            base[m - (t - te + 1) // 2, je + (t - te) // 2] = 1.0
+    return [np.rot90(base, k).copy() for k in range(4)]
+
+
+def np_tl_weights(prob: np.ndarray, ell: int = 5, thresh: float = 0.375,
+                  base_reset: bool = True,
+                  extra: list[np.ndarray] | None = None) -> np.ndarray:
+    """Topological Loss (Nanni et al. 2024 Alg. 1) + Giannini base reset.
+    ``extra`` = the T2/T4 curvature kernels (base becomes 8). NB convolve2d is
+    a TRUE convolution while torch uses cross-correlation; the summed W is
+    identical because each 4-rotation kernel set is closed under 180-deg
+    rotation (the D maps permute, their sum does not)."""
     kernels = [np.ones((ell, 1)), np.ones((1, ell)),
-               np.eye(ell), np.fliplr(np.eye(ell))]
+               np.eye(ell), np.fliplr(np.eye(ell))] + list(extra or [])
     skel = np_skel(prob > thresh)
     W = np.zeros_like(skel)
     for k in kernels:
@@ -148,7 +177,13 @@ def cross_check() -> str:
         a = tl_weight_map(p, ell=ell)[0, 0].numpy()
         b = np_tl_weights(p_np, ell=ell)
         assert np.allclose(a, b, atol=1e-4), f"tl mismatch ell={ell}"
-    return "cross-check PASSED: torch implementation == numpy mirror"
+    from unet.losses import t2_kernels, t4_kernels
+    for name, tks, nks in (("t2", t2_kernels(5), np_t2_kernels(5)),
+                           ("t4", t4_kernels(5), np_t4_kernels(5))):
+        a = tl_weight_map(p, ell=5, extra_kernels=tks)[0, 0].numpy()
+        b = np_tl_weights(p_np, ell=5, extra=nks)
+        assert np.allclose(a, b, atol=1e-4), f"{name} mismatch (sum-W invariance)"
+    return "cross-check PASSED: torch implementation == numpy mirror (incl. t2/t4)"
 
 
 # --------------------------------------------------------------------- plot
@@ -167,8 +202,12 @@ def render(out: Path):
                 "inferno", None) for e in (3, 5, 7)]
     panels.append(("TL W (ell=5, NO reset — orig. paper)",
                    np_tl_weights(scene, ell=5, base_reset=False), "inferno", None))
+    panels.append(("T2 W (wide curves, base 8)",
+                   np_tl_weights(scene, ell=5, extra=np_t2_kernels(5)), "inferno", None))
+    panels.append(("T4 W (tight curves, base 8)",
+                   np_tl_weights(scene, ell=5, extra=np_t4_kernels(5)), "inferno", None))
 
-    fig, axes = plt.subplots(3, 3, figsize=(15, 15))
+    fig, axes = plt.subplots(3, 4, figsize=(20, 15))
     for ax, (title, img, cmap, scale) in zip(axes.flat, panels):
         if img is None:  # skeleton overlay panel
             rgb = np.stack([skel] * 3, -1) * 0.7
