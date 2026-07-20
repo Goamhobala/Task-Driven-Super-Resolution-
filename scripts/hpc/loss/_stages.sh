@@ -168,6 +168,15 @@ if [ "$STAGE" = "bench" ]; then
     for _tm in "${_TMS[@]}"; do METRIC_ARGS+=(--tile-metric "${_tm}"); done
   fi
 
+  # Push the bench metrics (incl. val APLS) onto the FIT stage's wandb run:
+  # train_meta.json carries the wandb run id; eval resumes it and updates the
+  # summary with bench_${BENCH_SPLIT}/* columns.
+  WANDB_ARGS=()
+  if [ "${WANDB_MODE}" != "disabled" ]; then
+    export WANDB_MODE WANDB_PROJECT   # project = fallback for legacy-run id recovery
+    WANDB_ARGS=(--wandb-meta "$META")
+  fi
+
   echo "=== BENCH (ckpt=$(basename "$CKPT"), model_name=${MODEL_NAME}, seed=${SEED}, split=${BENCH_SPLIT}, θ*=${THETA}, tile_metrics=${TILE_METRICS:-none}) ==="
   python -m benchmarking.cli eval \
     --dataset-dir "$DATASET_DIR" \
@@ -181,6 +190,7 @@ if [ "$STAGE" = "bench" ]; then
     --exp-tag "loss_${EXP_TAG}" \
     --label-source "$LABEL_SOURCE" \
     ${METRIC_ARGS[@]+"${METRIC_ARGS[@]}"} \
+    ${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"} \
     ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"} \
     ${MASK_ARGS[@]+"${MASK_ARGS[@]}"}
 
