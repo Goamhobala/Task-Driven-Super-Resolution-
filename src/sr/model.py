@@ -72,6 +72,19 @@ class JointSRUNetLightning(UNetLightning):
         upscale: int = 4,
         sr_pad: int = 0,
         reflectance_scale: float = 10000.0,
+        # Staged warm start (R6/R7): path to a stage-1 (frozen-SR, R5/R1) ckpt
+        # whose UNet weights initialise THIS model's UNet; the SR net still
+        # loads from sen2sr_dir. Rationale: the UNet is the task-critic whose
+        # gradients sculpt the SR net — warm-starting it on the frozen-SR
+        # input distribution avoids the destructive early gradients an
+        # incompetent critic sends into a pretrained generator (Grigoryev et
+        # al. 2022 analogue). Guarded: source ckpt must match this model's
+        # reflectance_scale; encoder/head mismatches fail via strict load.
+        # None/"" = ImageNet init (cold joint, R2/R4 protocol). When RESTORING
+        # a stage-2 ckpt the restored weights overwrite this init anyway —
+        # pass warm_start_unet=None at load_from_checkpoint if the stage-1
+        # file is not on this machine (viz_grid does).
+        warm_start_unet: str | None = None,
         # --- loss (unet.losses.build_loss pass-through) ---------------------
         # Same names/defaults as UNetLightning. None = legacy Dice + weighted
         # BCE. NB sr_w/sr_radius are the Skeleton-Recall loss knobs (parent's
@@ -187,6 +200,69 @@ class JointSRUNetLightning(UNetLightning):
                               dtype=torch.float32).view(1, -1, 1, 1)
         self.register_buffer("band_mean", mean)
         self.register_buffer("band_std", torch.where(std > 1e-6, std, torch.ones_like(std)))
+
+        if warm_start_unet:
+            self._load_unet_from(warm_start_unet)
+
+    # ----------------------------------------------------- staged warm start
+    def _load_unet_from(self, ckpt_path: str):
+        """Initialise self.model (the UNet) from a stage-1 JointSR ckpt."""
+        from pathlib import Path
+        p = Path(ckpt_path)
+        if not p.is_file():
+            raise FileNotFoundError(
+                f"warm_start_unet={ckpt_path!r} not found — fit the stage-1 "
+                "(frozen-SR) arm first, or pass warm_start_unet=None."
+            )
+        ck = torch.load(p, map_location="cpu", weights_only=False)
+        src_scale = float(ck.get("hyper_parameters", {})
+                            .get("reflectance_scale", 10000.0))
+        if src_scale != float(self.hparams.reflectance_scale):
+            raise ValueError(
+                f"warm_start_unet ckpt was trained with reflectance_scale="
+                f"{src_scale} but this model uses "
+                f"{self.hparams.reflectance_scale} — a starved-era or "
+                "DN-dataset UNet cannot seed a V2 reflectance run."
+            )
+        unet_sd = {k[len("model."):]: v for k, v in ck["state_dict"].items()
+                   if k.startswith("model.")}
+        if not unet_sd:
+            raise ValueError(f"no 'model.*' keys in {ckpt_path} — not a "
+                             "JointSR/UNet Lightning checkpoint?")
+        self.model.load_state_dict(unet_sd, strict=True)
+        src = ck.get("hyper_parameters", {})
+        print(f"[joint_sr] warm-started UNet from {p.name} "
+              f"(upsampler={src.get('upsampler')!r}, freeze_sr="
+              f"{src.get('freeze_sr')}, epoch={ck.get('epoch')})")
+
+    # ------------------------------------------------------------ unit guards
+    def on_load_checkpoint(self, checkpoint):
+        """Refuse to restore a ckpt under a different raw->reflectance scale.
+
+        `sr.cli test --config ... --ckpt_path` instantiates from the CONFIG
+        and only restores weights — without this guard a pre-fix (starved,
+        scale 10000.0) ckpt evaluated under a `reflectance_scale: 1.0` config
+        (or vice versa) silently scores garbage."""
+        ck = float(checkpoint.get("hyper_parameters", {})
+                             .get("reflectance_scale", 10000.0))
+        if ck != float(self.hparams.reflectance_scale):
+            raise ValueError(
+                f"reflectance_scale mismatch: checkpoint trained with {ck}, "
+                f"instance configured {self.hparams.reflectance_scale}. Align "
+                "the test/viz config with the checkpoint's training scale."
+            )
+
+    def on_train_batch_start(self, batch, batch_idx):
+        """One-time unit tripwire (the §15 lesson: print your units)."""
+        if self.global_step == 0 and batch_idx == 0:
+            m = float((batch[0] / self.hparams.reflectance_scale).mean())
+            print(f"[joint_sr] reflectance_scale={self.hparams.reflectance_scale} "
+                  f"-> SR input mean {m:.4g} (sane reflectance: ~0.05-0.35)")
+            if not (1e-3 < m < 2.0):
+                raise ValueError(
+                    f"SR input mean {m:.3g} is outside any sane reflectance "
+                    "range — reflectance_scale is wrong for this dataset."
+                )
 
     # ------------------------------------------------------------- forward
     def forward(self, x):

@@ -127,6 +127,54 @@ def load_trainable_sen2sr(model_dir) -> TrainableSEN2SR:
     return TrainableSEN2SR(sr_model, hard_constraint)
 
 
+def _enable_mamba_grad_checkpointing(sr_model: nn.Module) -> int:
+    """Per-VSSBlock activation checkpointing for the full (Mamba) SEN2SR.
+
+    Training through MambaSR at the FFT-pinned 128 px LR patch stores the
+    SS2D internals (4 directional scans over a 16k+ token sequence, in fp32 —
+    the SR stage runs autocast-disabled for the FFT constraint) for EVERY
+    VSSBlock: >44 GB even at batch_size=2 (r3 OOM). Checkpointing stores only
+    block-boundary tensors and recomputes the internals during backward —
+    numerically identical, ~25-30% slower SR stage, activation memory drops
+    by roughly the per-layer block count.
+
+    Upstream ships a ``use_checkpoint`` flag but its branch is broken:
+    ``checkpoint.checkpoint(blk, x)`` drops VSSBlock's required ``x_size``
+    argument (instant TypeError). So we bind a corrected forward onto each
+    ``BasicLayer`` INSTANCE instead — no wrapper modules, so parameter names
+    (and therefore existing Lightning checkpoints) are untouched.
+
+    Returns the number of patched layers (0 = architecture had no
+    BasicLayers; caller should warn, not crash).
+    """
+    import torch.utils.checkpoint as _ckpt
+    from sen2sr.models.opensr_baseline.mamba import BasicLayer
+
+    def _make_forward(layer: nn.Module):
+        def forward(x, x_size):
+            for blk in layer.blocks:
+                if torch.is_grad_enabled() and x.requires_grad:
+                    # use_reentrant=False: supports the non-tensor x_size arg
+                    # and preserves DropPath RNG semantics on recompute.
+                    x = _ckpt.checkpoint(blk, x, x_size, use_reentrant=False)
+                else:
+                    # eval / frozen-SR no_grad path: checkpointing would be
+                    # pure recompute overhead with nothing to save.
+                    x = blk(x, x_size)
+            if layer.downsample is not None:
+                x = layer.downsample(x)
+            return x
+
+        return forward
+
+    n = 0
+    for m in sr_model.modules():
+        if isinstance(m, BasicLayer):
+            m.forward = _make_forward(m)
+            n += 1
+    return n
+
+
 def load_trainable_sen2sr_full(model_dir) -> TrainableSEN2SR:
     """Load the FULL (Mamba) SEN2SR RGBN x4 from `model_dir` as trainable.
 
@@ -172,6 +220,14 @@ def load_trainable_sen2sr_full(model_dir) -> TrainableSEN2SR:
             "parameters — inspect the model dir (this loader assumes the full "
             "MambaSR variant, which unlike Lite/CNNSR needs no train_mode fix)."
         )
+
+    n_ckpt = _enable_mamba_grad_checkpointing(sr_model)
+    if n_ckpt:
+        print(f"[sen2sr_loader] gradient checkpointing enabled on {n_ckpt} "
+              "MambaSR BasicLayers (joint training does not fit 44 GB without it)")
+    else:
+        print("[sen2sr_loader] WARN: no BasicLayer found to checkpoint — "
+              "non-Mamba card? joint training may OOM.")
 
     hc_path = model_dir / "hard_constraint.safetensor"
     if not hc_path.exists():
