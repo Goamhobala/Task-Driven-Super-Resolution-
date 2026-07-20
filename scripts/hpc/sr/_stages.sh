@@ -14,6 +14,12 @@
 #   SR_PAD       reflect-pad in native px (0 = off, 8 = border-artifact fix)
 #
 # Optional (submit-time or experiment-script):
+#   WARM_START_CKPT  stage-1 (frozen-SR) JointSR ckpt whose UNet weights seed
+#                every trial's / the refit's UNet (staged R6/R7 protocol —
+#                the r6/r7 scripts derive it from their stage-1 run dir and
+#                pin lr/pos_weight/batch/encoder from that run's best_params,
+#                so only lr_sr is searched). Empty (default) = cold ImageNet
+#                UNet (R2/R4 protocol).
 #   LOSS_ARM     any unet.losses.build_loss arm (bce | gap_ce | tl_ce |
 #                gap_tl_ce | t2_ce | t4_ce | bce_dice | pstar_dice |
 #                pstar_tversky | focal_tversky | <base>+cldice |
@@ -52,6 +58,7 @@ SEED="${SEED:-0}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
 PRECISION="${PRECISION:-bf16-mixed}"
 SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SEN2SRLite_RGBN}"
+WARM_START_CKPT="${WARM_START_CKPT:-}"
 
 # LABELS -> dataset dir + code-level mask_source
 case "$LABELS" in
@@ -135,7 +142,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Logging to ${LOG_FILE}"
 echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}"
 echo "labels=${LABELS} (mask_source=${MASK_SOURCE})  upsampler=${UPSAMPLER}  freeze_sr=${FREEZE_SR}  sr_pad=${SR_PAD}  loss_arm=${LOSS_ARM:-legacy}"
-echo "DATASET_DIR=${DATASET_DIR}"
+echo "DATASET_DIR=${DATASET_DIR}  warm_start=${WARM_START_CKPT:-none}"
 
 # --- Fail fast ---------------------------------------------------------------
 if [ ! -d "${DATASET_DIR}" ]; then
@@ -163,6 +170,11 @@ case "${UPSAMPLER}" in
       exit 1
     fi ;;
 esac
+if [ -n "${WARM_START_CKPT}" ] && [ ! -f "${WARM_START_CKPT}" ]; then
+  echo "ERROR: WARM_START_CKPT=${WARM_START_CKPT} not found — run the stage-1" >&2
+  echo "  (frozen-SR) arm's STAGE=fit first; its best ckpt seeds this arm's UNet." >&2
+  exit 1
+fi
 if [ "${MASK_SOURCE}" = "raster" ]; then
   # -print -quit: no pipe to `head`, so `find` can't die of SIGPIPE and trip
   # `set -o pipefail` (that silently killed the unet osm.sh check).
@@ -177,6 +189,11 @@ fi
 source "$VENV_DIR/bin/activate"
 export PYTHONPATH="$REPO_DIR/src:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
+# Long Optuna loops build/tear down models in ONE process; expandable segments
+# let the allocator reclaim freed blocks of any size instead of fragmenting
+# (r3's OOMs showed 100s of MiB "reserved but unallocated"). Pre-set the var
+# to override.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 echo "python=$(which python)"
 
 # The full (Mamba) SEN2SR needs the CUDA-built mamba_ssm package.
@@ -209,6 +226,7 @@ if [ "$STAGE" = "tune" ]; then
       --upsampler "$UPSAMPLER" \
       --freeze-sr "$FREEZE_SR" \
       --sr-pad "$SR_PAD" \
+      ${WARM_START_CKPT:+--warm-start-unet "$WARM_START_CKPT"} \
       --out "$RUN_DIR" \
       --num-workers "$NUM_WORKERS" \
       --devices 1 \
@@ -233,13 +251,15 @@ if [ "$STAGE" = "tune" ]; then
   # pinned to a nonexistent ordinal (CUDA_VISIBLE_DEVICES=1 on a 1-GPU job)
   # masks CUDA entirely: eager-CUDA loaders (sen2sr_full's mlstac card) die
   # with "No CUDA GPUs are available", everything else silently trains on CPU.
+  # 0 GPUs is NOT an error: one unpinned CPU worker, so interactive CPU-only
+  # smoke tests (run until epoch 1, then kill) keep working when the cluster
+  # is busy. NB mamba_ssm's kernels are CUDA-only, so an r3/sen2sr_full smoke
+  # test now loads fine on CPU but still dies at the first batch.
   N_GPUS=$(python -c "import torch; print(torch.cuda.device_count())")
-  if [ "${N_GPUS}" -eq 0 ]; then
-    echo "ERROR: no CUDA device visible on $(hostname) (CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES-<unset>}')." >&2
-    echo "  Did the job request GPUs (--gres=gpu:N)?" >&2
-    exit 1
-  fi
-  if [ "${SEARCH_GPUS}" -gt "${N_GPUS}" ]; then
+  if [ "${N_GPUS}" -eq 0 ] && [ "${SEARCH_GPUS}" -gt 1 ]; then
+    echo "WARN: no CUDA device visible — running ONE unpinned tuner on CPU (smoke-test mode)." >&2
+    SEARCH_GPUS=1
+  elif [ "${N_GPUS}" -gt 0 ] && [ "${SEARCH_GPUS}" -gt "${N_GPUS}" ]; then
     echo "WARN: SEARCH_GPUS=${SEARCH_GPUS} but only ${N_GPUS} GPU(s) visible — capping to ${N_GPUS}." >&2
     SEARCH_GPUS="${N_GPUS}"
   fi
@@ -347,6 +367,9 @@ cd "$RUN_DIR"
 # is impossible.
 MODEL_ARGS=(--model.upsampler "$UPSAMPLER" --model.freeze_sr "$FREEZE_SR"
             --model.sr_pad "$SR_PAD" --model.sen2sr_dir "$SEN2SR_DIR")
+if [ -n "$WARM_START_CKPT" ]; then
+  MODEL_ARGS+=(--model.warm_start_unet "$WARM_START_CKPT")
+fi
 if [ -n "$LOSS_ARM" ]; then
   MODEL_ARGS+=("${LOSS_ARGS_FIT[@]}")
 fi

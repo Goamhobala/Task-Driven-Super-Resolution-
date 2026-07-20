@@ -122,7 +122,11 @@ def run_experiment(ckpt, sen2sr_dir, x, threshold, device):
     after this ckpt's own SR net + sr_pad pad/crop) — exactly what its UNet
     saw, up to normalisation."""
     model = JointSRUNetLightning.load_from_checkpoint(
-        str(ckpt), map_location=device, sen2sr_dir=str(sen2sr_dir)).eval().to(device)
+        str(ckpt), map_location=device, sen2sr_dir=str(sen2sr_dir),
+        # The restore below supplies the trained UNet weights anyway; skipping
+        # the stage-1 warm-start init lets R6/R7 ckpts render on machines
+        # without the stage-1 run dir.
+        warm_start_unet=None).eval().to(device)
     t = torch.from_numpy(x)[None].float().to(device)   # RAW values (as the dataloader feeds)
     # Each ckpt carries its own raw->reflectance divisor (old ckpts default to
     # 10000.0, matching how they were trained; new runs on the V2 reflectance

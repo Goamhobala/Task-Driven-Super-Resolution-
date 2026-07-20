@@ -140,6 +140,9 @@ def build_objective(args, base_cfg: dict):
     freeze_sr = (model_cfg.get("freeze_sr", False) if args.freeze_sr is None
                  else args.freeze_sr == "true")
     sr_pad = model_cfg.get("sr_pad", 0) if args.sr_pad is None else args.sr_pad
+    warm_start_unet = (args.warm_start_unet
+                       if args.warm_start_unet is not None
+                       else model_cfg.get("warm_start_unet"))
     # Bicubic (R0) has no learnable SR params and frozen SEN2SR (R1) never
     # updates, so lr_sr is a dead search dimension in both -- skip it entirely
     # rather than let TPE waste trials on it.
@@ -224,6 +227,7 @@ def build_objective(args, base_cfg: dict):
             upscale=upscale,
             sr_pad=sr_pad,
             reflectance_scale=model_cfg.get("reflectance_scale", 10000.0),
+            warm_start_unet=warm_start_unet,
             loss_arm=loss_arm,
             **loss_hp,
         )
@@ -267,7 +271,8 @@ def build_objective(args, base_cfg: dict):
 def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
                        upsampler: str, freeze_sr: bool = False,
                        sr_pad: int = 0, loss_arm: str | None = None,
-                       loss_hp: dict | None = None) -> Path:
+                       loss_hp: dict | None = None,
+                       warm_start_unet: str | None = None) -> Path:
     p = study.best_params
     # Record the resolved SR treatment AND loss so the refit is unambiguous
     # from the overlay alone (an R0/R1/padded/arm overlay layered over
@@ -280,6 +285,8 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
         "sr_pad": sr_pad,
         "lr": p["lr"],
     }
+    if warm_start_unet:
+        model_overlay["warm_start_unet"] = str(warm_start_unet)
     if loss_arm:
         model_overlay["loss_arm"] = loss_arm
         model_overlay.update(loss_hp or {})
@@ -334,6 +341,11 @@ def parse_args(argv=None):
                     help="Override model.freeze_sr (true -> R1 frozen SR preprocessing).")
     ap.add_argument("--sr-pad", type=int, default=None,
                     help="Override model.sr_pad (reflect-pad in native px; 8 = border-artifact fix).")
+    ap.add_argument("--warm-start-unet", default=None, metavar="CKPT",
+                    help="Stage-1 (frozen-SR) JointSR ckpt whose UNet weights "
+                         "initialise every trial's UNet (staged R6/R7 protocol; "
+                         "pin lr/pos_weight/batch/encoder to the stage-1 best "
+                         "and search only lr_sr). Overrides model.warm_start_unet.")
     ap.add_argument("--mask-source", default=None, choices=["graph", "raster"],
                     help="Override data.mask_source (graph = CDNGI, raster = OSM HR masks).")
 
@@ -435,8 +447,11 @@ def main(argv=None):
         cl_iters=args.cl_iters, sr_w=args.skel_w, sr_radius=args.skel_radius,
         warmup_start=args.warmup_start, warmup_ramp=args.warmup_ramp,
     )
+    warm_start_unet = (args.warm_start_unet if args.warm_start_unet is not None
+                       else model_cfg.get("warm_start_unet"))
     overlay_path = write_best_overlay(study, out_dir, encoder_weights, upsampler,
-                                      freeze_sr, sr_pad, loss_arm, loss_hp)
+                                      freeze_sr, sr_pad, loss_arm, loss_hp,
+                                      warm_start_unet)
     print(f"\nBest {MONITOR}={study.best_value:.4f} (trial #{study.best_trial.number})")
     print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}")
     print(f"Wrote Lightning overlay -> {overlay_path}")
