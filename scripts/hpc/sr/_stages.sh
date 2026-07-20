@@ -64,8 +64,11 @@ case "$LABELS" in
   osm)
     DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI}"
     MASK_SOURCE="raster" ;;  # = <split>/mask_osm_2pt5 rasters
+  all)
+    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_all}"
+    MASK_SOURCE="graph" ;;   # = the all dataset's own masks_graph parquets
   *)
-    echo "ERROR: LABELS must be cdngi|overture|osm, got '${LABELS}'." >&2; exit 2 ;;
+    echo "ERROR: LABELS must be cdngi|overture|osm|all, got '${LABELS}'." >&2; exit 2 ;;
 esac
 
 # --- Tune budget -------------------------------------------------------------
