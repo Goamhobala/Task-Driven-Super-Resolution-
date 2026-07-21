@@ -76,9 +76,14 @@ def parse_args(argv=None):
     ap.add_argument("--precision", default="bf16-mixed")
     # loss arm + hyperparameters (protocol §3.2/§4.3)
     ap.add_argument("--arm", required=True,
-                    help="bce | gap_ce | tl_ce | bce_dice | pstar_dice | "
-                         "pstar_tversky | focal_tversky | <base>+cldice | <base>+skelrec")
+                    help="bce | wbce | gap_ce | tl_ce | gap_tl_ce | t2_ce | t4_ce | "
+                         "bce_dice | pstar_dice | pstar_tversky | focal_tversky | "
+                         "<base>+cldice | <base>+skelrec")
     ap.add_argument("--pstar", default="bce", help="pixel slot for pstar_* arms")
+    ap.add_argument("--pos-weight", type=float, default=5.0,
+                    help="road-class weight for the wbce arm ONLY (bce and the "
+                         "bce_dice anchor stay plain CE; legacy default 5; "
+                         "class-balance at ~2-3%% road px would be ~30-50)")
     ap.add_argument("--gap-r", type=int, default=4, help="GapLoss buffer radius (paper 9x9 => 4)")
     ap.add_argument("--gap-k", type=float, default=60.0, help="GapLoss K (paper: 60)")
     ap.add_argument("--tl-ell", type=int, default=5,
@@ -89,6 +94,10 @@ def parse_args(argv=None):
                          "(default = papers' 0.375 = Appendix-B centre; "
                          "protocol grid {0.375, 0.5})")
     ap.add_argument("--tversky-alpha", type=float, default=0.7)
+    ap.add_argument("--mix-w", type=float, default=0.5,
+                    help="pstar_* region-slot mixing weight: (1-mw)·P* + mw·region "
+                         "(Phase B amendment: tuned via unet.tune_loss; the "
+                         "bce_dice anchor ignores it)")
     ap.add_argument("--cl-alpha", type=float, default=0.3)
     ap.add_argument("--cl-iters", type=int, default=5)
     ap.add_argument("--sr-w", type=float, default=1.0)
@@ -115,6 +124,10 @@ def make_run_name(args) -> str:
         # must never collide with new explicit-θ runs
         hp_bits.append(f"l{args.tl_ell}")
         hp_bits.append(f"th{args.tl_theta}")
+    if "wbce" in eff:
+        hp_bits.append(f"w{args.pos_weight:g}")
+    if head.startswith("pstar") and args.mix_w != 0.5:
+        hp_bits.append(f"mw{args.mix_w:g}")
     return args.run_name or "_".join(
         [args.arm.replace("+", "-"), *hp_bits, f"s{args.seed}"])
 
@@ -188,11 +201,13 @@ def main(argv=None):
         norm_std=data_cfg["norm_std"],
         loss_arm=args.arm,
         pstar=args.pstar,
+        pos_weight=args.pos_weight,
         gap_r=args.gap_r,
         gap_k=args.gap_k,
         tl_ell=args.tl_ell,
         tl_theta=args.tl_theta,
         tversky_alpha=args.tversky_alpha,
+        mix_w=args.mix_w,
         cl_alpha=args.cl_alpha,
         cl_iters=args.cl_iters,
         sr_w=args.sr_w,
@@ -209,9 +224,10 @@ def main(argv=None):
         "dataset_dir": str(data_cfg["dataset_dir"]),
         "mask_dirname": data_cfg.get("mask_dirname"),
         "selection": "val_f1@0.5",
-        "hp": {"pstar": args.pstar, "gap_r": args.gap_r, "gap_k": args.gap_k,
+        "hp": {"pstar": args.pstar, "pos_weight": args.pos_weight,
+               "gap_r": args.gap_r, "gap_k": args.gap_k,
                "tl_ell": args.tl_ell, "tl_theta": args.tl_theta,
-               "tversky_alpha": args.tversky_alpha,
+               "tversky_alpha": args.tversky_alpha, "mix_w": args.mix_w,
                "cl_alpha": args.cl_alpha, "cl_iters": args.cl_iters,
                "sr_w": args.sr_w, "sr_radius": args.sr_radius,
                "warmup_start": args.warmup_start, "warmup_ramp": args.warmup_ramp},

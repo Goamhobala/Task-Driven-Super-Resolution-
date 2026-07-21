@@ -10,12 +10,18 @@
 #             focal_tversky | <base>+cldice | <base>+skelrec
 # and may override any loss hyperparameter (GAP_R, TL_ELL, PSTAR, CL_ALPHA, ...).
 #
-# Unlike the unet/sr engines there is NO Optuna search: the protocol fixes the
-# screening LR (1e-3, valid across arms thanks to the §4.4 scale normalization)
-# and screens the loss + its hyperparameters, not the optimiser. So the stages
-# are:
-#   STAGE=tune    NO-OP. Loss ablation has nothing to search; this stage exists
-#                 only so train_both.sbatch's tune->fit->bench chain still works.
+# The protocol fixes the screening LR (1e-3, valid across arms thanks to the
+# §4.4 scale normalization) and screens the loss + its hyperparameters, not
+# the optimiser. Stages:
+#   STAGE=tune    Phase B ONLY (pstar_dice / pstar_tversky): Optuna search of
+#                 the P*<->region mixing ratio mix_w (amendment 2026-07-21 —
+#                 the compound's one genuinely free parameter). Short trials
+#                 (TUNE_EPOCHS, fixed train seed, fixed LR), fanned across
+#                 SEARCH_GPUS workers; writes best_loss_params.yaml, which
+#                 STAGE=fit consumes when MIX_W is unset. Every other arm:
+#                 no-op (nothing to search; chain compat with train_both).
+#                 Phase C compounds are refused by unet.tune_loss (the §4.5
+#                 warmup means short trials never see the skeleton term).
 #   STAGE=fit     Train one arm at a fixed budget (unet.train_ablation): no early
 #                 stopping, checkpoint on val F1 @ 0.5, closing val threshold
 #                 sweep. Submit with --gres=gpu:1. (`train` is an alias.)
@@ -59,6 +65,17 @@ AUGMENT="${AUGMENT:-true}"            # protocol-fixed D4 flip on the train crop
 
 # --- Loss hyperparameters (protocol defaults; arm scripts/env override) ------
 PSTAR="${PSTAR:-bce}"                 # pixel slot for pstar_* arms (set to P*)
+POS_WEIGHT="${POS_WEIGHT:-5}"         # wbce road-class weight (legacy 5; ~30-50 = class balance)
+MIX_W="${MIX_W:-}"                    # pstar_* mixing ratio; empty = tuned value
+                                      # from best_loss_params.yaml (else 0.5)
+
+# --- Phase B mix_w search (STAGE=tune; pstar arms only) ----------------------
+N_TRIALS="${N_TRIALS:-30}"            # pre-registered budget (amendment 2026-07-21)
+TUNE_EPOCHS="${TUNE_EPOCHS:-8}"       # short proxy; fixed LR; fixed train seed
+SEARCH_GPUS="${SEARCH_GPUS:-2}"       # parallel workers sharing the sqlite study
+MIX_MIN="${MIX_MIN:-0.2}"
+MIX_MAX="${MIX_MAX:-0.8}"
+SEARCH_TVERSKY="${SEARCH_TVERSKY:-false}"  # pstar_tversky: search alpha jointly (2D)
 GAP_R="${GAP_R:-5}"                   # GapLoss buffer radius (Appendix B centre)
 GAP_K="${GAP_K:-60.0}"               # GapLoss K (paper)
 TL_ELL="${TL_ELL:-5}"                 # TL/T2/T4 filter length (paper centre; grid {3,5,7})
@@ -89,12 +106,23 @@ NORM_CONFIG="${NORM_CONFIG:-$REPO_DIR/src/unet/configs/norm_stats.yaml}"
 
 # A short hp slug so a within-arm grid (r/ℓ/pstar/…) lands as distinct runs and
 # distinct benchmark model_names instead of colliding under one EXP_TAG.
+slug_for() {  # hp slug for one pixel-slot(-ish) name: $1 = ARM head or PSTAR
+  case "$1" in
+    *gap_tl_ce*)             echo "_r${GAP_R}_l${TL_ELL}_th${TL_THETA}" ;;
+    *gap_ce*)                echo "_r${GAP_R}" ;;
+    *tl_ce*|*t2_ce*|*t4_ce*) echo "_l${TL_ELL}_th${TL_THETA}" ;;
+    *wbce*)                  echo "_w${POS_WEIGHT}" ;;
+    *)                       echo "" ;;
+  esac
+}
 case "$ARM" in
-  *gap_tl_ce*)             HP_SLUG="_r${GAP_R}_l${TL_ELL}_th${TL_THETA}" ;;
-  *gap_ce*)                HP_SLUG="_r${GAP_R}" ;;
-  *tl_ce*|*t2_ce*|*t4_ce*) HP_SLUG="_l${TL_ELL}_th${TL_THETA}" ;;
-  pstar_dice|pstar_tversky) HP_SLUG="_p${PSTAR}" ;;
-  *)                       HP_SLUG="" ;;
+  pstar_dice*|pstar_tversky*)
+    HP_SLUG="_p${PSTAR}$(slug_for "$PSTAR")"
+    # explicit MIX_W -> part of the identity; tuned mix_w is an attribute
+    # (recorded in config/train_meta/wandb), NOT the name — RUN_DIR must be
+    # stable across the tune->fit->bench chain.
+    [ -n "${MIX_W}" ] && HP_SLUG="${HP_SLUG}_mw${MIX_W}" ;;
+  *)                          HP_SLUG="$(slug_for "$ARM")" ;;
 esac
 case "$ARM" in
   *+cldice)  HP_SLUG="${HP_SLUG}_ca${CL_ALPHA}" ;;
@@ -114,12 +142,16 @@ echo "full_tag=${FULL_TAG}  model_name=${MODEL_NAME}"
 echo "DATASET_DIR=${DATASET_DIR}  mask_dirname=${MASK_DIRNAME:-<masks_raster>}"
 
 # ============================== STAGE: tune ==================================
-# No search for loss ablation — this stage is a deliberate no-op so the
-# train_both.sbatch tune->fit->bench chain runs unchanged.
+# Real search ONLY for the Phase B compounds (below, after the venv/data
+# checks); every other arm keeps the no-op so train_both's chain runs.
 if [ "$STAGE" = "tune" ]; then
-  echo "=== TUNE: no-op (loss ablation has no hyperparameter search) ==="
-  echo "Next: STAGE=fit trains the arm at the fixed screening LR (${LR})."
-  exit 0
+  case "$ARM" in
+    pstar_dice|pstar_tversky) : ;;   # falls through to the search below
+    *)
+      echo "=== TUNE: no-op (arm '${ARM}' has nothing to search; mix_w applies to pstar_* only) ==="
+      echo "Next: STAGE=fit trains the arm at the fixed screening LR (${LR})."
+      exit 0 ;;
+  esac
 fi
 
 # --- Fail fast (shared by fit + bench) ---------------------------------------
@@ -141,6 +173,57 @@ echo "python=$(which python)"
 
 MASK_ARGS=()
 [ -n "${MASK_DIRNAME}" ] && MASK_ARGS=(--mask-dirname "${MASK_DIRNAME}")
+
+# ============================== STAGE: tune (search) =========================
+if [ "$STAGE" = "tune" ]; then
+  STORAGE="${STORAGE:-sqlite:///${RUN_DIR}/study.db}"
+  STUDY_NAME="loss_mix_${FULL_TAG}_seed${SEED}"
+  TV_ARGS=()
+  [ "${SEARCH_TVERSKY}" = "true" ] && [ "$ARM" = "pstar_tversky" ] && \
+    TV_ARGS=(--search-tversky-alpha)
+
+  run_tuner () {   # $1=gpu id (empty = no pin)  $2=n-trials  $3=sampler seed
+    local gpu="$1" ntrials="$2" sseed="$3" pin=""
+    [ -n "$gpu" ] && pin="CUDA_VISIBLE_DEVICES=$gpu"
+    env $pin python -m unet.tune_loss \
+      --base-config "$BASE_CONFIG" \
+      --base-config "$NORM_CONFIG" \
+      --dataset-dir "$DATASET_DIR" \
+      ${MASK_ARGS[@]+"${MASK_ARGS[@]}"} \
+      --out "$RUN_DIR" \
+      --arm "$ARM" --pstar "$PSTAR" \
+      --pos-weight "$POS_WEIGHT" \
+      --gap-r "$GAP_R" --gap-k "$GAP_K" \
+      --tl-ell "$TL_ELL" --tl-theta "$TL_THETA" \
+      --tversky-alpha "$TVERSKY_ALPHA" \
+      --mix-min "$MIX_MIN" --mix-max "$MIX_MAX" \
+      ${TV_ARGS[@]+"${TV_ARGS[@]}"} \
+      --n-trials "$ntrials" --max-epochs "$TUNE_EPOCHS" \
+      --lr "$LR" --num-workers "$NUM_WORKERS" --precision "$PRECISION" \
+      --devices 1 \
+      --seed "$sseed" --train-seed "$SEED" \
+      --study-name "$STUDY_NAME" --storage "$STORAGE"
+  }
+
+  echo "=== TUNE mix_w [${MIX_MIN},${MIX_MAX}] (${N_TRIALS} trials x ${TUNE_EPOCHS}ep across ${SEARCH_GPUS} GPU(s); fixed LR=${LR}, train seed=${SEED}) ==="
+  if [ "$SEARCH_GPUS" -le 1 ]; then
+    run_tuner "" "$N_TRIALS" "$(( SEED * 1000 ))"
+  else
+    PER_WORKER=$(( (N_TRIALS + SEARCH_GPUS - 1) / SEARCH_GPUS ))
+    echo "  fanning out ${SEARCH_GPUS} workers x ${PER_WORKER} trials each"
+    PIDS=()
+    for g in $(seq 0 $(( SEARCH_GPUS - 1 ))); do
+      run_tuner "$g" "$PER_WORKER" "$(( SEED * 1000 + g ))" &
+      PIDS+=($!)
+    done
+    RC=0
+    for pid in "${PIDS[@]}"; do wait "$pid" || RC=1; done
+    [ "$RC" -eq 0 ] || { echo "ERROR: a tuner worker failed." >&2; exit 1; }
+  fi
+  echo "=== TUNE DONE ===  $(grep -m1 mix_w "${RUN_DIR}/best_loss_params.yaml" || true)"
+  echo "Next: STAGE=fit refits the tuned mix_w at the full budget (fit reads best_loss_params.yaml)."
+  exit 0
+fi
 
 # ============================== STAGE: bench =================================
 # Score the fitted checkpoint into the loss benchmark store at the val-tuned θ*.
@@ -221,7 +304,22 @@ OPT_ARGS=()
 [ -n "${ENCODER}" ] && OPT_ARGS+=(--encoder "$ENCODER")
 [ "${AUGMENT}" = "true" ] && OPT_ARGS+=(--augment) || OPT_ARGS+=(--no-augment)
 
-echo "=== FIT ${FULL_TAG} (arm=${ARM}, ${EPOCHS} epochs, lr=${LR}, seed=${SEED}) ==="
+# --- mix_w resolution (pstar arms): explicit MIX_W > tuned file > 0.5 --------
+RESOLVED_MW="0.5"
+RESOLVED_TVA="$TVERSKY_ALPHA"
+case "$ARM" in pstar_dice*|pstar_tversky*)
+  if [ -n "${MIX_W}" ]; then
+    RESOLVED_MW="$MIX_W"
+  elif [ -f "${RUN_DIR}/best_loss_params.yaml" ]; then
+    RESOLVED_MW=$(python -c "import yaml,sys;print(yaml.safe_load(open(sys.argv[1]))['mix_w'])" "${RUN_DIR}/best_loss_params.yaml")
+    RESOLVED_TVA=$(python -c "import yaml,sys;print(yaml.safe_load(open(sys.argv[1]))['tversky_alpha'])" "${RUN_DIR}/best_loss_params.yaml")
+    echo "mix_w=${RESOLVED_MW} tversky_alpha=${RESOLVED_TVA} (tuned; best_loss_params.yaml)"
+  else
+    echo "WARN: no MIX_W and no best_loss_params.yaml — fitting at the frozen 0.5 (run STAGE=tune first for the searched ratio)." >&2
+  fi ;;
+esac
+
+echo "=== FIT ${FULL_TAG} (arm=${ARM}, ${EPOCHS} epochs, lr=${LR}, seed=${SEED}, mix_w=${RESOLVED_MW}) ==="
 python -m unet.train_ablation \
   --base-config "$BASE_CONFIG" \
   --base-config "$NORM_CONFIG" \
@@ -230,9 +328,10 @@ python -m unet.train_ablation \
   --out "$RUN_DIR" \
   --arm "$ARM" \
   --pstar "$PSTAR" \
+  --pos-weight "$POS_WEIGHT" \
   --gap-r "$GAP_R" --gap-k "$GAP_K" \
   --tl-ell "$TL_ELL" --tl-theta "$TL_THETA" \
-  --tversky-alpha "$TVERSKY_ALPHA" \
+  --tversky-alpha "$RESOLVED_TVA" --mix-w "$RESOLVED_MW" \
   --cl-alpha "$CL_ALPHA" --cl-iters "$CL_ITERS" \
   --sr-w "$SR_W" --sr-radius "$SR_RADIUS" \
   --warmup-start "$WARMUP_START" --warmup-ramp "$WARMUP_RAMP" \

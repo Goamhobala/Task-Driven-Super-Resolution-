@@ -262,6 +262,36 @@ def test_skelrec_additive_weights():
     assert loss.w_pix == 0.5 and loss.w_reg == 0.5 and loss.w_skel == 1.0
 
 
+def test_wbce_arm_and_bce_purity():
+    """wbce consumes pos_weight; the bce arm must IGNORE it (anchor purity) —
+    and wbce at w=1 must equal plain BCE exactly."""
+    g = torch.Generator().manual_seed(4)
+    lg = torch.randn(2, 1, H, W, generator=g)
+    tgt = blob_target()
+    plain = build_loss("bce")(lg, tgt)
+    assert torch.allclose(build_loss("bce", pos_weight=7.0)(lg, tgt), plain)
+    assert torch.allclose(build_loss("wbce", pos_weight=1.0)(lg, tgt), plain)
+    assert not torch.allclose(build_loss("wbce", pos_weight=5.0)(lg, tgt), plain)
+    # wbce+dice via the pstar mechanism (the "fair bce_dice" variant)
+    loss = build_loss("pstar_dice", pstar="wbce", pos_weight=5.0)
+    assert loss.pixel.pos_weight is not None and loss.w_pix == 0.5
+
+
+def test_mix_w_reweights_pstar_compounds_only():
+    """mix_w drives the pstar_* slot weights ((1-mw)·P* + mw·region); the
+    bce_dice anchor must stay frozen at the literature's 0.5/0.5."""
+    loss = build_loss("pstar_dice", mix_w=0.7)
+    assert abs(loss.w_pix - 0.3) < 1e-9 and abs(loss.w_reg - 0.7) < 1e-9
+    anchor = build_loss("bce_dice", mix_w=0.7)   # anchor ignores mix_w
+    assert anchor.w_pix == 0.5 and anchor.w_reg == 0.5
+    # mix_w=0.5 reproduces the pre-amendment behaviour exactly
+    g = torch.Generator().manual_seed(5)
+    lg = torch.randn(2, 1, H, W, generator=g)
+    tgt = blob_target()
+    assert torch.allclose(build_loss("pstar_dice", mix_w=0.5)(lg, tgt),
+                          build_loss("bce_dice")(lg, tgt))
+
+
 def test_gap_tl_blend_is_exact_average():
     """make_gap_tl_ce must equal 0.5·gap_ce + 0.5·tl_ce exactly: mean-1 maps
     summed inside one normalized weighted CE = the average of the two
@@ -274,7 +304,7 @@ def test_gap_tl_blend_is_exact_average():
     assert torch.allclose(combined, 0.5 * (g + t), atol=1e-5)
 
 
-@pytest.mark.parametrize("arm", ["bce", "gap_ce", "tl_ce", "gap_tl_ce",
+@pytest.mark.parametrize("arm", ["bce", "wbce", "gap_ce", "tl_ce", "gap_tl_ce",
                                  "t2_ce", "t4_ce",
                                  "bce_dice", "pstar_dice", "pstar_tversky",
                                  "focal_tversky", "bce_dice+cldice",

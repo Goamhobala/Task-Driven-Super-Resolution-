@@ -213,11 +213,13 @@ class WeightedCE(nn.Module):
     """
 
     def __init__(self, weight_fn: Callable | None = None, normalize: bool = True,
-                 pos_weight: torch.Tensor | None = None):
+                 pos_weight: torch.Tensor | float | None = None):
         super().__init__()
         self.weight_fn = weight_fn
         self.normalize = normalize
         if pos_weight is not None:
+            if not torch.is_tensor(pos_weight):
+                pos_weight = torch.tensor(float(pos_weight))
             self.register_buffer("pos_weight", pos_weight)
         else:
             self.pos_weight = None
@@ -468,7 +470,16 @@ class ComposedLoss(nn.Module):
 
 def _pixel_slot(name: str, hp: dict) -> nn.Module:
     if name == "bce":
-        return WeightedCE(None, pos_weight=hp.get("pos_weight"))
+        # STRICTLY plain CE — the distribution-family anchor stays literature-
+        # standard even when a pos_weight hp is floating around in `hp`.
+        return WeightedCE(None, pos_weight=None)
+    if name == "wbce":
+        # pos-weighted CE as its OWN pixel-slot candidate (amendment
+        # 2026-07-20): a static class-level reweighting, taxonomically the
+        # same slot as GapLoss/TL's spatially adaptive ones. The anchor
+        # bce_dice stays plain (Giannini Eq. 3 / CoANet / Xu et al.);
+        # "bce_dice + tunable pos_weight" = pstar_dice with pstar=wbce.
+        return WeightedCE(None, pos_weight=hp.get("pos_weight", 5.0))
     if name == "gap_ce":
         return make_gap_ce(r=hp.get("gap_r", 4), K=hp.get("gap_k", 60.0))
     if name == "tl_ce":
@@ -495,25 +506,34 @@ def build_loss(arm: str, **hp) -> ComposedLoss:
     e.g. 'bce_dice+cldice' (α via cl_alpha, template weights rescaled by 1−α).
 
     hp: gap_r, gap_k, tl_ell, tl_theta, tversky_alpha, cl_alpha, cl_iters,
-        sr_w, sr_radius, pstar ('bce'|'gap_ce'|'tl_ce'|'t2_ce'|'t4_ce'),
-        pos_weight, warmup_start, warmup_ramp.
+        sr_w, sr_radius, pstar ('bce'|'wbce'|'gap_ce'|'tl_ce'|'gap_tl_ce'|
+        't2_ce'|'t4_ce'), pos_weight, mix_w (pstar_* only; bce_dice anchor
+        stays frozen 0.5/0.5), warmup_start, warmup_ramp.
     """
     base, _, skel = arm.partition("+")
     wu = dict(warmup_start=hp.get("warmup_start", 30),
               warmup_ramp=hp.get("warmup_ramp", 10))
 
-    if base in ("bce", "gap_ce", "tl_ce", "gap_tl_ce", "t2_ce", "t4_ce"):
+    if base in ("bce", "wbce", "gap_ce", "tl_ce", "gap_tl_ce", "t2_ce", "t4_ce"):
         cfg = dict(pixel=_pixel_slot(base, hp), w_pix=1.0)
     elif base == "bce_dice":
+        # The ANCHOR: frozen at the literature's 0.5/0.5 (Giannini Eq. 3) —
+        # deliberately ignores mix_w, or it stops anchoring anything.
         cfg = dict(pixel=_pixel_slot("bce", hp), region=DiceLoss(),
                    w_pix=0.5, w_reg=0.5)
     elif base == "pstar_dice":
+        # Phase B amendment (2026-07-21): the P*<->region mixing ratio is the
+        # compound's one genuinely free parameter (no paper default exists), so
+        # it is searchable: L = (1-mix_w)·P* + mix_w·region. 0.5 = the old
+        # frozen behaviour; unet.tune_loss searches it on short trials.
+        mw = hp.get("mix_w", 0.5)
         cfg = dict(pixel=_pixel_slot(hp.get("pstar", "bce"), hp), region=DiceLoss(),
-                   w_pix=0.5, w_reg=0.5)
+                   w_pix=1.0 - mw, w_reg=mw)
     elif base == "pstar_tversky":
+        mw = hp.get("mix_w", 0.5)
         cfg = dict(pixel=_pixel_slot(hp.get("pstar", "bce"), hp),
                    region=TverskyLoss(alpha=hp.get("tversky_alpha", 0.7)),
-                   w_pix=0.5, w_reg=0.5)
+                   w_pix=1.0 - mw, w_reg=mw)
     elif base == "focal_tversky":
         cfg = dict(pixel=None, w_pix=0.0,
                    region=FocalTverskyLoss(alpha=hp.get("tversky_alpha", 0.7)),
@@ -539,4 +559,4 @@ def build_loss(arm: str, **hp) -> ComposedLoss:
     return ComposedLoss(**cfg)
 
 
-PHASE_A_ARMS = ["bce", "gap_ce", "tl_ce", "gap_tl_ce", "t2_ce", "t4_ce"]
+PHASE_A_ARMS = ["bce", "wbce", "gap_ce", "tl_ce", "gap_tl_ce", "t2_ce", "t4_ce"]

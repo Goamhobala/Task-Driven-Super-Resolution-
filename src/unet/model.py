@@ -29,11 +29,13 @@ class UNetLightning(pl.LightningModule):
     """UNet + (Dice + weighted BCE); per-crop train/val/test IoU+F1 over the tiles.
 
     ``loss_arm`` switches the training loss to a slot-composed arm from the
-    loss-ablation protocol (``unet.losses.build_loss``: ``bce``, ``gap_ce``,
-    ``tl_ce``, ``bce_dice``, ``pstar_*``, ``focal_tversky``, ``<base>+cldice``,
-    ``<base>+skelrec``). ``None`` (default) keeps the legacy Dice + pos-weighted
-    BCE. Arms use PLAIN CE (protocol: ``pos_weight`` is itself a
-    distribution-slot reweighting, so it only applies to the legacy loss). The
+    loss-ablation protocol (``unet.losses.build_loss``: ``bce``, ``wbce``,
+    ``gap_ce``, ``tl_ce``, ``gap_tl_ce``, ``t2_ce``, ``t4_ce``, ``bce_dice``,
+    ``pstar_*``, ``focal_tversky``, ``<base>+cldice``, ``<base>+skelrec``).
+    ``None`` (default) keeps the legacy Dice + pos-weighted BCE. Arms use
+    PLAIN CE — ``pos_weight`` is itself a distribution-slot reweighting, so
+    among the arms only the explicit ``wbce`` pixel-slot candidate consumes it
+    (besides the legacy loss). The
     arm + its hyperparameters live in ``hparams``, so a checkpoint records
     exactly which loss trained it and ``benchmarking`` can group runs on it.
     """
@@ -59,6 +61,7 @@ class UNetLightning(pl.LightningModule):
         tl_ell: int = 5,
         tl_theta: float = 0.375,
         tversky_alpha: float = 0.7,
+        mix_w: float = 0.5,
         cl_alpha: float = 0.3,
         cl_iters: int = 5,
         sr_w: float = 1.0,
@@ -75,8 +78,10 @@ class UNetLightning(pl.LightningModule):
             self.criterion = build_loss(
                 loss_arm, pstar=pstar, gap_r=gap_r, gap_k=gap_k, tl_ell=tl_ell,
                 tl_theta=tl_theta,
-                tversky_alpha=tversky_alpha, cl_alpha=cl_alpha, cl_iters=cl_iters,
+                tversky_alpha=tversky_alpha, mix_w=mix_w,
+                cl_alpha=cl_alpha, cl_iters=cl_iters,
                 sr_w=sr_w, sr_radius=sr_radius,
+                pos_weight=pos_weight,  # consumed ONLY by the wbce arm
                 warmup_start=warmup_start, warmup_ramp=warmup_ramp,
             )
             self.dice_loss = None
