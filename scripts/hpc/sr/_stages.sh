@@ -59,7 +59,7 @@ REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 VENV_DIR="${VENV_DIR:-/scratch/${USER_NAME}/InstaRoad/.venv}"
 
 : "${EXP_TAG:?experiment script must set EXP_TAG}"
-: "${LABELS:?experiment script must set LABELS (cdngi|overture|osm)}"
+: "${LABELS:-all}"
 : "${UPSAMPLER:?experiment script must set UPSAMPLER (sen2sr|bicubic)}"
 : "${FREEZE_SR:?experiment script must set FREEZE_SR (true|false)}"
 : "${SR_PAD:?experiment script must set SR_PAD (0 = off)}"
