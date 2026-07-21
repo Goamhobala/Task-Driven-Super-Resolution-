@@ -31,8 +31,8 @@ rendered under the prediction label. Explicit mode overrides everything:
         --exp R0=<ckpt> --exp R1b=<ckpt> ...
 
 Ground truth: `{tile}_mask.tif` beside the image (or --mask). A 10 m mask
-(dims == tile) is nearest-upsampled x4 for display; a 2.5 m mask (dims == 4x)
-is read at the scaled window. Missing -> empty GT panel with a warning.
+(dims == tile) is bicubically upsampled x4 for display; a 2.5 m mask (dims ==
+4x) is read at the scaled window. Missing -> empty GT panel with a warning.
 """
 from __future__ import annotations
 
@@ -82,8 +82,8 @@ def read_gt(image_path, mask_path, row, col, upscale=4):
     """(512, 512) binary GT + a panel label. No searching: the mask is
     `{stem}_mask.tif` beside the image (or --mask). Both mask resolutions are
     handled — a 10 m mask (dims == tile dims) is read at the native window and
-    nearest-upsampled x4 for display; a 2.5 m mask (dims == 4x) is read at the
-    scaled window."""
+    bicubically upsampled x4 for display; a 2.5 m mask (dims == 4x) is read at
+    the scaled window."""
     p = Path(image_path)
     mask_path = Path(mask_path) if mask_path else p.parent / (p.stem + "_mask.tif")
     hw = CROP * upscale
@@ -95,8 +95,11 @@ def read_gt(image_path, mask_path, row, col, upscale=4):
     with rasterio.open(mask_path) as src:
         if (src.height, src.width) == tile_dims:            # native 10 m mask
             m = (src.read(1, window=Window(col, row, CROP, CROP)) > 0)
-            m = np.kron(m.astype("float32"), np.ones((upscale, upscale), "float32"))
-            return m, "GT mask (10 m, nearest x4)"
+            t = torch.from_numpy(m.astype("float32"))[None, None]
+            m = torch.nn.functional.interpolate(
+                t, scale_factor=upscale, mode="bicubic", align_corners=False,
+            ).clamp_(0, 1)[0, 0].numpy()
+            return m, "GT mask (10 m, bicubic x4)"
         m = src.read(1, window=Window(col * upscale, row * upscale, hw, hw))
         return (m > 0).astype("float32"), "GT mask (2.5 m)"
 

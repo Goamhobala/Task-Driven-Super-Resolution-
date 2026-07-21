@@ -1,0 +1,8 @@
+PYTORCH_MPS_LOW_WATERMARK_RATIO=0.75 PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.85 \
+PYTORCH_ENABLE_MPS_FALLBACK=1 \
+  uv run -m src.sr.viz_single  --device mps
+
+PYTORCH_MPS_LOW_WATERMARK_RATIO=0.75 PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.85 \
+PYTORCH_ENABLE_MPS_FALLBACK=1 \
+uv run -m sr.viz_single --pristine --device mps
+--pristine flag switches main from the 2×2 to a 3×2 layout (default behavior unchanged without the flag).
