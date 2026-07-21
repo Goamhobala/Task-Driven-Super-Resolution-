@@ -72,6 +72,27 @@ class JointSRUNetLightning(UNetLightning):
         upscale: int = 4,
         sr_pad: int = 0,
         reflectance_scale: float = 10000.0,
+        # --- recipe v2 training dynamics ------------------------------------
+        # lr_schedule: "cosine" = per-step cosine of BOTH LR groups to 0 over
+        # the run's budget (alpha = lr_sr/lr stays constant; the SR group gets
+        # its adapt-early-lock-late decay). "none" = legacy constant LRs --
+        # the default, so old checkpoints restore under the recipe that
+        # trained them; recipe-v2 configs set cosine explicitly.
+        lr_schedule: str = "none",
+        # Linear LR ramp (0 -> lr_sr) on the SR group only, in epochs
+        # (fractional ok; converted to steps). LP-FT rationale: skip the
+        # phase-1 window where a random decoder sends destructive noise into
+        # the pretrained generator -- NOT the phase-2 co-adaptation the joint
+        # arms exist to measure, so keep it short (~1 epoch). AUTO-DISABLED
+        # when structurally covered: frozen/bicubic SR (no gradients to
+        # protect against) or staged warm starts (stage-1 IS the warmup).
+        sr_warmup_epochs: float = 1.0,
+        # Optional L2-SP anchor (Li et al. 2018, arXiv:1802.01483):
+        # + l2sp_lambda * sum ||theta_sr - theta_sr,0||^2. Decays toward the
+        # PRETRAINED weights (unlike weight decay's pull toward 0). Default 0
+        # = pure task-driven SR (Haris et al. TDSR-DET); escalate only on
+        # sr_drift_rel evidence, per the pre-registered protocol.
+        l2sp_lambda: float = 0.0,
         # Staged warm start (R6/R7): path to a stage-1 (frozen-SR, R5/R1) ckpt
         # whose UNet weights initialise THIS model's UNet; the SR net still
         # loads from sen2sr_dir. Rationale: the UNet is the task-critic whose
@@ -191,6 +212,24 @@ class JointSRUNetLightning(UNetLightning):
             for p in self.sr.parameters():
                 p.requires_grad = False
 
+        # --- recipe v2: theta_0 snapshot of the trainable SR params ---------
+        # Feeds (a) the ALWAYS-ON drift monitor `sr_drift_rel` =
+        # ||theta-theta_0|| / ||theta_0||, logged every val epoch -- the
+        # measured answer to "is task-driven fine-tuning pulling the generator
+        # off its pretrained prior?" -- and (b) the optional L2-SP anchor
+        # above. Buffers are non-persistent: checkpoints stay small and
+        # theta_0 is rebuilt from sen2sr_dir's pretrained weights on every
+        # construction (so it stays the PRETRAINED reference even when
+        # resuming a fine-tuned checkpoint).
+        sr_train = [p for p in self.sr.parameters() if p.requires_grad]
+        self._n_sr_p0 = len(sr_train)
+        for i, p in enumerate(sr_train):
+            self.register_buffer(f"_sr_p0_{i}", p.detach().clone(),
+                                 persistent=False)
+        self._sr_warmup_epochs = (float(sr_warmup_epochs)
+                                  if (sr_train and not warm_start_unet)
+                                  else 0.0)
+
         # Differentiable post-SR normalisation adapter: the same frozen z-score
         # the baseline's dataloader applies, sliced to this model's bands.
         idx = [b - 1 for b in bands]
@@ -296,10 +335,75 @@ class JointSRUNetLightning(UNetLightning):
                      - self.band_mean) / self.band_std
         return self.model(x_seg)
 
-    # ------------------------------------------------------ two LR groups
+    # ---------------------------------------------- drift monitor + L2-SP
+    def _sr_trainable_params(self):
+        """Trainable SR params, in the SAME order the theta_0 buffers were
+        snapshot in (requires_grad never changes after __init__)."""
+        return [p for p in self.sr.parameters() if p.requires_grad]
+
+    def training_step(self, batch, batch_idx):
+        loss = super().training_step(batch, batch_idx)
+        lam = float(getattr(self.hparams, "l2sp_lambda", 0.0))
+        if lam > 0.0 and self._n_sr_p0:
+            pen = None
+            for i, p in enumerate(self._sr_trainable_params()):
+                d = (p - getattr(self, f"_sr_p0_{i}")).pow(2).sum()
+                pen = d if pen is None else pen + d
+            self.log("l2sp_penalty", pen, on_step=False, on_epoch=True,
+                     sync_dist=True)
+            loss = loss + lam * pen
+        return loss
+
+    def on_validation_epoch_end(self):
+        if self._n_sr_p0:
+            with torch.no_grad():
+                num = None
+                den = None
+                for i, p in enumerate(self._sr_trainable_params()):
+                    p0 = getattr(self, f"_sr_p0_{i}")
+                    n = (p - p0).pow(2).sum()
+                    d = p0.pow(2).sum()
+                    num = n if num is None else num + n
+                    den = d if den is None else den + d
+                drift = (num / den.clamp_min(1e-24)).sqrt()
+            self.log("sr_drift_rel", drift, on_epoch=True, sync_dist=True)
+
+    # ------------------------------------- two LR groups + cosine/warmup
     def configure_optimizers(self):
         groups = [{"params": self.model.parameters(), "lr": self.hparams.lr}]
-        sr_params = [p for p in self.sr.parameters() if p.requires_grad]
+        sr_params = self._sr_trainable_params()
         if sr_params:
             groups.append({"params": sr_params, "lr": self.hparams.lr_sr})
-        return torch.optim.Adam(groups)
+        opt = torch.optim.Adam(groups)
+        schedule = getattr(self.hparams, "lr_schedule", "none")
+        if schedule == "none":
+            return opt
+        if schedule != "cosine":
+            raise ValueError(f"lr_schedule={schedule!r} (cosine | none)")
+        import math
+
+        # Per-step cosine to 0 over the WHOLE run (T_max == the trainer's own
+        # budget, so trials and refits each see a complete schedule scaled to
+        # their budget, and "lr" means "peak of a full cosine" in both).
+        # Clamped at total: the lr can never oscillate back up.
+        total = max(1, int(self.trainer.estimated_stepping_batches))
+        steps_per_epoch = max(1, round(total / max(1, self.trainer.max_epochs)))
+        # Warmup is ABSOLUTE (steps), not proportional to budget: the random-
+        # decoder noise phase lasts the same number of steps however long the
+        # run is (~10% of a 10-epoch trial, ~1% of a 100-epoch refit).
+        warm = int(round(self._sr_warmup_epochs * steps_per_epoch))
+
+        def cosine(step):
+            t = min(step, total) / total
+            return 0.5 * (1.0 + math.cos(math.pi * t))
+
+        lambdas = [cosine]                     # UNet group: no warmup -- the
+        if sr_params:                          # critic must learn full-speed
+            def sr_lambda(step):
+                ramp = min(1.0, step / warm) if warm > 0 else 1.0
+                return ramp * cosine(step)
+            lambdas.append(sr_lambda)
+
+        sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lambdas)
+        return {"optimizer": opt,
+                "lr_scheduler": {"scheduler": sched, "interval": "step"}}

@@ -26,6 +26,13 @@ trainer:
   max_epochs: 20
   accelerator: auto
   devices: auto
+  # One numerical regime everywhere: matches sr.tune's search default. Applies
+  # to the UNet stage only -- the SR nets always run in an fp32 island (their
+  # FFT constraint has no bf16 kernels; see JointSRUNetLightning.forward).
+  # Pre-Ampere GPUs have no bf16: override with --trainer.precision 16-mixed.
+  precision: bf16-mixed
+  # Recipe v2: clip exploding steps (global L2 norm, both LR groups jointly).
+  gradient_clip_val: 1.0
   log_every_n_steps: 10
   logger: true
   callbacks:
@@ -55,6 +62,20 @@ model:
   lr: 1.0e-4                  # UNet LR (baseline convention)
   lr_sr: 1.0e-5               # SEN2SR LR; keep well below lr (alpha = lr_sr/lr).
                               # Starting point only — search both with sr.tune.
+  # ---- recipe v2 training dynamics ----------------------------------------
+  lr_schedule: cosine         # per-step cosine of BOTH groups to 0 over the
+                              # run's max_epochs (alpha constant; T_max is the
+                              # trainer's own budget, so tune trials and refits
+                              # each run a COMPLETE schedule). "none" = legacy.
+  sr_warmup_epochs: 1.0       # linear ramp on the SR group's lr only (LP-FT:
+                              # skip the random-decoder noise phase; absolute,
+                              # not scaled to budget). AUTO-OFF in the model
+                              # for frozen/bicubic SR and staged warm starts
+                              # (warm_start_unet: stage-1 IS the warmup).
+  l2sp_lambda: 0.0            # optional L2-SP anchor l2sp_lambda*sum||th-th0||^2
+                              # toward the PRETRAINED SR weights (Li et al.
+                              # 2018). 0 = pure task-driven SR (TDSR-DET);
+                              # escalate only on sr_drift_rel evidence.
   pos_weight: 5.0
   threshold: 0.5
   upsampler: sen2sr           # sen2sr (Lite/CNN) | sen2sr_full (Mamba; needs

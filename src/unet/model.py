@@ -47,6 +47,12 @@ class UNetLightning(pl.LightningModule):
         in_channels: int = 3,
         classes: int = 1,
         lr: float = 1e-3,
+        # "cosine" = per-step cosine decay of lr to 0 over the run's full
+        # budget (recipe v2; T_max is read from the trainer, so search trials
+        # and refits each run a COMPLETE schedule scaled to their own budget).
+        # "none" = constant lr (legacy recipe; the loss-ablation pilot keeps
+        # this so its pre-registered screening protocol is untouched).
+        lr_schedule: str = "none",
         pos_weight: float = 5.0,
         bands: tuple[int, ...] = (21, 22, 23),
         image_size: int = 256,
@@ -166,4 +172,24 @@ class UNetLightning(pl.LightningModule):
         self.log("test_f1", self.test_f1, on_epoch=True)
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
+        opt = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
+        schedule = getattr(self.hparams, "lr_schedule", "none")
+        if schedule == "none":
+            return opt
+        if schedule != "cosine":
+            raise ValueError(f"lr_schedule={schedule!r} (cosine | none)")
+        import math
+
+        # Per-step cosine to 0 over the whole run. Clamped at total so the
+        # lr can never oscillate back up (PyTorch's CosineAnnealingLR is
+        # periodic past T_max); here schedule end == training end by
+        # construction because both derive from the same trainer budget.
+        total = max(1, int(self.trainer.estimated_stepping_batches))
+
+        def cosine(step):
+            t = min(step, total) / total
+            return 0.5 * (1.0 + math.cos(math.pi * t))
+
+        sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=cosine)
+        return {"optimizer": opt,
+                "lr_scheduler": {"scheduler": sched, "interval": "step"}}

@@ -29,6 +29,17 @@
 #                collide. Loss hps: PSTAR GAP_R GAP_K TL_ELL TL_THETA
 #                TVERSKY_ALPHA CL_ALPHA CL_ITERS SKEL_W SKEL_RADIUS
 #                WARMUP_START WARMUP_RAMP.
+#   Recipe v2 (defaults = the agreed cross-arm recipe; override only with
+#   cause -- the recipe is a between-arm CONSTANT of the protocol):
+#     CLIP              gradient clip, global L2 norm (1.0; 0 = off)
+#     LR_SCHEDULE       cosine | none (cosine: per-step decay to 0, T_max =
+#                       the stage's own epoch budget -- TUNE_EPOCHS for
+#                       trials, REFIT_EPOCHS for the refit)
+#     SR_WARMUP_EPOCHS  linear LR ramp on the SR group, absolute epochs
+#                       (1.0). The MODEL auto-disables it for frozen/bicubic
+#                       SR and warm-start arms, so it is safe to pass always.
+#     L2SP_LAMBDA       L2-SP anchor toward the pretrained SR weights (0.0 =
+#                       dormant). Escalate only on sr_drift_rel evidence.
 #
 # STAGE=tune   Optuna search, one INDEPENDENT tuner per GPU, shared sqlite study
 #              (no DDP — that's the Optuna constraint). Default headers = gpu:2.
@@ -59,6 +70,13 @@ NUM_WORKERS="${NUM_WORKERS:-0}"
 PRECISION="${PRECISION:-bf16-mixed}"
 SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SEN2SRLite_RGBN}"
 WARM_START_CKPT="${WARM_START_CKPT:-}"
+
+# --- Recipe v2 training dynamics (defaults = the agreed recipe) --------------
+CLIP="${CLIP:-1.0}"                          # gradient clip (global L2; 0=off)
+LR_SCHEDULE="${LR_SCHEDULE:-cosine}"         # cosine | none
+SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-1.0}"  # SR-group ramp; model auto-off
+                                             # for frozen/bicubic/warm-start
+L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}"            # 0 = dormant L2-SP anchor
 
 # LABELS -> dataset dir + code-level mask_source
 case "$LABELS" in
@@ -142,6 +160,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Logging to ${LOG_FILE}"
 echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}"
 echo "labels=${LABELS} (mask_source=${MASK_SOURCE})  upsampler=${UPSAMPLER}  freeze_sr=${FREEZE_SR}  sr_pad=${SR_PAD}  loss_arm=${LOSS_ARM:-legacy}"
+echo "recipe: clip=${CLIP}  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}"
 echo "DATASET_DIR=${DATASET_DIR}  warm_start=${WARM_START_CKPT:-none}"
 
 # --- Fail fast ---------------------------------------------------------------
@@ -234,6 +253,10 @@ if [ "$STAGE" = "tune" ]; then
       --max-epochs "$TUNE_EPOCHS" \
       --patience "$PATIENCE" \
       --precision "$PRECISION" \
+      --clip "$CLIP" \
+      --lr-schedule "$LR_SCHEDULE" \
+      --sr-warmup-epochs "$SR_WARMUP_EPOCHS" \
+      --l2sp-lambda "$L2SP_LAMBDA" \
       --seed "$seed" \
       --train-seed "$SEED" \
       --study-name "$STUDY_NAME" \
@@ -366,7 +389,10 @@ cd "$RUN_DIR"
 # (belt) even though the best_params overlay records it too (braces) — drift
 # is impossible.
 MODEL_ARGS=(--model.upsampler "$UPSAMPLER" --model.freeze_sr "$FREEZE_SR"
-            --model.sr_pad "$SR_PAD" --model.sen2sr_dir "$SEN2SR_DIR")
+            --model.sr_pad "$SR_PAD" --model.sen2sr_dir "$SEN2SR_DIR"
+            --model.lr_schedule "$LR_SCHEDULE"
+            --model.sr_warmup_epochs "$SR_WARMUP_EPOCHS"
+            --model.l2sp_lambda "$L2SP_LAMBDA")
 if [ -n "$WARM_START_CKPT" ]; then
   MODEL_ARGS+=(--model.warm_start_unet "$WARM_START_CKPT")
 fi
@@ -387,6 +413,7 @@ python -m sr.cli fit \
   --trainer.max_epochs "$REFIT_EPOCHS" \
   --trainer.devices "$REFIT_GPUS" \
   --trainer.precision "$PRECISION" \
+  --trainer.gradient_clip_val "$CLIP" \
   --trainer.logger.init_args.project "$WANDB_PROJECT" \
   --seed_everything "$SEED"
 

@@ -13,6 +13,15 @@ trainer:
   max_epochs: 20
   accelerator: auto
   devices: auto
+  # One numerical regime everywhere: matches the Optuna search (unet.tune) and
+  # the loss pilot (train_ablation), both bf16-mixed. fp32 master weights are
+  # kept; ~2x faster and ~half the activation memory vs full fp32. NB pre-Ampere
+  # GPUs (Kaggle T4/P100) have no bf16 -- override with --trainer.precision
+  # 16-mixed there.
+  precision: bf16-mixed
+  # Recipe v2: clip exploding steps (global L2 norm). Harmless for the plain
+  # UNet, the stability floor for the joint-SR arms -- one recipe everywhere.
+  gradient_clip_val: 1.0
   log_every_n_steps: 10
   # Default logger. For Weights & Biases, also pass `--config src/unet/configs/wandb.yaml`.
   logger: true
@@ -31,6 +40,11 @@ model:
   encoder_weights: imagenet   # null -> random init
   classes: 1
   lr: 1.0e-4
+  lr_schedule: cosine         # recipe v2: per-step cosine to 0 over the run's
+                              # max_epochs (lr = the cosine's peak). "none" =
+                              # legacy constant lr; the loss pilot
+                              # (train_ablation) keeps its own constant-lr
+                              # screening protocol regardless.
   pos_weight: 5.0             # weighted-BCE weight on the sparse road class
   threshold: 0.5
 

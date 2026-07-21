@@ -73,8 +73,25 @@ def create_study_shared(study_name, storage, seed):
                 direction="maximize",
                 storage=store,
                 load_if_exists=storage is not None,
-                sampler=optuna.samplers.TPESampler(seed=seed),
-                pruner=optuna.pruners.MedianPruner(n_warmup_steps=1),
+                sampler=optuna.samplers.TPESampler(
+                    seed=seed,
+                    # Parallel workers share one storage: constant_liar makes
+                    # RUNNING trials visible to TPE so concurrent workers stop
+                    # proposing near-duplicates (recommended by the sampler
+                    # docs for distributed optimisation).
+                    constant_liar=True,
+                    # Joint model over interacting dims (lr x batch_size x
+                    # encoder; lr x lr_sr in sr.tune -- the alpha ratio).
+                    # Experimental-flagged but widely used.
+                    multivariate=True,
+                    group=True,
+                ),
+                # Prune from the 3rd validation (n_warmup_steps=2): with ~10
+                # epoch trials, epoch-1 IoU kills slow starters (low lr / high
+                # pos_weight) that rank well later. n_min_trials=2: need two
+                # finished trials at a rung before its median can prune.
+                pruner=optuna.pruners.MedianPruner(n_warmup_steps=2,
+                                                   n_min_trials=2),
             )
         except Exception as e:  # noqa: BLE001 - only retry the known init race
             if attempt < 11 and any(s in str(e).lower() for s in _STUDY_RACE):
@@ -92,6 +109,7 @@ except ImportError:  # pragma: no cover - fallback for older optuna
     from optuna.integration import PyTorchLightningPruningCallback
 
 import lightning.pytorch as pl
+import torch
 from lightning.pytorch.callbacks import EarlyStopping
 
 # Same imports the LightningCLI uses -- keep the search and the real fit identical.
@@ -107,6 +125,29 @@ from unet.model import UNetLightning
 
 MONITOR = "val_iou"          # maximise per-crop IoU on the val quadrants
 MONITOR_MODE = "max"
+
+
+class BestScoreCallback(pl.Callback):
+    """Track the best MONITOR across validation epochs.
+
+    ``trainer.callback_metrics`` alone holds only the LAST epoch's value --
+    with EarlyStopping(patience=k) that is ~k epochs past the peak, i.e. peak
+    minus noise, which both corrupts TPE's model and mis-ranks the best trial.
+    Works with --patience 0 too (unlike reading EarlyStopping.best_score)."""
+
+    def __init__(self, monitor: str = MONITOR, mode: str = MONITOR_MODE):
+        self.monitor, self.mode, self.best = monitor, mode, None
+
+    def on_validation_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+        v = trainer.callback_metrics.get(self.monitor)
+        if v is None:
+            return
+        v = float(v)
+        if (self.best is None
+                or (v > self.best if self.mode == "max" else v < self.best)):
+            self.best = v
 
 
 # --------------------------------------------------------------------------- #
@@ -142,11 +183,10 @@ def build_objective(args, base_cfg: dict):
         encoder_name = trial.suggest_categorical("encoder_name", args.encoders)
         batch_size = trial.suggest_categorical("batch_size", args.batch_sizes)
 
-        # Training seed: the base --train-seed for EVERY trial (so a trial's
+        # Training seed: the SAME --train-seed for EVERY trial (so a trial's
         # score doesn't depend on which parallel worker ran it); --seed only
-        # decorrelates the per-worker TPE samplers.
-        pl.seed_everything(args.train_seed if args.train_seed is not None
-                           else args.seed, workers=True)
+        # affects the per-worker TPE samplers.
+        pl.seed_everything(args.train_seed, workers=True)
 
         dm = RoadDataModule(
             dataset_dir=data_cfg["dataset_dir"],
@@ -167,6 +207,7 @@ def build_objective(args, base_cfg: dict):
             in_channels=len(bands),
             classes=model_cfg.get("classes", 1),
             lr=lr,
+            lr_schedule=model_cfg.get("lr_schedule", "cosine"),
             pos_weight=pos_weight,
             bands=bands,
             image_size=data_cfg.get("image_size", 256),
@@ -177,7 +218,8 @@ def build_objective(args, base_cfg: dict):
         )
 
         pruning_cb = PyTorchLightningPruningCallback(trial, monitor=MONITOR)
-        callbacks = [pruning_cb]
+        best_cb = BestScoreCallback()
+        callbacks = [pruning_cb, best_cb]
         if args.patience > 0:
             callbacks.append(EarlyStopping(monitor=MONITOR, mode=MONITOR_MODE, patience=args.patience))
 
@@ -190,21 +232,33 @@ def build_objective(args, base_cfg: dict):
             # rasterio/GDAL in a subprocess -> segfault. Each trial runs on one GPU.
             strategy="auto",
             precision=args.precision,
+            gradient_clip_val=args.clip if args.clip > 0 else None,
             logger=False,               # keep trials quiet; final refit does the W&B logging
             enable_checkpointing=False,
             enable_progress_bar=False,
             log_every_n_steps=10,
             callbacks=callbacks,
         )
-        trainer.fit(model, datamodule=dm)
+        try:
+            trainer.fit(model, datamodule=dm)
+        except torch.cuda.OutOfMemoryError:
+            # Record OOM as PRUNED, not FAIL: TPE builds its model from
+            # COMPLETE+PRUNED trials only, so a FAIL teaches the sampler
+            # nothing and it keeps re-proposing the same too-big region.
+            # Pruned-with-poor-intermediates ranks at the bottom instead.
+            trial.set_user_attr("oom", True)
+            raise optuna.TrialPruned(
+                f"OOM: batch_size={batch_size}, encoder={encoder_name}")
 
         # Optuna>=3.5 pruning callbacks defer the raised TrialPruned to here.
         pruning_cb.check_pruned()
 
-        value = trainer.callback_metrics.get(MONITOR)
-        if value is None:
+        # Score on the BEST val_iou across epochs, per the module docstring --
+        # callback_metrics holds only the last epoch's value, which with
+        # EarlyStopping is ~patience epochs past the peak.
+        if best_cb.best is None:
             raise RuntimeError(f"'{MONITOR}' was never logged; cannot score the trial.")
-        return float(value)
+        return float(best_cb.best)
 
     return objective
 
@@ -212,7 +266,8 @@ def build_objective(args, base_cfg: dict):
 # --------------------------------------------------------------------------- #
 # Output: best trial -> Lightning config overlay
 # --------------------------------------------------------------------------- #
-def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights, mask_dirname) -> Path:
+def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights, mask_dirname,
+                       precision=None, lr_schedule=None) -> Path:
     p = study.best_params
     # Pin encoder_weights AND mask_dirname too, so the refit reproduces the SAME
     # init (imagenet vs random) and label source (CDNGI vs OSM) the search ran
@@ -224,8 +279,19 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights, mask
             "lr": p["lr"],
             "pos_weight": p["pos_weight"],
         },
+    }
+    if lr_schedule is not None:
+        # Pin the LR schedule the search ran under (recipe v2: cosine).
+        overlay["model"]["lr_schedule"] = lr_schedule
+    overlay |= {
         "data": {"batch_size": p["batch_size"], "mask_dirname": mask_dirname},
     }
+    if precision:
+        # Pin the numerical regime the trials ran under (bf16-mixed by default)
+        # so the refit doesn't silently fall back to the base config's fp32 --
+        # fp32 doubles activation memory, so the searched batch_size that fit
+        # during the search could OOM in the refit.
+        overlay["trainer"] = {"precision": precision}
     overlay_path = out_dir / "best_params.yaml"
     header = (
         "# Best hyperparameters from unet.tune (Optuna). Deep-merges over the base config:\n"
@@ -271,12 +337,16 @@ def parse_args(argv=None):
     ap.add_argument("--study-name", default="unet_optuna")
     ap.add_argument("--storage", default=None,
                     help="Optuna storage URL, e.g. sqlite:///runs/unet_optuna/study.db (enables resume).")
-    ap.add_argument("--seed", type=int, default=42,
-                    help="TPE sampler seed — give each parallel worker a DIFFERENT "
-                         "one so they don't propose duplicate points.")
-    ap.add_argument("--train-seed", type=int, default=None,
-                    help="seed_everything() for every trial (default: --seed). Pin "
-                         "to the base seed so trial scores are worker-independent.")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="TPE sampler seed. Default None = each worker gets an "
+                         "independently random sampler (a FIXED shared default "
+                         "would make N workers burn their startup budget on "
+                         "identical random points). Pass distinct explicit "
+                         "seeds only for reproducible searches.")
+    ap.add_argument("--train-seed", type=int, default=42,
+                    help="seed_everything() for every trial. One shared value "
+                         "so trial scores are worker-independent (common "
+                         "random numbers across configs).")
 
     # per-trial training budget
     ap.add_argument("--max-epochs", type=int, default=8, help="Short budget per trial; refit longer after.")
@@ -286,6 +356,10 @@ def parse_args(argv=None):
                     help="GPUs PER tuner process. Must be 1 (no DDP during search); "
                          "parallelise with one process per GPU sharing --storage.")
     ap.add_argument("--precision", default="bf16-mixed")
+    ap.add_argument("--clip", type=float, default=1.0,
+                    help="gradient_clip_val (global L2 norm; 0 = off). Recipe "
+                         "v2 floor -- harmless for the plain UNet, required "
+                         "for the joint-SR arms; one recipe everywhere.")
 
     # search space
     ap.add_argument("--lr-min", type=float, default=1e-5)
@@ -313,15 +387,25 @@ def main(argv=None):
     objective = build_objective(args, base_cfg)
 
     study = create_study_shared(args.study_name, args.storage, args.seed)
-    # catch OOM: batch_size is searched, so exceeding VRAM is a per-trial FAIL,
-    # not a reason to kill the worker and its remaining trial budget.
-    import torch
+    # The objective converts OOM to TrialPruned (so TPE learns the region);
+    # catch= stays as a backstop for OOMs escaping outside trainer.fit.
     study.optimize(objective, n_trials=args.n_trials, timeout=args.timeout,
                    gc_after_trial=True, catch=(torch.cuda.OutOfMemoryError,))
 
+    n_complete = sum(t.state == optuna.trial.TrialState.COMPLETE
+                     for t in study.trials)
+    if n_complete == 0:
+        raise SystemExit(
+            f"Study '{study.study_name}' has 0 COMPLETE trials "
+            f"({len(study.trials)} total: all failed/pruned/OOM) -- nothing "
+            "to write. Check the trial logs before rerunning.")
+
     encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
     mask_dirname = resolve_mask_dirname(base_cfg, args.mask_dirname)
-    overlay_path = write_best_overlay(study, out_dir, encoder_weights, mask_dirname)
+    overlay_path = write_best_overlay(study, out_dir, encoder_weights, mask_dirname,
+                                      precision=args.precision,
+                                      lr_schedule=base_cfg.get("model", {})
+                                                          .get("lr_schedule", "cosine"))
     print(f"\nBest {MONITOR}={study.best_value:.4f} (trial #{study.best_trial.number})")
     print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}  mask_dirname={mask_dirname}")
     print(f"Wrote Lightning overlay -> {overlay_path}")
