@@ -32,7 +32,10 @@
 # Notes:
 #   * Single-GPU stages only (the loss arms; unet/sr STAGE=tune fans Optuna
 #     over both GPUs itself — keep using train.sbatch/train_both.sbatch there).
-#   * STAGE=tune is skipped: it is a documented no-op for the loss ablation.
+#   * Each side chains STAGE=tune -> fit -> bench. tune is an instant no-op
+#     for most loss arms; for the Phase B compounds (l5/l6) it runs the
+#     unet.tune_loss mix_w search pinned to that side's ONE GPU
+#     (SEARCH_GPUS=1 is forced — the side can't fan out).
 #   * Both sides share the walltime — pair arms of similar duration (the
 #     weighted-CE arms gap_ce/tl_ce are slower than bce/bce_dice: per-step CPU
 #     skeletonization), or the faster side's GPU idles until the slower ends.
@@ -81,6 +84,9 @@ run_side() {  # $1 side label, $2 script path, $3 gpu index, rest: side env
   {
     echo "### side ${side}: $(basename "$script") on GPU ${gpu}  env=[$*] ###"
     env "$@" CUDA_VISIBLE_DEVICES="$gpu" \
+        OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" \
+        STAGE=tune SEARCH_GPUS=1 bash "$script" \
+    && env "$@" CUDA_VISIBLE_DEVICES="$gpu" \
         OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" \
         STAGE=fit bash "$script" \
     && env "$@" CUDA_VISIBLE_DEVICES="$gpu" \

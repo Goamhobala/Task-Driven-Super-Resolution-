@@ -315,7 +315,10 @@ case "$ARM" in pstar_dice*|pstar_tversky*)
     RESOLVED_TVA=$(python -c "import yaml,sys;print(yaml.safe_load(open(sys.argv[1]))['tversky_alpha'])" "${RUN_DIR}/best_loss_params.yaml")
     echo "mix_w=${RESOLVED_MW} tversky_alpha=${RESOLVED_TVA} (tuned; best_loss_params.yaml)"
   else
-    echo "WARN: no MIX_W and no best_loss_params.yaml — fitting at the frozen 0.5 (run STAGE=tune first for the searched ratio)." >&2
+    case "$ARM" in
+      *+*) echo "WARN: no MIX_W set — fitting at 0.5. Phase C should INHERIT B*'s tuned ratio: pass MIX_W=<value from the Phase B best_loss_params.yaml>." >&2 ;;
+      *)   echo "WARN: no MIX_W and no best_loss_params.yaml — fitting at the frozen 0.5 (run STAGE=tune first for the searched ratio)." >&2 ;;
+    esac
   fi ;;
 esac
 
