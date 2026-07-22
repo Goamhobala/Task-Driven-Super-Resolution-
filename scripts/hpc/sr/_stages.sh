@@ -40,6 +40,13 @@
 #                       SR and warm-start arms, so it is safe to pass always.
 #     L2SP_LAMBDA       L2-SP anchor toward the pretrained SR weights (0.0 =
 #                       dormant). Escalate only on sr_drift_rel evidence.
+#     REG=false         one-switch unregularised-GAN ablation (clip 0, no
+#                       schedule, no warmup); auto-tags run/study/bench with
+#                       _noreg so it never mixes with the v2 runs.
+#   SR_SNAPSHOT_EVERY   fit-stage SR-weights-only snapshots every N epochs
+#                       into <run dir>/sr_snapshots/ (+ an epoch-0 init
+#                       frame) for replaying the SR output's task-driven
+#                       evolution. 0 (default) = off; try 2-5.
 #
 # STAGE=tune   Optuna search, one INDEPENDENT tuner per GPU, shared sqlite study
 #              (no DDP — that's the Optuna constraint). Default headers = gpu:2.
@@ -72,11 +79,32 @@ SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SEN2SRLite_RGBN
 WARM_START_CKPT="${WARM_START_CKPT:-}"
 
 # --- Recipe v2 training dynamics (defaults = the agreed recipe) --------------
+# REG=false flips every stabiliser off in ONE switch (clip / cosine / warmup;
+# l2sp is already dormant) -- the "unregularised GAN" ablation -- and tags the
+# run dir / study / benchmark name with _noreg so it can NEVER mix with the v2
+# runs. Individually-set vars still win either way; if you hand-roll a partial
+# ablation instead of using REG=false, tag the run yourself.
+REG="${REG:-true}"
+REG_TAG=""
+if [ "$REG" = "false" ] || [ "$REG" = "0" ]; then
+  REG_TAG="_noreg"
+  CLIP="${CLIP:-0}"
+  LR_SCHEDULE="${LR_SCHEDULE:-none}"
+  SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-0}"
+fi
 CLIP="${CLIP:-1.0}"                          # gradient clip (global L2; 0=off)
 LR_SCHEDULE="${LR_SCHEDULE:-cosine}"         # cosine | none
 SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-1.0}"  # SR-group ramp; model auto-off
                                              # for frozen/bicubic/warm-start
 L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}"            # 0 = dormant L2-SP anchor
+
+# --- SR evolution snapshots (STAGE=fit only; demo/insight) -------------------
+# Every N epochs save the SR net's WEIGHTS ONLY into <run dir>/sr_snapshots/
+# (~45 MB/frame SR4RS, ~2 MB SEN2SR-Lite -- vs ~500 MB full Lightning ckpts),
+# plus an epoch-0 "init" frame: replay how the task loss reshapes the SR
+# output. 0 (default) = off. Storage at every-2 x 100 epochs: SR4RS ~2.3 GB,
+# SEN2SR ~0.1 GB. Frozen/bicubic arms skip automatically.
+SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-0}"
 
 # LABELS -> dataset dir + code-level mask_source
 case "$LABELS" in
@@ -152,7 +180,7 @@ fi
 BASE_CONFIG="$REPO_DIR/src/sr/configs/joint_sr.yaml"
 NORM_CONFIG="$REPO_DIR/src/unet/configs/norm_stats.yaml"
 WANDB_CONFIG="$REPO_DIR/src/unet/configs/wandb.yaml"
-RUN_DIR="/scratch/${USER_NAME}/InstaRoad/runs/sr_${EXP_TAG}${LOSS_TAG}_seed${SEED}"
+RUN_DIR="/scratch/${USER_NAME}/InstaRoad/runs/sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}_seed${SEED}"
 mkdir -p "$RUN_DIR"
 
 LOG_FILE="${RUN_DIR}/${STAGE}_$(date +%Y%m%d_%H%M%S).log"
@@ -160,7 +188,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Logging to ${LOG_FILE}"
 echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}"
 echo "labels=${LABELS} (mask_source=${MASK_SOURCE})  upsampler=${UPSAMPLER}  freeze_sr=${FREEZE_SR}  sr_pad=${SR_PAD}  loss_arm=${LOSS_ARM:-legacy}"
-echo "recipe: clip=${CLIP}  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}"
+echo "recipe: reg=${REG}${REG_TAG:+ [${REG_TAG}]}  clip=${CLIP}  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}  sr_snapshot_every=${SR_SNAPSHOT_EVERY}"
 echo "DATASET_DIR=${DATASET_DIR}  warm_start=${WARM_START_CKPT:-none}"
 
 # --- Fail fast ---------------------------------------------------------------
@@ -231,7 +259,7 @@ if [ "$STAGE" = "tune" ]; then
   #   job2: STORAGE=journal://<same path> SAMPLER_OFFSET=500
   STORAGE="${STORAGE:-sqlite:///${RUN_DIR}/study.db}"
   SAMPLER_OFFSET="${SAMPLER_OFFSET:-0}"
-  STUDY_NAME="sr_${EXP_TAG}${LOSS_TAG}_seed${SEED}"
+  STUDY_NAME="sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}_seed${SEED}"
 
   run_tuner () {   # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
     local gpu="$1" ntrials="$2" seed="$3" pin=""
@@ -330,7 +358,7 @@ if [ "$STAGE" = "bench" ]; then
   fi
 
   STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}"   # SHARED across experiments
-  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${LOSS_TAG}}"  # {family}_{exp}[_{loss}]: what the stats pair/group on
+  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}}"  # {family}_{exp}[_{loss}][_noreg]: what the stats pair/group on
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"      # cdngi | overture | osm
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
   TILE_METRICS="${TILE_METRICS:-apls}"           # comma-separated plugins; '' disables.
@@ -392,7 +420,8 @@ MODEL_ARGS=(--model.upsampler "$UPSAMPLER" --model.freeze_sr "$FREEZE_SR"
             --model.sr_pad "$SR_PAD" --model.sen2sr_dir "$SEN2SR_DIR"
             --model.lr_schedule "$LR_SCHEDULE"
             --model.sr_warmup_epochs "$SR_WARMUP_EPOCHS"
-            --model.l2sp_lambda "$L2SP_LAMBDA")
+            --model.l2sp_lambda "$L2SP_LAMBDA"
+            --model.sr_snapshot_every "$SR_SNAPSHOT_EVERY")
 if [ -n "$WARM_START_CKPT" ]; then
   MODEL_ARGS+=(--model.warm_start_unet "$WARM_START_CKPT")
 fi

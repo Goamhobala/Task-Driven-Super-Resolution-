@@ -93,6 +93,15 @@ class JointSRUNetLightning(UNetLightning):
         # = pure task-driven SR (Haris et al. TDSR-DET); escalate only on
         # sr_drift_rel evidence, per the pre-registered protocol.
         l2sp_lambda: float = 0.0,
+        # SR-evolution snapshots (demo/insight): every N epochs during fit,
+        # save the SR net's state_dict ALONE (~45 MB SR4RS / ~2 MB SEN2SR-Lite
+        # vs ~500 MB for a full Lightning ckpt) so the SR output's evolution
+        # under the task loss can be replayed frame by frame. An extra
+        # "epoch_000_init" frame captures the pretrained net before any task
+        # gradient. 0 = off. Auto-skipped when the SR net has no trainable
+        # params (frozen/bicubic -- nothing evolves).
+        sr_snapshot_every: int = 0,
+        sr_snapshot_dir: str = "sr_snapshots",
         # Staged warm start (R6/R7): path to a stage-1 (frozen-SR, R5/R1) ckpt
         # whose UNet weights initialise THIS model's UNet; the SR net still
         # loads from sen2sr_dir. Rationale: the UNet is the task-critic whose
@@ -354,19 +363,62 @@ class JointSRUNetLightning(UNetLightning):
             loss = loss + lam * pen
         return loss
 
+    def _sr_drift(self):
+        """Relative L2 drift ||theta - theta_0|| / ||theta_0||, or None."""
+        if not self._n_sr_p0:
+            return None
+        with torch.no_grad():
+            num = None
+            den = None
+            for i, p in enumerate(self._sr_trainable_params()):
+                p0 = getattr(self, f"_sr_p0_{i}")
+                n = (p - p0).pow(2).sum()
+                d = p0.pow(2).sum()
+                num = n if num is None else num + n
+                den = d if den is None else den + d
+            return (num / den.clamp_min(1e-24)).sqrt()
+
     def on_validation_epoch_end(self):
-        if self._n_sr_p0:
-            with torch.no_grad():
-                num = None
-                den = None
-                for i, p in enumerate(self._sr_trainable_params()):
-                    p0 = getattr(self, f"_sr_p0_{i}")
-                    n = (p - p0).pow(2).sum()
-                    d = p0.pow(2).sum()
-                    num = n if num is None else num + n
-                    den = d if den is None else den + d
-                drift = (num / den.clamp_min(1e-24)).sqrt()
+        drift = self._sr_drift()
+        if drift is not None:
             self.log("sr_drift_rel", drift, on_epoch=True, sync_dist=True)
+
+    # ------------------------------------------------ SR evolution snapshots
+    def _snapshot_sr(self, tag: str | None = None):
+        if not self._n_sr_p0 or not self.trainer.is_global_zero:
+            return
+        from pathlib import Path
+        d = Path(self.hparams.sr_snapshot_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        drift = self._sr_drift()
+        name = (f"epoch_{self.current_epoch:03d}"
+                + (f"_{tag}" if tag else "") + ".pt")
+        torch.save(
+            {
+                "epoch": self.current_epoch,
+                "global_step": self.global_step,
+                "upsampler": self.hparams.upsampler,
+                "lr_sr": self.hparams.lr_sr,
+                "sr_drift_rel": float(drift) if drift is not None else None,
+                # Reload: build the SR net via the matching load_trainable_*
+                # helper (or a JointSRUNetLightning), then
+                # model.sr.load_state_dict(snapshot["sr_state_dict"]).
+                "sr_state_dict": {k: v.detach().cpu()
+                                  for k, v in self.sr.state_dict().items()},
+            },
+            d / name,
+        )
+
+    def on_train_start(self):
+        # Frame 0 of the evolution: the pretrained SR net before any task
+        # gradient touches it.
+        if int(getattr(self.hparams, "sr_snapshot_every", 0) or 0) > 0:
+            self._snapshot_sr(tag="init")
+
+    def on_train_epoch_end(self):
+        k = int(getattr(self.hparams, "sr_snapshot_every", 0) or 0)
+        if k > 0 and (self.current_epoch + 1) % k == 0:
+            self._snapshot_sr()
 
     # ------------------------------------- two LR groups + cosine/warmup
     def configure_optimizers(self):
