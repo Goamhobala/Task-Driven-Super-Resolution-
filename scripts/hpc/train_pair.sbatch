@@ -27,6 +27,14 @@
 # Config tokens:
 #   --A= / --B=   inner scripts, resolved under scripts/hpc/ (like train.sbatch)
 #   A.KEY=VALUE   env override for side A only (B.KEY=VALUE for side B)
+#   A.KEY=v1,v2   SWEEP: the side runs its whole chain once per value,
+#                 sequentially on its GPU (one swept key per side; walltime
+#                 multiplies by the number of values — raise --time!), e.g.
+#                 the entire Phase C grid in ONE job:
+#                   sbatch --time=48:00:00 scripts/hpc/train_pair.sbatch \
+#                     --A=loss/l7_all.sh --B=loss/l8_all.sh BSTAR=bce \
+#                     A.CL_ALPHA=0.2,0.3,0.5 B.SR_W=0.5,1,2
+#                 (also handy for seed replicates: A.SEED=1,2)
 #   KEY=VALUE     shared override, exported to both sides
 #
 # Notes:
@@ -78,20 +86,48 @@ PATH_A=$(resolve "$SCRIPT_A"); PATH_B=$(resolve "$SCRIPT_B")
 THREADS=$(( ${SLURM_CPUS_PER_TASK:-8} / 2 )); [ "$THREADS" -lt 1 ] && THREADS=1
 
 JOB_ID="${SLURM_JOB_ID:-local}"
+run_chain() {  # one tune->fit->bench pass: $1 script, $2 gpu, rest: env
+  local script="$1" gpu="$2"; shift 2
+  env ${1:+"$@"} CUDA_VISIBLE_DEVICES="$gpu" \
+      OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" \
+      STAGE=tune SEARCH_GPUS=1 bash "$script" \
+  && env ${1:+"$@"} CUDA_VISIBLE_DEVICES="$gpu" \
+      OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" \
+      STAGE=fit bash "$script" \
+  && env ${1:+"$@"} CUDA_VISIBLE_DEVICES="$gpu" \
+      OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" \
+      STAGE=bench bash "$script"
+}
+
 run_side() {  # $1 side label, $2 script path, $3 gpu index, rest: side env
   local side="$1" script="$2" gpu="$3"; shift 3
+  local envs=() sweep_key="" sweep_vals="" sweep_idx=-1 i rc=0
+  envs=(${1:+"$@"})
+  for i in "${!envs[@]}"; do
+    case "${envs[$i]#*=}" in *,*)
+      if [ -n "$sweep_key" ]; then
+        echo "ERROR side ${side}: only ONE swept KEY=v1,v2 per side." >&2; return 2
+      fi
+      sweep_key="${envs[$i]%%=*}"; sweep_vals="${envs[$i]#*=}"; sweep_idx=$i ;;
+    esac
+  done
   local log="pair_${side}_${JOB_ID}.log"
   {
-    echo "### side ${side}: $(basename "$script") on GPU ${gpu}  env=[$*] ###"
-    env "$@" CUDA_VISIBLE_DEVICES="$gpu" \
-        OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" \
-        STAGE=tune SEARCH_GPUS=1 bash "$script" \
-    && env "$@" CUDA_VISIBLE_DEVICES="$gpu" \
-        OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" \
-        STAGE=fit bash "$script" \
-    && env "$@" CUDA_VISIBLE_DEVICES="$gpu" \
-        OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" \
-        STAGE=bench bash "$script"
+    echo "### side ${side}: $(basename "$script") on GPU ${gpu}  env=[${envs[*]:-}] ###"
+    if [ -z "$sweep_key" ]; then
+      run_chain "$script" "$gpu" ${envs[@]+"${envs[@]}"} || rc=1
+    else
+      local vals=() v
+      IFS=',' read -r -a vals <<< "$sweep_vals"
+      echo "### side ${side}: sweeping ${sweep_key} over [${sweep_vals}] (${#vals[@]} sequential chains) ###"
+      for v in "${vals[@]}"; do
+        envs[$sweep_idx]="${sweep_key}=${v}"
+        echo "### side ${side}: ---- ${sweep_key}=${v} ---- ###"
+        # a failed point doesn't kill the rest of the sweep; RC records it
+        run_chain "$script" "$gpu" "${envs[@]}" || { rc=1; echo "### side ${side}: ${sweep_key}=${v} FAILED ###"; }
+      done
+    fi
+    exit "$rc"
   } > "$log" 2>&1
 }
 
