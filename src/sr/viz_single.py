@@ -53,8 +53,8 @@ from sr.model import JointSRUNetLightning
 from sr.viz_grid import CROP, EXAMPLES_DIR, read_gt, read_patch, to_rgb
 
 # Zero-arg defaults, resolved inside --examples-dir.
-DEFAULT_CKPT = "unet_s2rosa_sr4rs_best.ckpt"
-DEFAULT_IMAGE = "AzonalVegetation_UrbanCore_Road_-3379_2543_r4_c3.tif"
+DEFAULT_CKPT = "unet_s2rosa_sen2sr_joint_best.ckpt"
+DEFAULT_IMAGE = "Forests_PeriUrban_Road_-3151_2964_r0_c0.tif"
 
 # SR-weights directory per upsampler, when --sr-dir is not given. SEN2SR keeps
 # its weights in the examples folder (model.safetensor + hard_constraint.safetensor);
@@ -162,8 +162,10 @@ def main():
     ap.add_argument("--sr-dir", default=None,
                     help="SR-net weights dir (default: per the ckpt's upsampler — "
                          f"{SR4RS_DIR} for sr4rs, --examples-dir for sen2sr)")
-    ap.add_argument("--row", type=int, default=0, help="top of the 128 px crop")
-    ap.add_argument("--col", type=int, default=0, help="left of the 128 px crop")
+    ap.add_argument("--row", type=int, default=None,
+                    help="top of the 128 px crop (default: centred in the tile)")
+    ap.add_argument("--col", type=int, default=None,
+                    help="left of the 128 px crop (default: centred in the tile)")
     ap.add_argument("--threshold", type=float, default=0.5)
     ap.add_argument("--stretch", type=float, nargs=2, default=(2, 98),
                     metavar=("PLO", "PHI"))
@@ -193,8 +195,16 @@ def main():
     sr_dir = Path(args.sr_dir) if args.sr_dir else default_sr_dir(upsampler, examples)
     print(f"ckpt: {ckpt.name}  (upsampler={upsampler}, sr_dir={sr_dir})")
 
-    x = read_patch(image, args.row, args.col)
-    gt, gt_label = read_gt(image, args.mask, args.row, args.col)
+    # Centre the crop in the tile unless an explicit row/col was given, so the
+    # default panels show the middle of the scene rather than its top-left corner.
+    import rasterio
+    with rasterio.open(image) as src:
+        h, w = src.height, src.width
+    row = args.row if args.row is not None else max(0, (h - CROP) // 2)
+    col = args.col if args.col is not None else max(0, (w - CROP) // 2)
+
+    x = read_patch(image, row, col)
+    gt, gt_label = read_gt(image, args.mask, row, col)
     lo, hi = np.percentile(x[:3], args.stretch)
     hi = max(hi, lo + 1e-6)
     unet_in, pred, pristine = run_checkpoint(
@@ -233,7 +243,7 @@ def main():
 
     for ax in axes.ravel():
         ax.set_axis_off()
-    fig.suptitle(f"{ckpt.name}\n{image.stem}  crop r{args.row} c{args.col}  "
+    fig.suptitle(f"{ckpt.name}\n{image.stem}  crop r{row} c{col}  "
                  f"(shared {args.stretch[0]:g}-{args.stretch[1]:g}% stretch; "
                  f"threshold {args.threshold})", fontsize=10)
     fig.tight_layout()
