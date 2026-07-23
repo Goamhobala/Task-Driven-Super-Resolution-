@@ -15,4 +15,12 @@ UPSAMPLER="sen2sr"
 FREEZE_SR="false"
 SR_PAD=8
 
+# Recipe-v2 regularisation toggle (consumed by _stages.sh). Exposed here so the
+# unregularised-GAN ablation is a one-flag submit: REG=false.
+REG="${REG:-true}"
+
+# Save the fine-tuned SR4RS generator every 2 epochs during the refit (weights
+# only, ~45 MB/frame). Optional: override SR_SNAPSHOT_EVERY=0 to switch off.
+SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-2}"
+
 source "$REPO_DIR/scripts/hpc/sr/_stages.sh"
