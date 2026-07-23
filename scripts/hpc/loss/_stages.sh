@@ -92,10 +92,10 @@ WARMUP_RAMP="${WARMUP_RAMP:-10}"
 # --- Bench -------------------------------------------------------------------
 STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks_loss}"  # loss-dedicated
 BENCH_SPLIT="${BENCH_SPLIT:-val}"     # decisions on val; test held out
-TILE_METRICS="${TILE_METRICS:-apls}"  # comma-separated tile-metric plugins
+TILE_METRICS="${TILE_METRICS:-apls,cldice}"  # comma-separated tile-metric plugins
                                       # (benchmarking.tile_metrics); '' disables.
-                                      # apls = the protocol's connectivity metric,
-                                      # required for Decision A's composite.
+                                      # apls + cldice = the protocol composite's
+                                      # connectivity metrics (Decision A/B/C).
 
 WANDB_PROJECT="${WANDB_PROJECT:-instaroad-loss-ablation}"
 WANDB_MODE="${WANDB_MODE:-online}"
@@ -278,7 +278,7 @@ if [ "$STAGE" = "bench" ]; then
     ${MASK_ARGS[@]+"${MASK_ARGS[@]}"}
 
   echo "=== BENCH DONE ===  store: ${STORE_DIR}"
-  echo "Decision: python -m benchmarking.cli report --store-dir ${STORE_DIR} --metric f1 --metric iou --metric apls"
+  echo "Decision: python -m benchmarking.cli report --store-dir ${STORE_DIR} --metric f1 --metric iou --metric apls --metric cldice"
   echo "          python scripts/phase_a_report.py --runs /scratch/${USER_NAME}/InstaRoad/runs"
   exit 0
 fi

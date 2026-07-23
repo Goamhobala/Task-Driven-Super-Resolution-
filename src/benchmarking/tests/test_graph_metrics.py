@@ -139,6 +139,37 @@ def test_apls_orders_predictions_by_quality():
     assert big_gap < small_gap < 1.0
 
 
+# ----------------------------------------------------------- cldice metric
+
+def test_cldice_identity_and_gap():
+    from benchmarking.skeleton_metrics import cldice_score
+
+    assert cldice_score(hline(), hline()) == pytest.approx(1.0)
+    broken = cldice_score(hline(gap=(40, 56)), hline())
+    assert 0.0 < broken < 1.0
+    # a bigger gap loses more GT-skeleton coverage
+    assert cldice_score(hline(gap=(30, 66)), hline()) < broken
+
+
+def test_cldice_empty_conventions():
+    from benchmarking.skeleton_metrics import cldice_score
+
+    empty = np.zeros((H, W), np.uint8)
+    assert math.isnan(cldice_score(empty, empty))
+    assert cldice_score(empty, hline()) == 0.0
+    assert cldice_score(hline(), empty) == 0.0
+
+
+def test_cldice_plugin_contract():
+    (plugin,) = resolve_tile_metrics(["cldice"])
+    grid = [(f"t_r{ri}_c{ci}", ri, ci, ri * 48, ci * 48, 48, 48)
+            for ri in range(2) for ci in range(2)]
+    res = plugin(hline().astype(bool), hline(), transform=TF, tile_id="t", grid=grid)
+    assert res.tile["cldice"] == pytest.approx(1.0)
+    assert math.isnan(res.chips["t_r0_c0"]["cldice"])       # road-free chip
+    assert res.chips["t_r1_c1"]["cldice"] == pytest.approx(1.0)
+
+
 # ---------------------------------------------------------------- plugin
 
 def _quad_grid(size=48):

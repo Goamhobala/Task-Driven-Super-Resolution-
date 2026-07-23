@@ -102,6 +102,28 @@ def apls(pred_bin: np.ndarray, gt_mask: np.ndarray, *, transform, tile_id: str,
     return TileMetricResult(tile=tile, chips=chips or None)
 
 
+@register("cldice")
+def cldice(pred_bin: np.ndarray, gt_mask: np.ndarray, *, transform, tile_id: str,
+           grid) -> TileMetricResult:
+    """clDice metric (hard-skeleton, official jocpae/clDice port — see
+    ``benchmarking.skeleton_metrics``): the protocol composite's second
+    connectivity number, cheaper than APLS and sensitive to centreline
+    coverage rather than routing. Emitted at BOTH levels (`road_frac`
+    convention): per-chip ``cldice`` merges onto the chip rows (paired stats
+    on ``chip_id``, same unit as pixel metrics/APLS) and a tile-level rollup
+    lands in ``tiles/``. NaN where both masks are road-free; 0.0 when exactly
+    one side is empty."""
+    from benchmarking.skeleton_metrics import cldice_score
+
+    tile = {"cldice": cldice_score(pred_bin, gt_mask > 0)}
+    chips = {
+        chip_id: {"cldice": cldice_score(pred_bin[r0:r0 + h, c0:c0 + w],
+                                         gt_mask[r0:r0 + h, c0:c0 + w] > 0)}
+        for chip_id, ri, ci, r0, c0, h, w in (grid or [])
+    }
+    return TileMetricResult(tile=tile, chips=chips or None)
+
+
 @register("road_frac")
 def road_frac(pred_bin: np.ndarray, gt_mask: np.ndarray, *, transform, tile_id: str,
               grid) -> TileMetricResult:

@@ -131,12 +131,13 @@ def _bench_summary(store_dir, run_id: str, split: str) -> dict:
     for m in ("iou", "f1", "precision", "recall"):
         if m in chips.columns:
             summary[prefix + m] = float(chips[m].mean())   # pandas mean skips NaN
-    if "apls" in chips.columns:
-        summary[prefix + "apls_chip"] = float(chips["apls"].mean())
+    for m in ("apls", "cldice"):
+        if m in chips.columns:
+            summary[prefix + m + "_chip"] = float(chips[m].mean())
     try:
         tiles = load_tiles(store_dir)
         tiles = tiles[tiles["run_id"] == run_id]
-        for col in ("apls", "apls_gt_to_prop", "apls_prop_to_gt"):
+        for col in ("apls", "apls_gt_to_prop", "apls_prop_to_gt", "cldice"):
             if col in tiles.columns:
                 summary[prefix + col] = float(tiles[col].mean())
     except FileNotFoundError:

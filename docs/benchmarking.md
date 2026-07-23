@@ -6,19 +6,20 @@ Reference for the benchmarking module: what is implemented, how the modules fit 
 
 All layers are implemented and tested (`tests/test_stats.py`, `tests/test_runner_integration.py` — the latter runs real random-init checkpoints through `evaluate()` end to end). The data loader is implemented externally and is out of scope for this module; the runner reuses its reading/normalisation/mask helpers so eval cannot drift from training.
 
-| layer | module | status |
-| ----- | ------ | ------ |
-| pixel metrics | `confusion_matrix.py` | implemented |
-| statistical analysis | `stats.py` | implemented |
-| demo harness | `dummy_pipeline.py` | implemented |
-| demo analysis | `example.py` | implemented |
-| runner (unet + sr families) | `runner.py` | implemented |
-| sharded parquet store | `store.py` | implemented |
-| CLI (eval/compare/variance/report) | `cli.py` | implemented |
-| tile-metric plugin seam | `tile_metrics.py` | implemented |
-| APLS (connectivity) | `graph_metrics.py` | implemented (`--tile-metric apls`, on by default in the HPC bench stages) |
-| HPC integration (STAGE=bench) | `scripts/hpc/*/_stages.sh` | implemented |
-| data loader | external | out of scope |
+| layer                              | module                       | status                                                                      |
+| ---------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
+| pixel metrics                      | `confusion_matrix.py`      | implemented                                                                 |
+| statistical analysis               | `stats.py`                 | implemented                                                                 |
+| demo harness                       | `dummy_pipeline.py`        | implemented                                                                 |
+| demo analysis                      | `example.py`               | implemented                                                                 |
+| runner (unet + sr families)        | `runner.py`                | implemented                                                                 |
+| sharded parquet store              | `store.py`                 | implemented                                                                 |
+| CLI (eval/compare/variance/report) | `cli.py`                   | implemented                                                                 |
+| tile-metric plugin seam            | `tile_metrics.py`          | implemented                                                                 |
+| APLS (connectivity)                | `graph_metrics.py`         | implemented (`--tile-metric apls`, on by default in the HPC bench stages) |
+| clDice metric (connectivity)       | `skeleton_metrics.py`      | implemented (`--tile-metric cldice`; verbatim jocpae/clDice port, hard skeletons, chip + tile levels, APLS empty conventions) |
+| HPC integration (STAGE=bench)      | `scripts/hpc/*/_stages.sh` | implemented                                                                 |
+| data loader                        | external                     | out of scope                                                                |
 
 ## Module overview
 
@@ -90,7 +91,7 @@ The seam graph metrics drop into. A plugin registered with `@register("name")` r
 
 ### `cli.py`
 
-`eval` / `compare` / `variance` / `report`. Metrics resolve against the chips table first, then the tiles table (tile metrics pair on `tile_id`). `compare` and `report` check the runs metadata and **refuse cross-GT pixel comparisons** (different `gt_res_m`, `label_source`, `mask_source`, `dataset_split`, or `cell_m`) unless `--force` — pixel metrics are only comparable within one ground truth; graph metrics are the cross-GT route. `report` takes repeatable `--metric` and exports markdown or CSV via `--out`.
+`eval` / `compare` / `variance` / `report`. Metrics resolve against the chips table first, then the tiles table (tile metrics pair on `tile_id`). `compare` and `report` check the runs metadata and **refuse cross-GT pixel comparisons** (different `gt_res_m`, `label_source`, `mask_source`, `dataset_split`, or `cell_m`) unless `--force` — pixel metrics are only comparable within one ground truth; graph metrics are the cross-GT route. `report` takes repeatable `--metric` and exports markdown or CSV via `--out`. See [CLI: `compare` and `report`](#cli-compare-and-report) for worked invocations and the output format.
 
 ### `dummy_pipeline.py`
 
@@ -216,30 +217,30 @@ Sharded: each run writes its own file under `runs/`, `chips/` and (when tile plu
 
 One row per evaluated checkpoint.
 
-| column | type | description |
-| ------ | ---- | ----------- |
-| `run_id` | string (UUID) | Primary key. Generated when the run starts; also the shard filename. |
-| `run_started_at` / `run_finished_at` | timestamp (UTC) | Wall-clock bounds of the run. |
-| `model_name` | string | The identifier the stats pair/group on, `{family}_{exp_tag}` by convention (e.g. `unet_cdngi`, `sr_r2a_cdngi`). |
-| `model_family` | string | Loader family: `unet` or `sr`. |
-| `exp_tag` | string | Experiment tag (`cdngi`, `osm`, `r2a_cdngi`, ...). |
-| `label_source` | string | GT label provenance (`cdngi`, `osm`, `overture`). Guardrail key. |
-| `mask_source` | string | How GT was read: `csv` (unet), `graph` or `raster` (sr). Guardrail key. |
-| `mask_dirname` | string | Alternative mask dir, when used (`mask_osm_10`, `mask_osm_2pt5`). |
-| `config_hash` | string | First 12 hex chars of the SHA-256 of the canonicalised (parsed, key-sorted) `--config-yaml`. Empty when no config was passed. |
-| `config_yaml` | string | The config file's full text, inline for reproducibility. |
-| `seed` | int64 | Training seed. Several seeds per config feed the cross-seed CIs. |
-| `checkpoint_path` | string | Absolute path to the evaluated `.ckpt`. |
-| `dataset_dir` | string | Absolute dataset root. |
-| `dataset_split` | string | Evaluated split. Almost always `test`. |
-| `cell_m` | float64 | Footprint cell edge in metres (the chip unit). |
-| `chip_px` | int64 | Cell edge in native pixels, derived from the transform (or `--chip-px`). |
-| `gt_res_m` | float64 | Ground-truth resolution in metres: native pixel size / family scale (10.0 for unet, 2.5 for sr). Guardrail key. |
-| `threshold` | float64 | Sigmoid threshold used to binarise predictions: the checkpoint's hparams, or the `--threshold` override (e.g. the θ* a loss-ablation run tuned on val — see `docs/loss_ablation.md`). |
-| `batch_size` | int64 | Chips per forward pass (unet family). |
-| `device` | string | `cuda` or `cpu`. |
-| `tile_metrics` | string | Comma-joined plugin names that ran (empty if none). |
-| `n_tiles` / `n_chips` | int64 | Tiles and chips scored in the run. |
+| column                                   | type            | description                                                                                                                                                                                |
+| ---------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `run_id`                               | string (UUID)   | Primary key. Generated when the run starts; also the shard filename.                                                                                                                       |
+| `run_started_at` / `run_finished_at` | timestamp (UTC) | Wall-clock bounds of the run.                                                                                                                                                              |
+| `model_name`                           | string          | The identifier the stats pair/group on,`{family}_{exp_tag}` by convention (e.g. `unet_cdngi`, `sr_r2a_cdngi`).                                                                       |
+| `model_family`                         | string          | Loader family:`unet` or `sr`.                                                                                                                                                          |
+| `exp_tag`                              | string          | Experiment tag (`cdngi`, `osm`, `r2a_cdngi`, ...).                                                                                                                                   |
+| `label_source`                         | string          | GT label provenance (`cdngi`, `osm`, `overture`). Guardrail key.                                                                                                                     |
+| `mask_source`                          | string          | How GT was read:`csv` (unet), `graph` or `raster` (sr). Guardrail key.                                                                                                               |
+| `mask_dirname`                         | string          | Alternative mask dir, when used (`mask_osm_10`, `mask_osm_2pt5`).                                                                                                                      |
+| `config_hash`                          | string          | First 12 hex chars of the SHA-256 of the canonicalised (parsed, key-sorted)`--config-yaml`. Empty when no config was passed.                                                             |
+| `config_yaml`                          | string          | The config file's full text, inline for reproducibility.                                                                                                                                   |
+| `seed`                                 | int64           | Training seed. Several seeds per config feed the cross-seed CIs.                                                                                                                           |
+| `checkpoint_path`                      | string          | Absolute path to the evaluated`.ckpt`.                                                                                                                                                   |
+| `dataset_dir`                          | string          | Absolute dataset root.                                                                                                                                                                     |
+| `dataset_split`                        | string          | Evaluated split. Almost always`test`.                                                                                                                                                    |
+| `cell_m`                               | float64         | Footprint cell edge in metres (the chip unit).                                                                                                                                             |
+| `chip_px`                              | int64           | Cell edge in native pixels, derived from the transform (or`--chip-px`).                                                                                                                  |
+| `gt_res_m`                             | float64         | Ground-truth resolution in metres: native pixel size / family scale (10.0 for unet, 2.5 for sr). Guardrail key.                                                                            |
+| `threshold`                            | float64         | Sigmoid threshold used to binarise predictions: the checkpoint's hparams, or the`--threshold` override (e.g. the θ* a loss-ablation run tuned on val — see `docs/loss_ablation.md`). |
+| `batch_size`                           | int64           | Chips per forward pass (unet family).                                                                                                                                                      |
+| `device`                               | string          | `cuda` or `cpu`.                                                                                                                                                                       |
+| `tile_metrics`                         | string          | Comma-joined plugin names that ran (empty if none).                                                                                                                                        |
+| `n_tiles` / `n_chips`                | int64           | Tiles and chips scored in the run.                                                                                                                                                         |
 
 ### `chips/<run_id>.parquet`
 
@@ -247,26 +248,26 @@ One row per `(run_id, chip_id)`. Long-form: every chip is its own row.
 
 `chip_id` has the format `{tile_stem}_r{ri}_c{ci}` where `ri`/`ci` index **footprint cells** (`cell_m` ground metres), so the same `chip_id` names the same geography for a 10 m unet run and a 2.5 m sr run — the cross-family pairing key. `tile_id` is denormalised onto every row as a convenience for rolling chips up to tiles or resampling at tile granularity.
 
-| column | type | description |
-| ------ | ---- | ----------- |
-| `run_id` | string | Foreign key into `runs.parquet`. UUID generated at the start of each run. |
-| `chip_id` | string | Chip identifier. Format `{image_stem}_r{patch_row_id}_c{patch_col_id}`. Foreign key into the dataset metadata catalogue. The unit `bootstrap_paired_diff` and `wilcoxon_paired` pair on. |
-| `tile_id` | string | Parent image stem. Denormalised so chips roll up to tiles without joining the catalogue. |
-| `patch_row_id` | int64 | Row index of this chip in the scoring grid (0-based). |
-| `patch_col_id` | int64 | Column index of this chip in the scoring grid (0-based). |
-| `model_name` | string | Architecture identifier. Denormalised so the parquet is self-contained for stats queries without joining `runs.parquet`. |
-| `seed` | int64 | Training seed. Denormalised for the same reason. |
-| `tp` | int64 | True positive pixel count. |
-| `fp` | int64 | False positive pixel count. |
-| `fn` | int64 | False negative pixel count. |
-| `tn` | int64 | True negative pixel count. |
-| `iou` | float64 | Intersection over union. |
-| `f1` | float64 | F1 / Dice coefficient. |
-| `precision` | float64 | Precision. |
-| `recall` | float64 | Recall. |
-| `accuracy` | float64 | Pixel accuracy. |
-| `inference_ms` | float64 | `cuda.synchronize()`-bracketed forward-pass time, amortised over the batch. Excludes data loading and metric computation. |
-| *(plugin columns)* | float64 | Per-chip values returned by tile-metric plugins (e.g. `apls`). Nullable: NaN where the metric is undefined on that chip. |
+| column               | type    | description                                                                                                                                                                                   |
+| -------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run_id`           | string  | Foreign key into`runs.parquet`. UUID generated at the start of each run.                                                                                                                    |
+| `chip_id`          | string  | Chip identifier. Format`{image_stem}_r{patch_row_id}_c{patch_col_id}`. Foreign key into the dataset metadata catalogue. The unit `bootstrap_paired_diff` and `wilcoxon_paired` pair on. |
+| `tile_id`          | string  | Parent image stem. Denormalised so chips roll up to tiles without joining the catalogue.                                                                                                      |
+| `patch_row_id`     | int64   | Row index of this chip in the scoring grid (0-based).                                                                                                                                         |
+| `patch_col_id`     | int64   | Column index of this chip in the scoring grid (0-based).                                                                                                                                      |
+| `model_name`       | string  | Architecture identifier. Denormalised so the parquet is self-contained for stats queries without joining`runs.parquet`.                                                                     |
+| `seed`             | int64   | Training seed. Denormalised for the same reason.                                                                                                                                              |
+| `tp`               | int64   | True positive pixel count.                                                                                                                                                                    |
+| `fp`               | int64   | False positive pixel count.                                                                                                                                                                   |
+| `fn`               | int64   | False negative pixel count.                                                                                                                                                                   |
+| `tn`               | int64   | True negative pixel count.                                                                                                                                                                    |
+| `iou`              | float64 | Intersection over union.                                                                                                                                                                      |
+| `f1`               | float64 | F1 / Dice coefficient.                                                                                                                                                                        |
+| `precision`        | float64 | Precision.                                                                                                                                                                                    |
+| `recall`           | float64 | Recall.                                                                                                                                                                                       |
+| `accuracy`         | float64 | Pixel accuracy.                                                                                                                                                                               |
+| `inference_ms`     | float64 | `cuda.synchronize()`-bracketed forward-pass time, amortised over the batch. Excludes data loading and metric computation.                                                                   |
+| *(plugin columns)* | float64 | Per-chip values returned by tile-metric plugins (e.g.`apls`). Nullable: NaN where the metric is undefined on that chip.                                                                     |
 
 The raw counts (`tp`, `fp`, `fn`, `tn`) are kept alongside the derived metrics. Any new pixel metric (Matthews correlation, Cohen's kappa, balanced accuracy) can be recomputed from the counts without rerunning inference.
 
@@ -359,6 +360,61 @@ Use `aggregation="macro"` to average the per-chip metric values instead of pooli
 ```
 
 A Friedman test (multi-group analogue of Wilcoxon) is appropriate when comparing more than two loss functions on the same chips.
+
+## CLI: `compare` and `report`
+
+`compare` and `report` are the command-line front-ends to the stats module — no Python needed, and the same pairing/NaN-dropping rules apply. Both read a sharded store, resolve each metric against the chips table first then the tiles table (so `apls` pairs per chip when the chip column exists, per tile otherwise), and **seed-average each unit to one value per model** before pairing. Both refuse cross-GT pixel comparisons (differing `gt_res_m`, `label_source`, `mask_source`, `dataset_split`, `cell_m`) unless `--force`; `report` only warns, since it summarises whatever is in the store.
+
+### `compare` — one pair, one metric
+
+Paired bootstrap 95% CI **and** Wilcoxon signed-rank between exactly two `model_name`s.
+
+```sh
+python -m benchmarking.cli compare \
+    --store-dir /scratch/$USER/InstaRoad/benchmarks_loss \
+    --model-a bce --model-b tl_ce \
+    --metric apls --n-boot 2000 --seed 0
+```
+
+```
+bce vs tl_ce on seed-averaged per-chip apls:
+  bootstrap  diff = +0.0125  95% CI [-0.0021, +0.0274]  n_pairs = 748
+  wilcoxon   W = 81596  p = 0.7088  n = 748
+  -> difference is not significant at alpha = 0.05
+```
+
+`diff` is `model_a - model_b` (the observed mean, not a bootstrap mean); the CI is the paired bootstrap on that difference. `n_pairs`/`n` is how many units survived NaN-dropping (chips road-free in both prediction and GT are excluded). `--seed` seeds the bootstrap RNG only; `--metric` defaults to `f1`, `--n-boot` to 2000.
+
+### `report` — every model, every pair, multiple metrics
+
+Per-model cross-seed summary **plus all pairwise comparisons**, one block pair per `--metric` (repeatable; defaults to `iou` then `f1`).
+
+```sh
+python -m benchmarking.cli report \
+    --store-dir /scratch/$USER/InstaRoad/benchmarks_loss \
+    --metric apls --metric f1 --metric iou \
+    --out report.md
+```
+
+```
+== per-model apls (mean +/- std across seeds, macro, per-chip) ==
+  bce                      0.3648 +/- nan  (n_seeds=1)
+  gap_ce                   0.3694 +/- nan  (n_seeds=1)
+  ...
+== pairwise (seed-averaged per-chip apls; * = p<0.05) ==
+  bce - bce_dice: diff +0.0837 CI[+0.0661,+0.1014] p=4.81e-24 *
+  bce - gap_ce:   diff +0.0060 CI[-0.0086,+0.0196] p=0.232
+  ...
+```
+
+Reading the blocks:
+
+- **per-model line** — `mean +/- std` is the cross-seed spread from `cross_seed_ci` (the same function `variance` exposes). `std` and its CI are `nan` with a **single seed** (undefined, not zero), so with one seed per config the per-model line is just the point estimate and the pairwise block below is where the signal is.
+- **`macro` vs `micro`** — shown in the header. `report` uses `micro` (pool `tp/fp/fn/tn` across the unit's chips, then derive) for count-derivable pixel metrics when the counts are present, and falls back to `macro` (mean of per-chip values) otherwise — which is always the case for plugin metrics like `apls` that have no counts.
+- **per-chip vs per-tile** — also in the header, from which table the metric resolved. `apls` resolves to the per-chip column here; a tile-only metric would say `per-tile` and pair on `tile_id`.
+- **pairwise line** — `diff` = `A - B`, bootstrap `CI`, Wilcoxon `p`, and `*` when `p < 0.05`. Every unordered pair of models present for that metric is listed. A tiny `diff` whose CI crosses zero yet carries a `*` is Wilcoxon ranking many consistently-signed sub-noise differences — significant in sign, negligible in effect size; read the CI alongside the star.
+
+`--out` also writes the report: `.md` emits both the per-model and pairwise tables as CommonMark; `.csv` writes the per-model summary rows only (`metric, model, mean, std, n_seeds`). The bootstrap RNG is fixed (seed 0) inside `report` so the tables are reproducible; use `compare` when you want to vary the bootstrap seed.
 
 ## Design notes
 
