@@ -50,7 +50,18 @@
 #
 # STAGE=tune   Optuna search, one INDEPENDENT tuner per GPU, shared sqlite study
 #              (no DDP — that's the Optuna constraint). Default headers = gpu:2.
+#              Stop EARLY without losing anything: `touch <run dir>/STOP` (or
+#              `scancel -s USR1 <jobid>`) — the in-flight trial finishes,
+#              best_params.yaml is written, and CHAIN_FIT still applies.
+#              Rescue a KILLED search: rerun with N_TRIALS=0 — attaches to the
+#              persisted study and writes best_params.yaml in seconds.
+#   CHAIN_FIT=1  after the search, continue straight into STAGE=fit in the
+#              SAME job/allocation (saves a queue round-trip; the refit uses
+#              1 GPU, so any extra search GPUs idle during it).
 # STAGE=fit    Refit best config on ONE GPU + wandb test. Submit with --gres=gpu:1.
+#              Refits from scratch by default. RESUME_FIT=1 continues a
+#              walltime-killed refit from <run dir>/checkpoints/last.ckpt
+#              (restores epoch/optimizer/schedule + best-score tracking).
 # STAGE=bench  Score the fitted checkpoint into the SHARED benchmark store
 #              (per-chip confusion-matrix metrics at 2.5 m against the SAME GT
 #              source the model trained on). Standalone on any existing
@@ -316,6 +327,7 @@ if [ "$STAGE" = "tune" ]; then
   fi
 
   echo "=== OPTUNA SEARCH (n_trials=$N_TRIALS across ${SEARCH_GPUS} GPU(s), ${TUNE_EPOCHS} epochs/trial) ==="
+  echo "    stop early (keeps study + writes overlay):  touch ${RUN_DIR}/STOP"
   # Sampler seeds: SEED*1000+worker, so workers within a run differ (no
   # duplicate proposals) AND no sampler seed ever recurs across SEED runs
   # (SEED+g would make e.g. SEED=0/worker1 collide with SEED=1/worker0,
@@ -413,6 +425,24 @@ echo "--- best hyperparameters ---"; cat "$BEST_CONFIG"
 # Refit from inside RUN_DIR so the base config's relative `checkpoints/` lands here.
 cd "$RUN_DIR"
 
+# Refit from scratch by DEFAULT (a stale last.ckpt in the run dir is ignored,
+# then overwritten). RESUME_FIT=1 instead continues a previous refit from its
+# last.ckpt (e.g. a walltime-killed job): LightningCLI `fit --ckpt_path`
+# restores the epoch, optimizer, LR schedule AND the ModelCheckpoint best-score
+# state, so the run finishes the remaining epochs with tracking intact. (Same
+# run dir = same exp/seed/loss/reg treatment, so a resumed checkpoint's config
+# can't mismatch the overlay.)
+LAST_CKPT="${RUN_DIR}/checkpoints/last.ckpt"
+RESUME_ARGS=()
+if [ "${RESUME_FIT:-0}" = "1" ]; then
+  if [ -f "$LAST_CKPT" ]; then
+    echo "=== RESUME_FIT=1: continuing the refit from ${LAST_CKPT} ==="
+    RESUME_ARGS=(--ckpt_path "$LAST_CKPT")
+  else
+    echo "WARN: RESUME_FIT=1 but ${LAST_CKPT} not found — refitting from scratch." >&2
+  fi
+fi
+
 # The experiment's SR treatment (and loss arm, if set) is passed explicitly
 # (belt) even though the best_params overlay records it too (braces) — drift
 # is impossible.
@@ -444,7 +474,8 @@ python -m sr.cli fit \
   --trainer.precision "$PRECISION" \
   --trainer.gradient_clip_val "$CLIP" \
   --trainer.logger.init_args.project "$WANDB_PROJECT" \
-  --seed_everything "$SEED"
+  --seed_everything "$SEED" \
+  ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 
 # Log the test metrics to the SAME wandb run the refit just created.
 if LATEST_RUN=$(readlink -f "$RUN_DIR/wandb/latest-run" 2>/dev/null) && [ -n "$LATEST_RUN" ]; then

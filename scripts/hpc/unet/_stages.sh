@@ -8,7 +8,9 @@
 #              used despite Optuna x DDP not mixing). Default sbatch headers
 #              (gpu:2) fit this stage.
 # STAGE=fit    Refit the best config at full length on ONE GPU, then log test
-#              metrics to wandb. Submit with --gres=gpu:1.
+#              metrics to wandb. Submit with --gres=gpu:1. Refits from scratch
+#              by default; RESUME_FIT=1 continues a walltime-killed refit from
+#              <run dir>/checkpoints/last.ckpt.
 # STAGE=bench  Score the fitted checkpoint into the SHARED benchmark store
 #              (per-chip confusion-matrix metrics -> compare/variance/report).
 #              Works standalone on any existing checkpoint; train_both.sbatch
@@ -218,6 +220,22 @@ echo "--- best hyperparameters ---"; cat "$BEST_CONFIG"
 # Refit from inside RUN_DIR so the base config's relative `checkpoints/` lands here.
 cd "$RUN_DIR"
 
+# Refit from scratch by DEFAULT (a stale last.ckpt is ignored, then overwritten).
+# RESUME_FIT=1 instead continues a previous refit from its last.ckpt (e.g. a
+# walltime-killed job): LightningCLI `fit --ckpt_path` restores the epoch,
+# optimizer and the ModelCheckpoint best-score state, so the run finishes the
+# remaining epochs with best-checkpoint tracking intact.
+LAST_CKPT="${RUN_DIR}/checkpoints/last.ckpt"
+RESUME_ARGS=()
+if [ "${RESUME_FIT:-0}" = "1" ]; then
+  if [ -f "$LAST_CKPT" ]; then
+    echo "=== RESUME_FIT=1: continuing the refit from ${LAST_CKPT} ==="
+    RESUME_ARGS=(--ckpt_path "$LAST_CKPT")
+  else
+    echo "WARN: RESUME_FIT=1 but ${LAST_CKPT} not found — refitting from scratch." >&2
+  fi
+fi
+
 echo "=== REFIT (best config, ${REFIT_EPOCHS} epochs, ${REFIT_GPUS} GPU) ==="
 python -m unet.cli fit \
   --config "$BASE_CONFIG" \
@@ -231,7 +249,8 @@ python -m unet.cli fit \
   --trainer.devices "$REFIT_GPUS" \
   --trainer.precision "$PRECISION" \
   --trainer.logger.init_args.project "$WANDB_PROJECT" \
-  --seed_everything "$SEED"
+  --seed_everything "$SEED" \
+  ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 
 # Log the test metrics to the SAME wandb run the refit just created.
 if LATEST_RUN=$(readlink -f "$RUN_DIR/wandb/latest-run" 2>/dev/null) && [ -n "$LATEST_RUN" ]; then
