@@ -166,6 +166,7 @@ protocol composite).
 * `t2_ce` / `t4_ce` raise `NotImplementedError` until the curvature kernels
   from Giannini et al. (2026) are specified — the hook is
   `tl_weight_map(extra_kernels=...)`.
-* APLS is implemented (`benchmarking.graph_metrics`, `--tile-metric apls`,
-  default-on in the bench stage). Betti-0 and the clDice-metric remain open
-  on the same `tile_metrics` plugin seam.
+* APLS (`benchmarking.graph_metrics`) and the clDice metric
+  (`benchmarking.skeleton_metrics`, verbatim official port) are implemented
+  and default-on in the bench stage (`TILE_METRICS=apls,cldice`). Betti-0
+  remains open on the same `tile_metrics` plugin seam.

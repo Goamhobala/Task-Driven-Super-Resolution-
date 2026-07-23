@@ -339,7 +339,25 @@ class FocalTverskyLoss(TverskyLoss):
 # --------------------------------------------------------------------------
 
 class SoftSkeletonize(nn.Module):
-    """Differentiable morphological skeleton (Shit et al. 2021), min/max pooling."""
+    """Differentiable morphological skeleton — line-faithful to the official
+    implementation (Shit et al. 2021):
+    https://github.com/jocpae/clDice/blob/master/cldice_loss/pytorch/soft_skeleton.py
+
+    Per level: delta = relu(img − open(img)) is the structure thinner than the
+    current erosion depth; levels merge with the PROBABILISTIC union
+    ``skel + relu(delta − skel·delta)`` = 1 − (1−skel)(1−delta): overlapping
+    level responses combine as a fuzzy OR (the skel·delta term shrinks the
+    overlap share) instead of stacking, and gradients stay DENSE through both
+    operands (∂/∂delta = 1−skel, ∂/∂skel = 1−delta) — unlike a max-union
+    whose subgradient flows only through the winning branch. NB the naive sum
+    is already ≤ img by telescoping (delta_j ≤ img_j − img_{j+1}), so the
+    union's value is in its semantics + gradients, not boundedness. The
+    depth-0 delta is taken BEFORE the loop, so num_iter=k covers erosion
+    depths 0..k.
+
+    (An earlier revision here used torch.max and depths 0..k−1 —
+    binary-equivalent but not the paper's soft regime; fixed 2026-07-22.)
+    """
 
     def __init__(self, num_iter: int = 5):
         super().__init__()
@@ -353,34 +371,52 @@ class SoftSkeletonize(nn.Module):
     def soft_dilate(self, img):
         return F.max_pool2d(img, (3, 3), (1, 1), (1, 1))
 
+    def soft_open(self, img):
+        return self.soft_dilate(self.soft_erode(img))
+
     def forward(self, img):
-        skel = torch.zeros_like(img)
+        skel = F.relu(img - self.soft_open(img))
         for _ in range(self.num_iter):
-            opened = self.soft_dilate(self.soft_erode(img))
-            skel = torch.max(skel, F.relu(img - opened))
             img = self.soft_erode(img)
+            delta = F.relu(img - self.soft_open(img))
+            skel = skel + F.relu(delta - skel * delta)
         return skel
 
 
 class SoftclDice(nn.Module):
-    """Pure clDice term (Shit et al. 2021) — no Dice mixed in, so slot
-    composition stays explicit. Protocol Phase C: k=5 iterations."""
+    """Pure clDice term — VERBATIM port of the official ``soft_cldice``
+    forward (jocpae/clDice, cldice.py), adapted only at the boundary for this
+    repo's single-sigmoid-channel head:
 
-    def __init__(self, skel_iters: int = 5, smooth: float = EPS):
+      * sums are BATCH-GLOBAL (the official ``torch.sum`` has no dim —
+        tprec/tsens pool over the whole batch, micro-style), NOT per-sample;
+      * ``smooth=1.`` on both ratios; NO extra epsilon in the harmonic mean
+        (the official relies on smooth > 0 keeping tprec+tsens positive);
+      * probabilities via sigmoid at the entry (official takes y_pred
+        post-activation); ``exclude_background`` is meaningless for a
+        1-channel binary head and is omitted.
+
+    Protocol Phase C: skel_iters=5 (GSD-adapted; the official class ignores
+    its ``iter_`` arg and hard-codes num_iter=10 — here the parameter is
+    real). The DECLARED protocol deviation is composition only: the arm pairs
+    this term with the BCE+Dice anchor via ComposedLoss (§4.3) instead of the
+    official ``soft_dice_cldice`` (1−α)·Dice + α·clDice, so the comparison
+    isolates the skeleton term."""
+
+    def __init__(self, skel_iters: int = 5, smooth: float = 1.0):
         super().__init__()
         self.skeletonize = SoftSkeletonize(num_iter=skel_iters)
         self.smooth = smooth
 
     def forward(self, logits, targets):
-        p = torch.sigmoid(logits)
-        skel_p = self.skeletonize(p)
-        skel_t = self.skeletonize(targets)
-        tprec = ((skel_p * targets).sum(dim=(1, 2, 3)) + self.smooth) / \
-                (skel_p.sum(dim=(1, 2, 3)) + self.smooth)
-        tsens = ((skel_t * p).sum(dim=(1, 2, 3)) + self.smooth) / \
-                (skel_t.sum(dim=(1, 2, 3)) + self.smooth)
-        cl = 2 * tprec * tsens / (tprec + tsens + 1e-8)
-        return (1 - cl).mean()
+        y_pred = torch.sigmoid(logits)
+        skel_pred = self.skeletonize(y_pred)
+        skel_true = self.skeletonize(targets)
+        tprec = (torch.sum(skel_pred * targets) + self.smooth) / \
+                (torch.sum(skel_pred) + self.smooth)
+        tsens = (torch.sum(skel_true * y_pred) + self.smooth) / \
+                (torch.sum(skel_true) + self.smooth)
+        return 1.0 - 2.0 * (tprec * tsens) / (tprec + tsens)
 
 
 class SkeletonRecallLoss(nn.Module):

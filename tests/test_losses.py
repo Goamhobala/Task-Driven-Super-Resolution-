@@ -233,6 +233,24 @@ def test_cldice_prefers_connected():
     assert DiceLoss()(broken, tgt) < DiceLoss()(thin, tgt)
 
 
+def test_soft_skeleton_official_semantics():
+    """Official clDice recurrence: skeleton stays a valid soft mask in [0,1]
+    on soft inputs, and in the binary regime the fuzzy union reduces to set
+    union (a clean 1px line's skeleton keeps the line's support)."""
+    from unet.losses import SoftSkeletonize
+
+    g = torch.Generator().manual_seed(6)
+    soft = torch.nn.functional.max_pool2d(          # blobby soft probabilities
+        torch.rand(2, 1, H, W, generator=g), 7, 1, 3) * 0.95
+    skel = SoftSkeletonize(num_iter=5)(soft)
+    assert float(skel.min()) >= 0.0
+    assert float(skel.max()) <= 1.0 + 1e-6
+    # binary regime: soft union == set union — a clean 1px line survives intact
+    line = torch.from_numpy(hline_with_gap(gap=(0, 0)))[None, None]
+    skel_line = SoftSkeletonize(num_iter=5)(line)
+    assert float((skel_line * line).sum()) > 0.5 * float(line.sum())
+
+
 def test_skelrec_bounds():
     tgt = torch.from_numpy(hline_with_gap(gap=(0, 0)))[None, None]
     sr = SkeletonRecallLoss(tube_radius=1)
