@@ -1,0 +1,25 @@
+#!/bin/bash
+# R7b — STAGED joint task-driven SEN2SR fine-tuning WITHOUT padding, ROSA_all.
+# UNet warm-started from R1b's fitted ckpt. vs r7a: padding on/off under the
+# staged protocol. lr/pos_weight/batch/encoder pinned to R1b's best; search
+# covers lr_sr only.
+#
+# Order (same SEED, same LOSS_ARM throughout):
+#   bash scripts/LightningStudio/run.sh sr/r1b_all.sh STAGE=tune ; ... STAGE=fit
+#   bash scripts/LightningStudio/run.sh sr/r7b_all.sh STAGE=tune ; ... STAGE=fit
+set -euo pipefail
+# Lightning Studio config (paths, venv, GPU defaults) — single source of truth.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/env.sh"
+REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
+
+EXP_TAG="r7b_all"
+LABELS="all"
+UPSAMPLER="sen2sr"
+FREEZE_SR="false"
+SR_PAD=0
+
+N_TRIALS="${N_TRIALS:-40}"   # 1-D search (lr_sr only; rest pinned) needs far fewer trials
+
+STAGE1_TAG="r1b_all"
+source "$LS_DIR/sr/_warm.sh"
+source "$LS_DIR/sr/_stages.sh"
