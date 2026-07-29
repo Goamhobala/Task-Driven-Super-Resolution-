@@ -339,8 +339,9 @@ def parse_args(argv=None):
     ap.add_argument("--warm-start-unet", default=None, metavar="CKPT",
                     help="Stage-1 (frozen-SR) JointSR ckpt whose UNet weights "
                          "initialise every trial's UNet (staged R6/R7 protocol; "
-                         "pin lr/pos_weight/batch/encoder to the stage-1 best "
-                         "and search only lr_sr). Overrides model.warm_start_unet.")
+                         "pin pos_weight/batch/encoder to the stage-1 best and "
+                         "search lr over a fine-tuning band anchored to it, "
+                         "plus lr_sr). Overrides model.warm_start_unet.")
     ap.add_argument("--mask-source", default=None, choices=["graph", "raster"],
                     help="Override data.mask_source (graph = CDNGI, raster = OSM HR masks).")
 

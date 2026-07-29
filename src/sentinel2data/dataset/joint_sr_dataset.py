@@ -27,6 +27,7 @@ from pathlib import Path
 
 import lightning.pytorch as pl
 import numpy as np
+import pandas as pd
 import rasterio
 import torch
 from rasterio.windows import Window
@@ -96,15 +97,42 @@ def _read_raster_hr_mask(dataset_dir, row, mask_dirname, window, out_size, upsca
 
 
 class JointSRRoadTileDataset(Dataset):
-    """Random NATIVE crops from the train tiles + HR masks. ``__len__`` = patches/epoch."""
+    """Random NATIVE crops from the train tiles + HR masks. ``__len__`` = patches/epoch.
+
+    ``train_splits`` is the list of split CSVs the crops are drawn from. It is
+    ``("train",)`` for every tuning/model-selection run. The *final* refit
+    protocol re-folds the tuning holdout back in with ``("train", "val")``:
+    hyperparameters were already chosen on val, so keeping those tiles out of
+    the fit only throws data away — but the merged dataset then has NO held-out
+    set, so the caller MUST also disable val-monitored early stopping and
+    checkpoint selection (see ``src/sr/configs/joint_sr_trainval.yaml``).
+    Duplicate tiles across the listed splits are dropped defensively.
+    """
 
     def __init__(self, dataset_dir, bands=SR_INPUT_BANDS, crop_size=128, upscale=4,
                  length=None, min_road_density=0.0,
-                 mask_source="graph", mask_dirname="mask_osm_2pt5"):
+                 mask_source="graph", mask_dirname="mask_osm_2pt5",
+                 train_splits=("train",)):
         if mask_source not in MASK_SOURCES:
             raise ValueError(f"mask_source must be one of {MASK_SOURCES}, got {mask_source!r}")
         self.dataset_dir = Path(dataset_dir)
-        df = _read_split_csv(dataset_dir, "train")
+        splits = [str(s) for s in (train_splits or ("train",))]
+        if "test" in splits:
+            raise ValueError(
+                "train_splits must never include 'test' — that is the held-out "
+                f"evaluation split. Got {splits!r}."
+            )
+        parts = [_read_split_csv(dataset_dir, s) for s in splits]
+        df = parts[0] if len(parts) == 1 else pd.concat(parts, ignore_index=True)
+        if len(parts) > 1:
+            n_cat = len(df)
+            df = df.drop_duplicates(subset="image_path")
+            print(f"[joint_sr train] splits {'+'.join(splits)}: "
+                  + " + ".join(f"{s}={len(p)}" for s, p in zip(splits, parts))
+                  + f" -> {len(df)} tiles"
+                  + (f" ({n_cat - len(df)} duplicate image_path dropped)"
+                     if n_cat != len(df) else ""))
+        self.train_splits = tuple(splits)
         if min_road_density > 0 and "road_density" in df.columns:
             n0 = len(df)
             df = df[df["road_density"] >= min_road_density]
@@ -216,6 +244,13 @@ class JointSRDataModule(pl.LightningDataModule):
     ``mask_source``: "graph" = pipeline labels (masks_graph parquet, CDNGI)
     rasterised at 2.5 m; "raster" = pre-generated HR masks in
     ``<split>/<mask_dirname>/`` (e.g. OSM, dataset_hr_masks.py --scale 4).
+
+    ``train_splits``: which split CSVs the TRAIN loader draws from. Default
+    ``["train"]``. Set ``["train", "val"]`` for the final refit that re-folds
+    the tuning holdout into training — val then no longer exists as a holdout,
+    so pair it with ``joint_sr_trainval.yaml`` (val loop off, fixed epoch
+    budget, unmonitored checkpoint). ``val_dataloader`` still resolves so the
+    Lightning plumbing stays intact; just don't select on it.
     """
 
     def __init__(self, dataset_dir: str, bands: tuple[int, ...] = SR_INPUT_BANDS,
@@ -223,7 +258,8 @@ class JointSRDataModule(pl.LightningDataModule):
                  upscale: int = 4, image_size: int = 256, length: int | None = None,
                  normalize: bool = True, norm_mean: list[float] | None = None,
                  norm_std: list[float] | None = None, min_road_density: float = 0.0,
-                 mask_source: str = "graph", mask_dirname: str = "mask_osm_2pt5"):
+                 mask_source: str = "graph", mask_dirname: str = "mask_osm_2pt5",
+                 train_splits: list[str] | None = None):
         super().__init__()
         self.dataset_dir = Path(dataset_dir)
         self.bands = tuple(bands)
@@ -239,6 +275,7 @@ class JointSRDataModule(pl.LightningDataModule):
         self.min_road_density = min_road_density
         self.mask_source = mask_source
         self.mask_dirname = mask_dirname
+        self.train_splits = tuple(train_splits) if train_splits else ("train",)
 
     def _loader(self, ds, train):
         return DataLoader(
@@ -251,6 +288,7 @@ class JointSRDataModule(pl.LightningDataModule):
         return self._loader(JointSRRoadTileDataset(
             self.dataset_dir, self.bands, self.crop_size, self.upscale,
             self.length, self.min_road_density, self.mask_source, self.mask_dirname,
+            self.train_splits,
         ), train=True)
 
     def _eval_loader(self, split):

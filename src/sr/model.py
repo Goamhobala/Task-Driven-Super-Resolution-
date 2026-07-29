@@ -378,10 +378,23 @@ class JointSRUNetLightning(UNetLightning):
                 den = d if den is None else den + d
             return (num / den.clamp_min(1e-24)).sqrt()
 
-    def on_validation_epoch_end(self):
+    def _log_sr_drift(self):
         drift = self._sr_drift()
         if drift is not None:
             self.log("sr_drift_rel", drift, on_epoch=True, sync_dist=True)
+
+    def on_validation_epoch_end(self):
+        self._log_sr_drift()
+
+    def _val_loop_disabled(self):
+        """True when the trainer runs no val loop (final train+val refit).
+
+        ``joint_sr_trainval.yaml`` sets ``limit_val_batches: 0`` because val is
+        folded into train, which would otherwise silently kill the drift
+        monitor — the one signal telling us whether the task loss is quietly
+        destroying the pretrained SR weights."""
+        t = getattr(self, "_trainer", None)
+        return t is not None and not float(getattr(t, "limit_val_batches", 1) or 0)
 
     # ------------------------------------------------ SR evolution snapshots
     def _snapshot_sr(self, tag: str | None = None):
@@ -419,6 +432,11 @@ class JointSRUNetLightning(UNetLightning):
         k = int(getattr(self.hparams, "sr_snapshot_every", 0) or 0)
         if k > 0 and (self.current_epoch + 1) % k == 0:
             self._snapshot_sr()
+        # No val loop -> on_validation_epoch_end never fires. Log the drift
+        # here instead so the train+val refit keeps the monitor. Guarded, so
+        # runs WITH a val loop still log it exactly once per epoch.
+        if self._val_loop_disabled():
+            self._log_sr_drift()
 
     # ------------------------------------- two LR groups + cosine/warmup
     def configure_optimizers(self):

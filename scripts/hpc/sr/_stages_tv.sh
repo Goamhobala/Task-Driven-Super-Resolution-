@@ -1,77 +1,79 @@
 #!/bin/bash
-# Shared tune/fit engine for the joint-SR experiment scripts. NOT submitted
-# directly — each experiment script (r0_cdngi.sh, r2a_cdngi.sh, ...) sets its
-# config and sources this file.
+# Shared tune/fit/bench engine for the FINAL (train+val refit) SR series.
+# NOT submitted directly — each r*_new.sh sets its config and sources this.
 #
+# This is the sibling of _stages.sh. Same arms, same recipe-v2 dynamics, same
+# model code. Two deliberate differences, and nothing else:
+#
+#   1. DATASET   LABELS=new -> ROSA_New (the final curated dataset). The _all
+#                series stays pointed at ROSA_all; run dirs, Optuna studies and
+#                benchmark model_names are keyed on EXP_TAG (r0_new vs r0_all),
+#                so old and new results can never mix in the store.
+#
+#   2. PROTOCOL  STAGE=tune is UNCHANGED — Optuna still trains on `train` and
+#                scores on `val`, because that is what the holdout is for.
+#                STAGE=fit then RE-FOLDS val into the training set
+#                (data.train_splits = [train, val]) and reports on `test`
+#                alone. Hyperparameters were already paid for out of val; once
+#                chosen, withholding those tiles from the fit throws away ~17%
+#                of the data for no inferential gain.
+#
+# Consequence of (2): during the refit there is NO honest holdout, so the
+# val-driven machinery is removed rather than allowed to peek at data the model
+# now trains on. src/sr/configs/joint_sr_trainval.yaml does this:
+#   * limit_val_batches: 0     — no val loop at all
+#   * EarlyStopping dropped    — FIXED, pre-registered epoch budget, identical
+#                                across arms (same fairness rule as the loss
+#                                ablation). Recipe v2's cosine has T_max =
+#                                max_epochs, so the budget ends at LR 0: the
+#                                schedule always completes.
+#   * monitor: null            — the tested checkpoint is the END of the
+#                                budget, saved as unet_s2rosa_jointsr_final.ckpt
+#                                (NOT ..._best.ckpt, which by convention means
+#                                "argmax over val" — the two names must never
+#                                be confusable downstream).
+#
+# ---- Interface (identical to _stages.sh unless noted) -----------------------
 # Experiment scripts must set:
-#   EXP_TAG      e.g. r2a_cdngi (drives the run dir + study name)
-#   LABELS       cdngi | overture | osm  (label SOURCE naming — never "graph",
-#                which collides with the graph-model thread; cdngi/overture map
-#                to the pipeline's masks_graph parquets of the matching dataset,
-#                osm maps to the pre-generated <split>/mask_osm_2pt5 rasters)
-#   UPSAMPLER    sen2sr | bicubic
+#   EXP_TAG      e.g. r2a_new (drives the run dir + study + benchmark name)
+#   LABELS       new | all | cdngi | overture | osm   (label/dataset source)
+#   UPSAMPLER    sen2sr | sen2sr_full | sr4rs | bicubic
 #   FREEZE_SR    true | false
 #   SR_PAD       reflect-pad in native px (0 = off, 8 = border-artifact fix)
 #
-# Optional (submit-time or experiment-script):
-#   WARM_START_CKPT  stage-1 (frozen-SR) JointSR ckpt whose UNet weights seed
-#                every trial's / the refit's UNet (staged R6/R7 protocol —
-#                the r6/r7 scripts derive it from their stage-1 run dir and
-#                pin pos_weight/batch/encoder from that run's best_params;
-#                the UNet lr is searched over a fine-tuning band anchored to
-#                stage-1's best, alongside lr_sr — see _warm.sh, PIN_LR=1
-#                for the exact pin). Empty (default) = cold ImageNet UNet
-#                (R2/R4 protocol).
-#   LOSS_ARM     any unet.losses.build_loss arm (bce | gap_ce | tl_ce |
-#                gap_tl_ce | t2_ce | t4_ce | bce_dice | pstar_dice |
-#                pstar_tversky | focal_tversky | <base>+cldice |
-#                <base>+skelrec). Empty (default) = legacy Dice + pos-weighted
-#                BCE. When set: pos_weight is not searched, and the run dir /
-#                study / benchmark model_name gain a loss tag so arms never
-#                collide. Loss hps: PSTAR GAP_R GAP_K TL_ELL TL_THETA
-#                TVERSKY_ALPHA CL_ALPHA CL_ITERS SKEL_W SKEL_RADIUS
-#                WARMUP_START WARMUP_RAMP.
-#   Recipe v2 (defaults = the agreed cross-arm recipe; override only with
-#   cause -- the recipe is a between-arm CONSTANT of the protocol):
-#     CLIP              gradient clip, global L2 norm (1.0; 0 = off)
-#     LR_SCHEDULE       cosine | none (cosine: per-step decay to 0, T_max =
-#                       the stage's own epoch budget -- TUNE_EPOCHS for
-#                       trials, REFIT_EPOCHS for the refit)
-#     SR_WARMUP_EPOCHS  linear LR ramp on the SR group, absolute epochs
-#                       (1.0). The MODEL auto-disables it for frozen/bicubic
-#                       SR and warm-start arms, so it is safe to pass always.
-#     L2SP_LAMBDA       L2-SP anchor toward the pretrained SR weights (0.0 =
-#                       dormant). Escalate only on sr_drift_rel evidence.
-#     REG=false         one-switch unregularised-GAN ablation (clip 0, no
-#                       schedule, no warmup); auto-tags run/study/bench with
-#                       _noreg so it never mixes with the v2 runs.
-#   SR_SNAPSHOT_EVERY   fit-stage SR-weights-only snapshots every N epochs
-#                       into <run dir>/sr_snapshots/ (+ an epoch-0 init
-#                       frame) for replaying the SR output's task-driven
-#                       evolution. 0 (default) = off; try 2-5.
+# Optional (submit-time or experiment-script) — see _stages.sh for the full
+# prose on each; they behave identically here:
+#   WARM_START_CKPT  stage-1 UNet init (r6/r7 staged protocol). _warm_tv.sh
+#                derives it from the stage-1 arm's FINAL ckpt.
+#   LOSS_ARM     any unet.losses.build_loss arm (+ its hps).
+#   Recipe v2:   CLIP LR_SCHEDULE SR_WARMUP_EPOCHS L2SP_LAMBDA REG
+#   SR_SNAPSHOT_EVERY   fit-stage SR-weights-only snapshots every N epochs.
 #
-# STAGE=tune   Optuna search, one INDEPENDENT tuner per GPU, shared sqlite study
-#              (no DDP — that's the Optuna constraint). Default headers = gpu:2.
-#              Stop EARLY without losing anything: `touch <run dir>/STOP` (or
-#              `scancel -s USR1 <jobid>`) — the in-flight trial finishes,
-#              best_params.yaml is written, and CHAIN_FIT still applies.
-#              Rescue a KILLED search: rerun with N_TRIALS=0 — attaches to the
-#              persisted study and writes best_params.yaml in seconds.
-#   CHAIN_FIT=1  after the search, continue straight into STAGE=fit in the
-#              SAME job/allocation (saves a queue round-trip; the refit uses
-#              1 GPU, so any extra search GPUs idle during it).
-# STAGE=fit    Refit best config on ONE GPU + wandb test. Submit with --gres=gpu:1.
-#              Refits from scratch by default. RESUME_FIT=1 continues a
-#              walltime-killed refit from <run dir>/checkpoints/last.ckpt
-#              (restores epoch/optimizer/schedule + best-score tracking).
-# STAGE=bench  Score the fitted checkpoint into the SHARED benchmark store
-#              (per-chip confusion-matrix metrics at 2.5 m against the SAME GT
-#              source the model trained on). Standalone on any existing
-#              checkpoint; train_both.sbatch chains it. Submit with --gres=gpu:1.
+# NEW here:
+#   REFIT_EPOCHS     the pre-registered budget (default 100). This is now a
+#                nothing-stops-it-early budget, so it is a BETWEEN-ARM CONSTANT
+#                of the protocol: change it for one arm and the comparison is
+#                void. Check the walltime — every arm now runs the full count.
+#   TRAIN_SPLITS     "train val" (default). Set "train" to reproduce the old
+#                holdout protocol on ROSA_New without switching engines; the
+#                run dir / study / bench name then gain a _holdout tag so the
+#                two protocols can never land in the same store row.
+#   NORM_CONFIG      normalisation stats. DEFAULT = <DATASET_DIR>/norm_stats.yaml,
+#                i.e. the file `sentinel2data.cli norm-stats` writes into the
+#                dataset itself — the only copy guaranteed to have been computed
+#                from THIS dataset's splits/train.csv. Unlike _stages.sh, this
+#                engine does NOT hard-code the repo copy; it falls back to it
+#                only if the dataset has none, and then refuses to run without
+#                NORM_FALLBACK_OK=1.
 #
-# Replication contract: only SEED, STAGE and the loss block (LOSS_ARM + hps —
-# tagged into the run dir/study/model_name, so arms never mix) are meant to
-# vary at submit time.
+# STAGE=tune   Optuna on train/val (unchanged). CHAIN_FIT=1 continues into fit
+#              in the same allocation. Early stop: `touch <run dir>/STOP`.
+#              Rescue a killed search: rerun with N_TRIALS=0.
+# STAGE=fit    Refit on train+val for REFIT_EPOCHS on ONE GPU, then test.
+#              RESUME_FIT=1 continues from last.ckpt.
+# STAGE=bench  Score unet_s2rosa_jointsr_final.ckpt into the shared store.
+#
+# Replication contract: only SEED, STAGE and the loss block are meant to vary.
 set -euo pipefail
 
 USER_NAME="${USER:-$(whoami)}"
@@ -79,8 +81,8 @@ REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 VENV_DIR="${VENV_DIR:-/scratch/${USER_NAME}/InstaRoad/.venv}"
 
 : "${EXP_TAG:?experiment script must set EXP_TAG}"
-: "${LABELS:-all}"
-: "${UPSAMPLER:?experiment script must set UPSAMPLER (sen2sr|bicubic)}"
+: "${LABELS:-new}"
+: "${UPSAMPLER:?experiment script must set UPSAMPLER (sen2sr|sen2sr_full|sr4rs|bicubic)}"
 : "${FREEZE_SR:?experiment script must set FREEZE_SR (true|false)}"
 : "${SR_PAD:?experiment script must set SR_PAD (0 = off)}"
 
@@ -91,12 +93,23 @@ PRECISION="${PRECISION:-bf16-mixed}"
 SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SEN2SRLite_RGBN}"
 WARM_START_CKPT="${WARM_START_CKPT:-}"
 
+# --- The train+val protocol switch -------------------------------------------
+# Space-separated split names for the REFIT's train loader. The default IS the
+# protocol; "train" reverts to the classic holdout fit and tags itself so the
+# two never mix.
+TRAIN_SPLITS="${TRAIN_SPLITS:-train val}"
+PROTO_TAG=""
+MERGE_VAL=1
+case " ${TRAIN_SPLITS} " in
+  *" test "*)
+    echo "ERROR: TRAIN_SPLITS must never contain 'test' — that is the held-out" >&2
+    echo "  evaluation split. Got '${TRAIN_SPLITS}'." >&2
+    exit 2 ;;
+  *" val "*) : ;;
+  *) PROTO_TAG="_holdout"; MERGE_VAL=0 ;;
+esac
+
 # --- Recipe v2 training dynamics (defaults = the agreed recipe) --------------
-# REG=false flips every stabiliser off in ONE switch (clip / cosine / warmup;
-# l2sp is already dormant) -- the "unregularised GAN" ablation -- and tags the
-# run dir / study / benchmark name with _noreg so it can NEVER mix with the v2
-# runs. Individually-set vars still win either way; if you hand-roll a partial
-# ablation instead of using REG=false, tag the run yourself.
 REG="${REG:-true}"
 REG_TAG=""
 if [ "$REG" = "false" ] || [ "$REG" = "0" ]; then
@@ -111,33 +124,30 @@ SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-1.0}"  # SR-group ramp; model auto-off
                                              # for frozen/bicubic/warm-start
 L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}"            # 0 = dormant L2-SP anchor
 
-# --- SR evolution snapshots (STAGE=fit only; demo/insight) -------------------
-# Every N epochs save the SR net's WEIGHTS ONLY into <run dir>/sr_snapshots/
-# (~45 MB/frame SR4RS, ~2 MB SEN2SR-Lite -- vs ~500 MB full Lightning ckpts),
-# plus an epoch-0 "init" frame: replay how the task loss reshapes the SR
-# output. 0 (default) = off. Storage at every-2 x 100 epochs: SR4RS ~2.3 GB,
-# SEN2SR ~0.1 GB. Frozen/bicubic arms skip automatically.
 SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-0}"
 
 # LABELS -> dataset dir + code-level mask_source
 case "$LABELS" in
-  cdngi)
-    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI}"
-    MASK_SOURCE="graph" ;;   # = the CDNGI dataset's own masks_graph parquets
-  overture)
-    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_Overture}"
-    MASK_SOURCE="graph" ;;   # = the Overture dataset's own masks_graph parquets
-  osm)
-    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI}"
-    MASK_SOURCE="raster" ;;  # = <split>/mask_osm_2pt5 rasters
+  new)
+    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_New}"
+    MASK_SOURCE="graph" ;;   # = the final dataset's own masks_graph parquets
   all)
     DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_all}"
-    MASK_SOURCE="graph" ;;   # = the all dataset's own masks_graph parquets
+    MASK_SOURCE="graph" ;;
+  cdngi)
+    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI}"
+    MASK_SOURCE="graph" ;;
+  overture)
+    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_Overture}"
+    MASK_SOURCE="graph" ;;
+  osm)
+    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_New}"
+    MASK_SOURCE="raster" ;;  # = <split>/mask_osm_2pt5 rasters
   *)
-    echo "ERROR: LABELS must be cdngi|overture|osm|all, got '${LABELS}'." >&2; exit 2 ;;
+    echo "ERROR: LABELS must be new|all|cdngi|overture|osm, got '${LABELS}'." >&2; exit 2 ;;
 esac
 
-# --- Tune budget -------------------------------------------------------------
+# --- Tune budget (train/val — UNCHANGED from _stages.sh) ---------------------
 N_TRIALS="${N_TRIALS:-200}"
 SEARCH_GPUS="${SEARCH_GPUS:-2}"
 TUNE_EPOCHS="${TUNE_EPOCHS:-8}"
@@ -145,17 +155,19 @@ PATIENCE="${PATIENCE:-3}"
 ENCODER_WEIGHTS="${ENCODER_WEIGHTS:-imagenet}"
 LR_MIN="${LR_MIN:-1e-5}"
 LR_MAX="${LR_MAX:-1e-2}"
-LR_SR_MIN="${LR_SR_MIN:-1e-7}"   # searched only when UPSAMPLER=sen2sr && !FREEZE_SR
+LR_SR_MIN="${LR_SR_MIN:-1e-7}"   # searched only when SR is learned & unfrozen
 LR_SR_MAX="${LR_SR_MAX:-1e-3}"
 POS_WEIGHT_MIN="${POS_WEIGHT_MIN:-1.0}"
 POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-15.0}"
 ENCODERS="${ENCODERS:-resnet34}"      # NOT searched: encoder constancy is the control
 BATCH_SIZES="${BATCH_SIZES:-2 4 8}"   # 512px UNet stage is memory-heavy
 
-# --- Fit budget --------------------------------------------------------------
+# --- Fit budget (train+val, FIXED — no early stopping) -----------------------
+# Pre-registered and identical across arms. Nothing truncates it now, so budget
+# the SLURM walltime for the full count on the SLOWEST arm (sr4rs).
 REFIT_EPOCHS="${REFIT_EPOCHS:-100}"
 REFIT_GPUS="${REFIT_GPUS:-1}"
-WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_joint}"
+WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_joint_final}"
 
 # --- Loss (unet.losses.build_loss; empty = legacy Dice + pos-weighted BCE) ---
 LOSS_ARM="${LOSS_ARM:-}"
@@ -191,10 +203,40 @@ fi
 # =============================================================================
 
 BASE_CONFIG="$REPO_DIR/src/sr/configs/joint_sr.yaml"
-NORM_CONFIG="$REPO_DIR/src/unet/configs/norm_stats.yaml"
+TRAINVAL_CONFIG="$REPO_DIR/src/sr/configs/joint_sr_trainval.yaml"
 WANDB_CONFIG="$REPO_DIR/src/unet/configs/wandb.yaml"
-RUN_DIR="/scratch/${USER_NAME}/InstaRoad/runs/sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}_seed${SEED}"
+
+# --- Norm stats: read them from the DATASET, not from the repo ---------------
+# `sentinel2data.cli norm-stats` writes <dataset_dir>/norm_stats.yaml by
+# default, so every dataset already ships the stats computed from ITS OWN
+# splits/train.csv — which is the only file that can be correct for it.
+# The repo copy at src/unet/configs/norm_stats.yaml is a hand-copy of one
+# dataset's file (its header still names the dataset it came from); pointing
+# every experiment at that single path means the stats silently stop matching
+# the moment you switch datasets, and nothing in the run would tell you.
+# So: prefer the dataset's own file, fall back to the repo copy only if the
+# dataset has none, and say loudly which one is in use. NORM_CONFIG=<path>
+# overrides both.
+NORM_CONFIG_DATASET="${DATASET_DIR}/norm_stats.yaml"
+NORM_CONFIG_REPO="$REPO_DIR/src/unet/configs/norm_stats.yaml"
+if [ -n "${NORM_CONFIG:-}" ]; then
+  NORM_SOURCE="explicit NORM_CONFIG override"
+elif [ -f "$NORM_CONFIG_DATASET" ]; then
+  NORM_CONFIG="$NORM_CONFIG_DATASET"
+  NORM_SOURCE="dataset"
+else
+  NORM_CONFIG="$NORM_CONFIG_REPO"
+  NORM_SOURCE="repo fallback"
+fi
+# RUNS_ROOT is shared with _warm_tv.sh, which reconstructs the STAGE-1 run dir
+# from it — override one and you must override both, so they read the same var.
+RUNS_ROOT="${RUNS_ROOT:-/scratch/${USER_NAME}/InstaRoad/runs}"
+RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${PROTO_TAG}_seed${SEED}"
 mkdir -p "$RUN_DIR"
+
+# The refit's checkpoint. Named _final, never _best: under this protocol no
+# checkpoint was ever selected on a holdout, and the filename says so.
+FINAL_CKPT_NAME="unet_s2rosa_jointsr_final"
 
 LOG_FILE="${RUN_DIR}/${STAGE}_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -202,15 +244,47 @@ echo "Logging to ${LOG_FILE}"
 echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}"
 echo "labels=${LABELS} (mask_source=${MASK_SOURCE})  upsampler=${UPSAMPLER}  freeze_sr=${FREEZE_SR}  sr_pad=${SR_PAD}  loss_arm=${LOSS_ARM:-legacy}"
 echo "recipe: reg=${REG}${REG_TAG:+ [${REG_TAG}]}  clip=${CLIP}  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}  sr_snapshot_every=${SR_SNAPSHOT_EVERY}"
+echo "protocol: tune on train/val -> refit on '${TRAIN_SPLITS}' (merge_val=${MERGE_VAL}) -> report on test"
 echo "DATASET_DIR=${DATASET_DIR}  warm_start=${WARM_START_CKPT:-none}"
+echo "norm_stats=${NORM_CONFIG}  [${NORM_SOURCE}]"
 
 # --- Fail fast ---------------------------------------------------------------
 if [ ! -d "${DATASET_DIR}" ]; then
   echo "ERROR: ${DATASET_DIR} not visible on $(hostname). Is /scratch mounted?" >&2
+  echo "  (LABELS=${LABELS}. Upload the final dataset, or override DATASET_DIR.)" >&2
   exit 1
 fi
+for _s in splits/train.csv splits/val.csv splits/test.csv; do
+  if [ ! -f "${DATASET_DIR}/${_s}" ]; then
+    echo "ERROR: ${DATASET_DIR}/${_s} missing — the train+val protocol needs all" >&2
+    echo "  three split CSVs (val is merged at fit; test is the only report set)." >&2
+    exit 1
+  fi
+done
 if [ ! -f "${NORM_CONFIG}" ]; then
-  echo "ERROR: ${NORM_CONFIG} missing — generate with sentinel2data.cli norm-stats." >&2
+  echo "ERROR: no norm stats for this dataset." >&2
+  echo "  Looked for: ${NORM_CONFIG_DATASET}" >&2
+  echo "  and:        ${NORM_CONFIG_REPO}" >&2
+  echo "  Generate the dataset's own (this is the default output path):" >&2
+  echo "    python -m sentinel2data.cli norm-stats --dataset-dir ${DATASET_DIR}" >&2
+  exit 1
+fi
+# The repo fallback belongs to whichever dataset it was last copied from, so it
+# is a coin flip on any other one. Refuse to guess silently.
+if [ "${NORM_SOURCE}" = "repo fallback" ]; then
+  echo "WARN: ${DATASET_DIR}/norm_stats.yaml does not exist; falling back to the" >&2
+  echo "  repo copy ${NORM_CONFIG_REPO}, which was computed from a DIFFERENT" >&2
+  echo "  dataset's splits/train.csv. Wrong mean/std shifts every input the model" >&2
+  echo "  ever sees, and nothing downstream would flag it. Generate the real one:" >&2
+  echo "    python -m sentinel2data.cli norm-stats --dataset-dir ${DATASET_DIR}" >&2
+  echo "  (NORM_FALLBACK_OK=1 to proceed anyway.)" >&2
+  if [ "${NORM_FALLBACK_OK:-0}" != "1" ]; then
+    exit 1
+  fi
+  echo "  NORM_FALLBACK_OK=1 — proceeding on the repo copy." >&2
+fi
+if [ ! -f "${TRAINVAL_CONFIG}" ]; then
+  echo "ERROR: ${TRAINVAL_CONFIG} missing — this engine needs the refit overlay." >&2
   exit 1
 fi
 case "${UPSAMPLER}" in
@@ -232,12 +306,10 @@ case "${UPSAMPLER}" in
 esac
 if [ -n "${WARM_START_CKPT}" ] && [ ! -f "${WARM_START_CKPT}" ]; then
   echo "ERROR: WARM_START_CKPT=${WARM_START_CKPT} not found — run the stage-1" >&2
-  echo "  (frozen-SR) arm's STAGE=fit first; its best ckpt seeds this arm's UNet." >&2
+  echo "  (frozen-SR) arm's STAGE=fit first; its final ckpt seeds this arm's UNet." >&2
   exit 1
 fi
 if [ "${MASK_SOURCE}" = "raster" ]; then
-  # -print -quit: no pipe to `head`, so `find` can't die of SIGPIPE and trip
-  # `set -o pipefail` (that silently killed the unet osm.sh check).
   first_osm=$(find "${DATASET_DIR}"/*/mask_osm_2pt5 -maxdepth 1 -name '*.tif' -print -quit 2>/dev/null)
   if [ -z "${first_osm}" ]; then
     echo "ERROR: LABELS=osm but no masks under <split>/mask_osm_2pt5/." >&2
@@ -249,14 +321,9 @@ fi
 source "$VENV_DIR/bin/activate"
 export PYTHONPATH="$REPO_DIR/src:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
-# Long Optuna loops build/tear down models in ONE process; expandable segments
-# let the allocator reclaim freed blocks of any size instead of fragmenting
-# (r3's OOMs showed 100s of MiB "reserved but unallocated"). Pre-set the var
-# to override.
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 echo "python=$(which python)"
 
-# The full (Mamba) SEN2SR needs the CUDA-built mamba_ssm package.
 if [ "${UPSAMPLER}" = "sen2sr_full" ] && ! python -c "import mamba_ssm" 2>/dev/null; then
   echo "ERROR: upsampler=sen2sr_full but mamba_ssm is not importable in ${VENV_DIR}." >&2
   echo "  Install on a GPU node with matching torch/CUDA:  uv pip install mamba-ssm" >&2
@@ -264,15 +331,12 @@ if [ "${UPSAMPLER}" = "sen2sr_full" ] && ! python -c "import mamba_ssm" 2>/dev/n
 fi
 
 # ============================== STAGE: tune ==================================
+# IDENTICAL to _stages.sh: the search trains on `train` and scores on `val`.
+# The holdout is spent here, deliberately and once.
 if [ "$STAGE" = "tune" ]; then
-  # Default: sqlite (fine for ONE job/node). To run TWO sbatch jobs on the
-  # same study concurrently (different nodes), BOTH must use the NFS-safe
-  # journal backend and the 2nd job must offset its sampler seeds:
-  #   job1: STORAGE=journal://<runs dir>/study.journal
-  #   job2: STORAGE=journal://<same path> SAMPLER_OFFSET=500
   STORAGE="${STORAGE:-sqlite:///${RUN_DIR}/study.db}"
   SAMPLER_OFFSET="${SAMPLER_OFFSET:-0}"
-  STUDY_NAME="sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}_seed${SEED}"
+  STUDY_NAME="sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${PROTO_TAG}_seed${SEED}"
 
   run_tuner () {   # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
     local gpu="$1" ntrials="$2" seed="$3" pin=""
@@ -311,14 +375,6 @@ if [ "$STAGE" = "tune" ]; then
       ${LOSS_ARGS_TUNE[@]+"${LOSS_ARGS_TUNE[@]}"}
   }
 
-  # Cap the fan-out at the GPUs actually visible in THIS allocation. A worker
-  # pinned to a nonexistent ordinal (CUDA_VISIBLE_DEVICES=1 on a 1-GPU job)
-  # masks CUDA entirely: eager-CUDA loaders (sen2sr_full's mlstac card) die
-  # with "No CUDA GPUs are available", everything else silently trains on CPU.
-  # 0 GPUs is NOT an error: one unpinned CPU worker, so interactive CPU-only
-  # smoke tests (run until epoch 1, then kill) keep working when the cluster
-  # is busy. NB mamba_ssm's kernels are CUDA-only, so an r3/sen2sr_full smoke
-  # test now loads fine on CPU but still dies at the first batch.
   N_GPUS=$(python -c "import torch; print(torch.cuda.device_count())")
   if [ "${N_GPUS}" -eq 0 ] && [ "${SEARCH_GPUS}" -gt 1 ]; then
     echo "WARN: no CUDA device visible — running ONE unpinned tuner on CPU (smoke-test mode)." >&2
@@ -328,12 +384,8 @@ if [ "$STAGE" = "tune" ]; then
     SEARCH_GPUS="${N_GPUS}"
   fi
 
-  echo "=== OPTUNA SEARCH (n_trials=$N_TRIALS across ${SEARCH_GPUS} GPU(s), ${TUNE_EPOCHS} epochs/trial) ==="
+  echo "=== OPTUNA SEARCH on train/val (n_trials=$N_TRIALS across ${SEARCH_GPUS} GPU(s), ${TUNE_EPOCHS} epochs/trial) ==="
   echo "    stop early (keeps study + writes overlay):  touch ${RUN_DIR}/STOP"
-  # Sampler seeds: SEED*1000+worker, so workers within a run differ (no
-  # duplicate proposals) AND no sampler seed ever recurs across SEED runs
-  # (SEED+g would make e.g. SEED=0/worker1 collide with SEED=1/worker0,
-  # correlating the startup trials of nominally independent runs).
   if [ "$SEARCH_GPUS" -le 1 ]; then
     run_tuner "" "$N_TRIALS" "$(( SEED * 1000 + SAMPLER_OFFSET ))"
   else
@@ -350,20 +402,20 @@ if [ "$STAGE" = "tune" ]; then
     [ "$fail" -eq 0 ] || { echo "ERROR: an Optuna search worker failed (see log above)." >&2; exit 1; }
   fi
   echo "=== SEARCH DONE ===  best_params.yaml + study.db in $RUN_DIR"
-  echo "Next: sbatch --gres=gpu:1 scripts/hpc/train.sbatch --SCRIPT=sr/${EXP_TAG}.sh STAGE=fit SEED=${SEED}${LOSS_ARM:+ LOSS_ARM=${LOSS_ARM}}"
+  echo "Next (refit on train+val, then test):"
+  echo "  bash scripts/hpc/submit.sh sr/${EXP_TAG}.sh STAGE=fit SEED=${SEED}${LOSS_ARM:+ LOSS_ARM=${LOSS_ARM}}"
   exit 0
 fi
 
 # ============================== STAGE: bench =================================
-# Score the fitted checkpoint into the shared benchmark store, evaluated at
-# 2.5 m against the experiment's own GT (LABELS -> mask_source), through the
-# same joint_sr_dataset helpers training used — eval GT cannot drift from
-# train GT. --sen2sr-dir overrides the training node's path baked into hparams.
+# Score the FINAL checkpoint into the shared benchmark store, at 2.5 m against
+# the experiment's own GT, through the same joint_sr_dataset helpers training
+# used. Default split is `test` — the only split this protocol reports.
 if [ "$STAGE" = "bench" ]; then
-  CKPT="${RUN_DIR}/checkpoints/unet_s2rosa_jointsr_best.ckpt"
+  CKPT="${RUN_DIR}/checkpoints/${FINAL_CKPT_NAME}.ckpt"
   if [ ! -f "$CKPT" ]; then
     if [ -f "${RUN_DIR}/checkpoints/last.ckpt" ]; then
-      echo "WARN: best checkpoint missing; benchmarking last.ckpt instead." >&2
+      echo "WARN: ${FINAL_CKPT_NAME}.ckpt missing; benchmarking last.ckpt instead." >&2
       CKPT="${RUN_DIR}/checkpoints/last.ckpt"
     else
       echo "ERROR: no checkpoint under ${RUN_DIR}/checkpoints/ — run STAGE=fit first." >&2
@@ -372,12 +424,18 @@ if [ "$STAGE" = "bench" ]; then
   fi
 
   STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}"   # SHARED across experiments
-  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}}"  # {family}_{exp}[_{loss}][_noreg]: what the stats pair/group on
-  LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"      # cdngi | overture | osm
+  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${PROTO_TAG}}"
+  LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
-  TILE_METRICS="${TILE_METRICS:-apls}"           # comma-separated plugins; '' disables.
-                                                 # apls is the resolution-robust
-                                                 # cross-family comparison metric.
+  TILE_METRICS="${TILE_METRICS:-apls}"
+
+  # val tiles are TRAINING tiles under this protocol — scoring on them would be
+  # a train-set number sitting in the same store as honest test numbers.
+  if [ "$MERGE_VAL" = "1" ] && [ "$BENCH_SPLIT" = "val" ]; then
+    echo "ERROR: BENCH_SPLIT=val, but val was folded into training (TRAIN_SPLITS='${TRAIN_SPLITS}')." >&2
+    echo "  That score would be a training score. Use BENCH_SPLIT=test." >&2
+    exit 2
+  fi
 
   CONFIG_ARGS=()
   [ -f "${RUN_DIR}/best_params.yaml" ] && CONFIG_ARGS=(--config-yaml "${RUN_DIR}/best_params.yaml")
@@ -389,7 +447,7 @@ if [ "$STAGE" = "bench" ]; then
     for _tm in "${_TMS[@]}"; do METRIC_ARGS+=(--tile-metric "${_tm}"); done
   fi
 
-  echo "=== BENCH (ckpt=$(basename "$CKPT"), model_name=${MODEL_NAME}, seed=${SEED}, gt=${MASK_SOURCE}, tile_metrics=${TILE_METRICS:-none}) ==="
+  echo "=== BENCH (ckpt=$(basename "$CKPT"), model_name=${MODEL_NAME}, seed=${SEED}, split=${BENCH_SPLIT}, gt=${MASK_SOURCE}, tile_metrics=${TILE_METRICS:-none}) ==="
   python -m benchmarking.cli eval \
     --dataset-dir "$DATASET_DIR" \
     --checkpoint "$CKPT" \
@@ -417,23 +475,16 @@ if [ "$STAGE" != "fit" ]; then
 fi
 
 BEST_CONFIG="${RUN_DIR}/best_params.yaml"
-CKPT="${RUN_DIR}/checkpoints/unet_s2rosa_jointsr_best.ckpt"
+CKPT="${RUN_DIR}/checkpoints/${FINAL_CKPT_NAME}.ckpt"
 if [ ! -f "$BEST_CONFIG" ]; then
   echo "ERROR: ${BEST_CONFIG} not found — run STAGE=tune first." >&2
   exit 1
 fi
-echo "--- best hyperparameters ---"; cat "$BEST_CONFIG"
+echo "--- best hyperparameters (chosen on val, before the merge) ---"; cat "$BEST_CONFIG"
 
 # Refit from inside RUN_DIR so the base config's relative `checkpoints/` lands here.
 cd "$RUN_DIR"
 
-# Refit from scratch by DEFAULT (a stale last.ckpt in the run dir is ignored,
-# then overwritten). RESUME_FIT=1 instead continues a previous refit from its
-# last.ckpt (e.g. a walltime-killed job): LightningCLI `fit --ckpt_path`
-# restores the epoch, optimizer, LR schedule AND the ModelCheckpoint best-score
-# state, so the run finishes the remaining epochs with tracking intact. (Same
-# run dir = same exp/seed/loss/reg treatment, so a resumed checkpoint's config
-# can't mismatch the overlay.)
 LAST_CKPT="${RUN_DIR}/checkpoints/last.ckpt"
 RESUME_ARGS=()
 if [ "${RESUME_FIT:-0}" = "1" ]; then
@@ -445,9 +496,8 @@ if [ "${RESUME_FIT:-0}" = "1" ]; then
   fi
 fi
 
-# The experiment's SR treatment (and loss arm, if set) is passed explicitly
-# (belt) even though the best_params overlay records it too (braces) — drift
-# is impossible.
+# The SR treatment (and loss arm) is passed explicitly (belt) even though the
+# best_params overlay records it too (braces) — drift is impossible.
 MODEL_ARGS=(--model.upsampler "$UPSAMPLER" --model.freeze_sr "$FREEZE_SR"
             --model.sr_pad "$SR_PAD" --model.sen2sr_dir "$SEN2SR_DIR"
             --model.lr_schedule "$LR_SCHEDULE"
@@ -461,15 +511,25 @@ if [ -n "$LOSS_ARM" ]; then
   MODEL_ARGS+=("${LOSS_ARGS_FIT[@]}")
 fi
 
-echo "=== REFIT (best config, ${REFIT_EPOCHS} epochs, ${REFIT_GPUS} GPU) ==="
+# joint_sr_trainval.yaml is layered LAST so its callback list and
+# limit_val_batches win over joint_sr.yaml's val-monitored ones. train_splits is
+# ALSO passed explicitly, so a holdout run (TRAIN_SPLITS=train) overrides the
+# overlay's default rather than needing a second config file.
+# shellcheck disable=SC2206
+TRAIN_SPLITS_ARR=(${TRAIN_SPLITS})
+SPLIT_ARGS=(--data.train_splits "[$(IFS=,; echo "${TRAIN_SPLITS_ARR[*]}")]")
+
+echo "=== REFIT on '${TRAIN_SPLITS}' (best config, FIXED ${REFIT_EPOCHS} epochs, no early stopping, ${REFIT_GPUS} GPU) ==="
 python -m sr.cli fit \
   --config "$BASE_CONFIG" \
   --config "$NORM_CONFIG" \
   --config "$WANDB_CONFIG" \
   --config "$BEST_CONFIG" \
+  --config "$TRAINVAL_CONFIG" \
   --data.dataset_dir "$DATASET_DIR" \
   --data.num_workers "$NUM_WORKERS" \
   --data.mask_source "$MASK_SOURCE" \
+  "${SPLIT_ARGS[@]}" \
   "${MODEL_ARGS[@]}" \
   --trainer.max_epochs "$REFIT_EPOCHS" \
   --trainer.devices "$REFIT_GPUS" \
@@ -488,18 +548,18 @@ else
   echo "WARN: could not locate the refit's wandb run; test will log to a fresh run" >&2
 fi
 
-# Prefer the best checkpoint; fall back to last.ckpt; fail loudly otherwise.
 if [ ! -f "$CKPT" ]; then
-  if [ -f "${RUN_DIR}/checkpoints/last.ckpt" ]; then
-    echo "WARN: best checkpoint missing; testing last.ckpt instead." >&2
-    CKPT="${RUN_DIR}/checkpoints/last.ckpt"
+  if [ -f "$LAST_CKPT" ]; then
+    echo "WARN: ${FINAL_CKPT_NAME}.ckpt missing; testing last.ckpt instead." >&2
+    CKPT="$LAST_CKPT"
   else
     echo "ERROR: no checkpoint under ${RUN_DIR}/checkpoints/ — refit produced none. Skipping test." >&2
     exit 1
   fi
 fi
 
-echo "=== BENCHMARK (test split, ckpt=$(basename "$CKPT")) ==="
+# The ONLY held-out evaluation in this protocol.
+echo "=== TEST (held-out split, ckpt=$(basename "$CKPT")) ==="
 python -m sr.cli test \
   --config "$BASE_CONFIG" \
   --config "$NORM_CONFIG" \
@@ -514,3 +574,4 @@ python -m sr.cli test \
   --ckpt_path "$CKPT"
 
 echo "=== DONE ===  outputs in $RUN_DIR"
+echo "Bench: bash scripts/hpc/submit.sh sr/${EXP_TAG}.sh STAGE=bench SEED=${SEED}${LOSS_ARM:+ LOSS_ARM=${LOSS_ARM}}"
