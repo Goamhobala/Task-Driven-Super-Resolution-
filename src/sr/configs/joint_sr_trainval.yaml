@@ -1,0 +1,72 @@
+# Final-refit overlay: TRAIN + VAL, no held-out set, fixed epoch budget.
+#
+# Layer this LAST, on top of joint_sr.yaml (+ norm_stats/wandb/best_params):
+#
+#   python -m sr.cli fit --config src/sr/configs/joint_sr.yaml \
+#                        --config src/unet/configs/norm_stats.yaml \
+#                        --config src/unet/configs/wandb.yaml \
+#                        --config <run>/best_params.yaml \
+#                        --config src/sr/configs/joint_sr_trainval.yaml
+#
+# ...which is exactly what scripts/hpc/sr/_stages_tv.sh does. Nothing else in
+# the stack changes: same model, same recipe-v2 dynamics, same data pipeline.
+#
+# WHY -------------------------------------------------------------------------
+# The val split exists to choose things: Optuna's hyperparameters, the early-
+# stopping point, the "best" checkpoint. Once STAGE=tune has spent it, holding
+# those ~230 tiles out of the fit buys nothing and costs ~17% of the training
+# data (ROSA110: 1395 train + 234 val). The final models are therefore refit on
+# train+val and reported on test only.
+#
+# The cost is that the usual stopping/selection machinery has no honest signal
+# left, so this overlay REMOVES it rather than letting it peek at data the model
+# now trains on:
+#
+#   * limit_val_batches: 0     the val loop never runs (val tiles are train
+#                              tiles now; a "val_iou" here would be train IoU
+#                              wearing a disguise).
+#   * EarlyStopping dropped    the epoch budget is PRE-REGISTERED and identical
+#                              across arms, so no arm gets a data-dependent
+#                              operating point the others didn't. This mirrors
+#                              the loss ablation's fixed-budget fairness rule
+#                              (docs/loss_ablation.md).
+#   * monitor: null            the checkpoint is the END of the budget, not an
+#                              argmax over epochs. Written as
+#                              `unet_s2rosa_jointsr_final.ckpt` — deliberately
+#                              NOT `..._best.ckpt`, so a final-protocol
+#                              checkpoint can never be mistaken for a
+#                              val-selected one (and vice versa) by the bench /
+#                              viz / warm-start tooling.
+#
+# The fixed budget is principled rather than arbitrary here because recipe v2's
+# cosine schedule has T_max = the trainer's own max_epochs: the run always ends
+# at LR 0, i.e. at the natural end of a complete schedule.
+#
+# NB epochs are not step-equivalent to an _all run: JointSRRoadTileDataset's
+# default length is 10x the tile count, so folding val in grows steps/epoch by
+# the same ~17%. Constant across arms, so between-arm comparisons are unaffected
+# — but do not compare an absolute epoch count against the _all series.
+
+data:
+  train_splits: [train, val]
+
+trainer:
+  # Val tiles are training tiles now. Skipping the loop entirely is cheaper
+  # than computing a metric nobody is allowed to look at.
+  limit_val_batches: 0
+  num_sanity_val_steps: 0
+  callbacks:
+    # Single unmonitored checkpoint: Lightning saves at each train-epoch end
+    # and save_top_k=1 keeps only the most recent, so what survives is the
+    # final-epoch weights. save_last also writes last.ckpt for RESUME_FIT=1.
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: checkpoints
+        filename: unet_s2rosa_jointsr_final
+        monitor: null
+        save_top_k: 1
+        save_last: true
+        save_on_train_epoch_end: true
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step

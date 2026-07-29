@@ -77,19 +77,37 @@ def parse_args(argv=None):
     ap.add_argument("--overlay", action="store_true",
                     help="draw predictions in red over the RGB patch")
     ap.add_argument("--ncols", type=int, default=5)
+    ap.add_argument("--device", default="cpu",
+                    help="torch device for inference (e.g. cpu, mps, cuda); "
+                         "falls back to cpu if the requested backend is unavailable")
     ap.add_argument("--out", default="loss_grid.png")
     return ap.parse_args(argv)
 
 
-def predict_arm(ckpt: Path, img_path, top, left, size):
+def resolve_device(name: str) -> str:
+    """Requested device, downgraded to cpu when its backend isn't available."""
+    import torch
+
+    if name == "mps" and not torch.backends.mps.is_available():
+        print("WARN: mps unavailable — falling back to cpu")
+        return "cpu"
+    if name == "cuda" and not torch.cuda.is_available():
+        print("WARN: cuda unavailable — falling back to cpu")
+        return "cpu"
+    return name
+
+
+def predict_arm(ckpt: Path, img_path, top, left, size, device="cpu"):
     """(loss_arm, tl_theta|None, sigmoid-probs) for one checkpoint, its own bands/norm."""
     import torch
 
     from sentinel2data.dataset.reading import apply_norm
     from unet.model import UNetLightning
 
+    # map_location="cpu" then .to(device): deserialising straight onto MPS puts the
+    # whole ckpt (incl. unused optimiser state) there — via CPU only the weights land.
     model = UNetLightning.load_from_checkpoint(str(ckpt), map_location="cpu")
-    model.eval().float()
+    model.eval().float().to(device)
     hp = model.hparams
     arm = str(hp.get("loss_arm") or "?")
     theta = hp.get("tl_theta") if arm in ("tl_ce", "t2_ce", "t4_ce", "gap_tl_ce") else None
@@ -97,7 +115,7 @@ def predict_arm(ckpt: Path, img_path, top, left, size):
     raw = read_patch(img_path, bands, top, left, size)
     if bool(hp.get("normalize", True)):
         raw = apply_norm(raw, bands, hp.get("norm_mean"), hp.get("norm_std"))
-    x = torch.from_numpy(np.ascontiguousarray(raw))[None]
+    x = torch.from_numpy(np.ascontiguousarray(raw))[None].to(device)
     pad = (-x.shape[-1]) % 32, (-x.shape[-2]) % 32
     if any(pad):
         x = torch.nn.functional.pad(x, (0, pad[0], 0, pad[1]), mode="reflect")
@@ -196,9 +214,10 @@ def main(argv=None):
     ckpts = sorted(Path(args.ckpt_dir).rglob("*.ckpt"))
     if not ckpts:
         raise SystemExit(f"no *.ckpt under {args.ckpt_dir}")
+    device = resolve_device(args.device)
     for ckpt in ckpts:
         try:
-            arm, theta, probs = predict_arm(ckpt, img_path, top, left, size)
+            arm, theta, probs = predict_arm(ckpt, img_path, top, left, size, device)
         except Exception as e:   # a broken checkpoint shouldn't kill the grid
             print(f"WARN {ckpt.name}: {e}")
             continue

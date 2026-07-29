@@ -1,18 +1,19 @@
-"""2x2 single-checkpoint visualisation of one JointSR+UNet model.
+"""Horizontal single-checkpoint visualisation of one JointSR+UNet model.
 
-Renders, for ONE `JointSRUNetLightning` checkpoint on ONE 128 px crop, the four
-panels that tell the whole story of the model's forward pass:
+Renders, for ONE `JointSRUNetLightning` checkpoint on ONE 128 px crop, a single
+row of panels that tell the whole story of the model's forward pass:
 
-    | Original 10 m image    | Ground-truth 10 m mask |
-    | SR image (UNet input)  | Predicted mask         |
+    | Bicubic x4 | SR image (UNet input) | Predicted mask | Ground-truth mask |
 
-Top-left is the raw 10 m crop the model consumes; bottom-left is the exact
-super-resolved reflectance tensor its UNet actually saw (this ckpt's own SR net
-+ `sr_pad` pad/crop, BEFORE the z-score adapter) — i.e. what the SR module made
-of the top-left image. Top-right is the ground truth; bottom-right is
-sigmoid(logits) > threshold. Both image panels share ONE percentile stretch
-computed from the original crop, so the SR panel's contrast is comparable to the
-input rather than autoscaled in isolation.
+The first panel is the raw 10 m crop bicubically upsampled x4, so it sits on the
+same 512 px / 2.5 m grid as the SR panel and the two are a like-for-like
+comparison. The SR panel is the exact super-resolved reflectance tensor its UNet
+actually saw (this ckpt's own SR net + `sr_pad` pad/crop, BEFORE the z-score
+adapter) — i.e. what the SR module made of that same crop. The predicted mask is
+sigmoid(logits) > threshold; the last panel is the ground truth. Both image
+panels share ONE percentile stretch computed from the original crop, so the SR
+panel's contrast is comparable to the bicubic baseline rather than autoscaled in
+isolation.
 
 The checkpoint's forward is replayed faithfully from its saved hparams
 (`upsampler`, `sr_pad`, `reflectance_scale`, ...), so padded/unpadded and
@@ -24,11 +25,11 @@ Zero-argument default (everything from the gitignored src/sr/examples/ folder):
 
     python -m sr.viz_single                         # -> Durban_r4_c3_single.png
 
-`--pristine` adds a row for the UN-finetuned SR net (the pristine weights the
-ckpt was initialised from, loaded fresh from --sr-dir), turning the left column
-into: original 10 m -> un-finetuned SR -> the ckpt's finetuned SR. Both SR
-panels go through the ckpt's own pad/crop/scale so they are directly comparable;
-the un-finetuned row's mask panel is left empty until a frozen-SR ckpt exists:
+`--pristine` inserts a panel for the UN-finetuned SR net (the pristine weights
+the ckpt was initialised from, loaded fresh from --sr-dir), so the row becomes:
+bicubic x4 -> un-finetuned SR -> the ckpt's finetuned SR -> predicted mask ->
+GT. All three image panels go through the ckpt's own pad/crop/scale so they are
+directly comparable:
 
     python -m sr.viz_single --pristine --device mps
 
@@ -37,9 +38,12 @@ Override any piece:
     python -m sr.viz_single --ckpt <other.ckpt> --image <tile.tif> \
         --row 224 --col 288 --threshold 0.4
 
-Ground truth: `{tile}_mask.tif` beside the image (or --mask). A 10 m mask (dims
-== tile) is bicubically upsampled x4 for display; a 2.5 m mask (dims == 4x) is
-read at the scaled window. Missing -> empty GT panel with a warning.
+Ground truth defaults to a NATIVE 2.5 m mask (`{tile}_mask_high.tif`) so the GT
+panel is the real HR label rather than a bicubic blow-up of the 10 m mask. When
+that cache is missing it is rasterised fresh from the tile's road-graph parquet
+(--graph, else `{tile}_graph.parquet` beside the image, else --dataset-dir's
+masks_graph/{tile}.parquet) and cached for next time. No graph found -> fall
+back to the 10 m `{tile}_mask.tif` (bicubic x4); --mask forces a raster.
 """
 from __future__ import annotations
 
@@ -50,16 +54,26 @@ import numpy as np
 import torch
 
 from sr.model import JointSRUNetLightning
-from sr.viz_grid import CROP, EXAMPLES_DIR, read_gt, read_patch, to_rgb
+from sr.viz_grid import (
+    CROP, EXAMPLES_DIR, MASK_DATASET_DIR, read_gt, read_patch, to_rgb)
 
 # Zero-arg defaults, resolved inside --examples-dir.
-DEFAULT_CKPT = "unet_s2rosa_sen2sr_joint_best.ckpt"
-DEFAULT_IMAGE = "Forests_PeriUrban_Road_-3151_2964_r0_c0.tif"
+DEFAULT_CKPT = "unet_s2rosa_jointsr_sen2sr_best.ckpt"
+DEFAULT_IMAGE = "Skukuza_r2_c2.tif"
 
 # SR-weights directory per upsampler, when --sr-dir is not given. SEN2SR keeps
 # its weights in the examples folder (model.safetensor + hard_constraint.safetensor);
 # SR4RS's extracted generator lives under models/ (see scripts/sr4rs/extract_sr4rs.py).
 SR4RS_DIR = "models/SR4RS_RGBN"
+
+
+def bicubic_x4(x):
+    """The raw crop bicubically upsampled x4, so the baseline panel sits on the
+    same 512 px / 2.5 m grid as the SR panels for a like-for-like comparison."""
+    t = torch.from_numpy(x)[None].float()
+    up = torch.nn.functional.interpolate(
+        t, scale_factor=4, mode="bicubic", align_corners=False)
+    return up[0].numpy()
 
 
 def peek_upsampler(ckpt: Path) -> str:
@@ -158,7 +172,15 @@ def main():
     ap.add_argument("--image", default=None,
                     help=f"V2 tile GeoTIFF (default: {DEFAULT_IMAGE})")
     ap.add_argument("--mask", default=None,
-                    help="explicit GT raster (default: {tile}_mask.tif beside the image)")
+                    help="explicit GT raster read as-is (overrides the native-HR "
+                         "logic; default: native 2.5 m mask, see --graph)")
+    ap.add_argument("--graph", default=None,
+                    help="road-graph parquet to rasterise the native 2.5 m GT "
+                         "from (default: {tile}_graph.parquet beside the image, "
+                         "else --dataset-dir's masks_graph/{tile}.parquet)")
+    ap.add_argument("--dataset-dir", default=MASK_DATASET_DIR,
+                    help="ROSA dataset root holding {split}/masks_graph/ used to "
+                         "find a tile's road-graph parquet for the native 2.5 m GT")
     ap.add_argument("--sr-dir", default=None,
                     help="SR-net weights dir (default: per the ckpt's upsampler — "
                          f"{SR4RS_DIR} for sr4rs, --examples-dir for sen2sr)")
@@ -204,42 +226,41 @@ def main():
     col = args.col if args.col is not None else max(0, (w - CROP) // 2)
 
     x = read_patch(image, row, col)
-    gt, gt_label = read_gt(image, args.mask, row, col)
+    gt, gt_label = read_gt(image, args.mask, row, col,
+                           graph_path=args.graph, dataset_dir=args.dataset_dir)
     lo, hi = np.percentile(x[:3], args.stretch)
     hi = max(hi, lo + 1e-6)
     unet_in, pred, pristine = run_checkpoint(
         ckpt, sr_dir, x, args.threshold, args.device, pristine=args.pristine)
 
     hr_px = f"{CROP * 4}px, 2.5 m"
+    bicubic = bicubic_x4(x)
     if pristine is None:
-        # original 2x2: original / GT ; finetuned SR / prediction
-        fig, axes = plt.subplots(2, 2, figsize=(8.0, 8.6))
-        axes[0, 0].imshow(to_rgb(x, lo, hi), interpolation="nearest")
-        axes[0, 0].set_title(f"Original 10 m image ({CROP}px)", fontsize=11)
-        axes[0, 1].imshow(gt, cmap="gray", vmin=0, vmax=1)
-        axes[0, 1].set_title(gt_label, fontsize=11)
-        axes[1, 0].imshow(to_rgb(unet_in, lo, hi))
-        axes[1, 0].set_title(f"SR image -> UNet input ({hr_px})", fontsize=11)
-        axes[1, 1].imshow(pred, cmap="gray", vmin=0, vmax=1)
-        axes[1, 1].set_title(f"Predicted mask (road frac {pred.mean():.3f})", fontsize=11)
+        # Horizontal 1x4: bicubic x4 / finetuned SR / prediction / GT.
+        fig, axes = plt.subplots(1, 4, figsize=(13.2, 4.4))
+        axes[0].imshow(to_rgb(bicubic, lo, hi))
+        axes[0].set_title(f"Bicubic x4 ({hr_px})", fontsize=11)
+        axes[1].imshow(to_rgb(unet_in, lo, hi))
+        axes[1].set_title(f"SR image -> UNet input ({hr_px})", fontsize=11)
+        axes[2].imshow(pred, cmap="gray", vmin=0, vmax=1)
+        axes[2].set_title(f"Predicted mask (road frac {pred.mean():.3f})", fontsize=11)
+        axes[3].imshow(gt, cmap="gray", vmin=0, vmax=1)
+        axes[3].set_title(gt_label, fontsize=11)
     else:
-        # 3x2: original / GT ; un-finetuned SR / (empty) ; finetuned SR / pred.
-        # Left column is the SR progression the user asked for; right column
-        # keeps the matching masks (the un-finetuned row has no ckpt -> empty).
-        fig, axes = plt.subplots(3, 2, figsize=(8.0, 12.6))
-        axes[0, 0].imshow(to_rgb(x, lo, hi), interpolation="nearest")
-        axes[0, 0].set_title(f"Original 10 m image ({CROP}px)", fontsize=11)
-        axes[0, 1].imshow(gt, cmap="gray", vmin=0, vmax=1)
-        axes[0, 1].set_title(gt_label, fontsize=11)
-        axes[1, 0].imshow(to_rgb(pristine, lo, hi))
-        axes[1, 0].set_title(f"Un-finetuned SR ({hr_px})", fontsize=11)
-        axes[1, 1].text(0.5, 0.5, "no frozen-SR ckpt yet",
-                        ha="center", va="center", fontsize=11, color="0.5",
-                        transform=axes[1, 1].transAxes)
-        axes[2, 0].imshow(to_rgb(unet_in, lo, hi))
-        axes[2, 0].set_title(f"Finetuned SR -> UNet input ({hr_px})", fontsize=11)
-        axes[2, 1].imshow(pred, cmap="gray", vmin=0, vmax=1)
-        axes[2, 1].set_title(f"Predicted mask (road frac {pred.mean():.3f})", fontsize=11)
+        # Horizontal 1x5: bicubic x4 / un-finetuned SR / finetuned SR / pred / GT.
+        # The empty placeholder the old 3x2 grid needed is gone — a single row
+        # has no cell to fill, so the SR progression reads straight across.
+        fig, axes = plt.subplots(1, 5, figsize=(16.5, 4.4))
+        axes[0].imshow(to_rgb(bicubic, lo, hi))
+        axes[0].set_title(f"Bicubic x4 ({hr_px})", fontsize=11)
+        axes[1].imshow(to_rgb(pristine, lo, hi))
+        axes[1].set_title(f"Un-finetuned SR ({hr_px})", fontsize=11)
+        axes[2].imshow(to_rgb(unet_in, lo, hi))
+        axes[2].set_title(f"Finetuned SR -> UNet input ({hr_px})", fontsize=11)
+        axes[3].imshow(pred, cmap="gray", vmin=0, vmax=1)
+        axes[3].set_title(f"Predicted mask (road frac {pred.mean():.3f})", fontsize=11)
+        axes[4].imshow(gt, cmap="gray", vmin=0, vmax=1)
+        axes[4].set_title(gt_label, fontsize=11)
 
     for ax in axes.ravel():
         ax.set_axis_off()
