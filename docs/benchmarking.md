@@ -6,20 +6,20 @@ Reference for the benchmarking module: what is implemented, how the modules fit 
 
 All layers are implemented and tested (`tests/test_stats.py`, `tests/test_runner_integration.py` — the latter runs real random-init checkpoints through `evaluate()` end to end). The data loader is implemented externally and is out of scope for this module; the runner reuses its reading/normalisation/mask helpers so eval cannot drift from training.
 
-| layer                              | module                       | status                                                                      |
-| ---------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
-| pixel metrics                      | `confusion_matrix.py`      | implemented                                                                 |
-| statistical analysis               | `stats.py`                 | implemented                                                                 |
-| demo harness                       | `dummy_pipeline.py`        | implemented                                                                 |
-| demo analysis                      | `example.py`               | implemented                                                                 |
-| runner (unet + sr families)        | `runner.py`                | implemented                                                                 |
-| sharded parquet store              | `store.py`                 | implemented                                                                 |
-| CLI (eval/compare/variance/report) | `cli.py`                   | implemented                                                                 |
-| tile-metric plugin seam            | `tile_metrics.py`          | implemented                                                                 |
-| APLS (connectivity)                | `graph_metrics.py`         | implemented (`--tile-metric apls`, on by default in the HPC bench stages) |
+| layer                              | module                       | status                                                                                                                          |
+| ---------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| pixel metrics                      | `confusion_matrix.py`      | implemented                                                                                                                     |
+| statistical analysis               | `stats.py`                 | implemented                                                                                                                     |
+| demo harness                       | `dummy_pipeline.py`        | implemented                                                                                                                     |
+| demo analysis                      | `example.py`               | implemented                                                                                                                     |
+| runner (unet + sr families)        | `runner.py`                | implemented                                                                                                                     |
+| sharded parquet store              | `store.py`                 | implemented                                                                                                                     |
+| CLI (eval/compare/variance/report) | `cli.py`                   | implemented                                                                                                                     |
+| tile-metric plugin seam            | `tile_metrics.py`          | implemented                                                                                                                     |
+| APLS (connectivity)                | `graph_metrics.py`         | implemented (`--tile-metric apls`, on by default in the HPC bench stages)                                                     |
 | clDice metric (connectivity)       | `skeleton_metrics.py`      | implemented (`--tile-metric cldice`; verbatim jocpae/clDice port, hard skeletons, chip + tile levels, APLS empty conventions) |
-| HPC integration (STAGE=bench)      | `scripts/hpc/*/_stages.sh` | implemented                                                                 |
-| data loader                        | external                     | out of scope                                                                |
+| HPC integration (STAGE=bench)      | `scripts/hpc/*/_stages.sh` | implemented                                                                                                                     |
+| data loader                        | external                     | out of scope                                                                                                                    |
 
 ## Module overview
 

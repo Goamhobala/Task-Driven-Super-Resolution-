@@ -1,5 +1,7 @@
 """Benchmarking CLI -- eval a checkpoint to the store, then compare / summarise.
     eval      score a trained checkpoint over footprint chips -> sharded store
+    eval-dir  eval EVERY checkpoint under a dir (model_name/seed/θ* from each
+              run's train_meta.json/sweep.json) into one store, then report
     compare   paired bootstrap CI + Wilcoxon signed-rank between two models
     variance  cross-seed mean +/- std + 95% CI for one model (training instability)
     report    per-model mean +/- std + all pairwise comparisons (multi-metric,
@@ -12,6 +14,7 @@ label source): pixel metrics are only comparable within one GT; graph metrics
 are the cross-GT route.
 """
 import itertools
+import json
 from pathlib import Path
 from typing import Annotated, List, Optional
 
@@ -189,6 +192,47 @@ def _push_bench_to_wandb(meta_path: Path, run_id: str, store_dir, split: str):
                f"{info.get('name') or info['id']}")
 
 
+def _find_checkpoint(run_dir: Path) -> Optional[Path]:
+    """The checkpoint inside one run dir: ``checkpoints/best_f1.ckpt`` if present,
+    else the first ``checkpoints/*.ckpt``, else the first ``*.ckpt`` in the dir.
+    ``None`` when the dir has no checkpoint (e.g. an HPC run whose weights were
+    never synced back — only its logs/config are here)."""
+    best = run_dir / "checkpoints" / "best_f1.ckpt"
+    if best.exists():
+        return best
+    for cand in sorted(run_dir.glob("checkpoints/*.ckpt")) + sorted(run_dir.glob("*.ckpt")):
+        return cand
+    return None
+
+
+def _discover_ckpt_runs(ckpt_dir: Path) -> list[dict]:
+    """One spec per model dir under ``ckpt_dir``. Each spec carries the checkpoint
+    path and the ``model_name`` / ``seed`` / ``threshold`` (θ*) recovered from the
+    sibling ``train_meta.json`` (falling back to ``sweep.json`` for θ* and to the
+    dir name for ``model_name``). ``checkpoint=None`` marks a dir we must skip."""
+    specs = []
+    for run_dir in sorted(p for p in ckpt_dir.iterdir() if p.is_dir()):
+        meta = {}
+        meta_path = run_dir / "train_meta.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+        threshold = meta.get("best_threshold")
+        if threshold is None:
+            sweep_path = run_dir / "sweep.json"
+            if sweep_path.exists():
+                threshold = json.loads(sweep_path.read_text()).get("best_threshold")
+        cfg = run_dir / "config.yaml"
+        specs.append({
+            "run_dir": run_dir,
+            "checkpoint": _find_checkpoint(run_dir),
+            "model_name": meta.get("arm") or run_dir.name,
+            "seed": int(meta.get("seed", 0)),
+            "threshold": threshold,
+            "config_yaml": cfg if cfg.exists() else None,
+        })
+    return specs
+
+
 # --------------------------------------------------------------------------- #
 # commands
 # --------------------------------------------------------------------------- #
@@ -214,6 +258,7 @@ def run_eval(
     check: Annotated[str, typer.Option(help="tp+fn-vs-mask invariant: first | all | off")] = "first",
     device: Annotated[Optional[str], typer.Option(help="cuda | cpu (default: auto)")] = None,
     threshold: Annotated[Optional[float], typer.Option(help="Override the checkpoint's binarisation threshold (e.g. a tuned θ*)")] = None,
+    max_tiles: Annotated[Optional[int], typer.Option(help="Score only the first N tiles of the split (quick local smoke)")] = None,
     wandb_meta: Annotated[Optional[Path], typer.Option(help="train_meta.json with a `wandb` block: resume that run and push the bench metrics (incl. APLS) to its summary")] = None,
 ):
     """Score a checkpoint over the split's footprint chips -> the sharded store."""
@@ -226,10 +271,92 @@ def run_eval(
         mask_dirname=mask_dirname, sen2sr_dir=sen2sr_dir, config_yaml_path=config_yaml,
         exp_tag=exp_tag, label_source=label_source,
         tile_metrics=tuple(tile_metric or ()), check=check, device=device,
-        threshold=threshold,
+        threshold=threshold, max_tiles=max_tiles,
     )
     if wandb_meta is not None:
         _push_bench_to_wandb(wandb_meta, run_id, store_dir, split)
+
+
+@app.command(name="eval-dir")
+def run_eval_dir(
+    dataset_dir: Annotated[Path, typer.Option(help="ROSA dataset root (has splits/<split>.csv)")],
+    ckpt_dir: Annotated[Path, typer.Option(help="Directory of model run dirs; each holds a .ckpt + train_meta.json/sweep.json")],
+    store_dir: Annotated[Path, typer.Option(help="Sharded store dir to write (runs/ chips/ tiles/)")],
+    split: Annotated[str, typer.Option(help="Split to evaluate")] = "test",
+    model: Annotated[str, typer.Option(help="Model family loader: unet | sr")] = "unet",
+    tile_metric: Annotated[List[str], typer.Option(help="Tile-metric plugin(s), repeatable; pass 'none' for pixel metrics only")] = None,
+    metric: Annotated[List[str], typer.Option(help="Report metric(s), repeatable")] = None,
+    aggregation: Annotated[str, typer.Option(help="micro or macro cross-seed aggregation for the report")] = "micro",
+    batch_size: Annotated[int, typer.Option(help="Chips per forward pass (unet family)")] = 8,
+    cell_m: Annotated[float, typer.Option(help="Footprint cell edge in metres (chip unit)")] = 2560.0,
+    chip_px: Annotated[Optional[int], typer.Option(help="Override: cell edge in native px")] = None,
+    label_source: Annotated[str, typer.Option(help="GT label source stamped on every run (comparability key)")] = "",
+    device: Annotated[Optional[str], typer.Option(help="cuda | cpu (default: auto)")] = None,
+    max_tiles: Annotated[Optional[int], typer.Option(help="Score only the first N tiles per model (quick local smoke)")] = None,
+    skip_existing: Annotated[bool, typer.Option(help="Skip a (model_name, seed) already in the store")] = True,
+    report: Annotated[bool, typer.Option(help="Run `report` over the store when all evals finish")] = True,
+    out: Annotated[Optional[Path], typer.Option(help="Write the final report to .md or .csv")] = None,
+    dry_run: Annotated[bool, typer.Option(help="List what would be evaluated, then exit")] = False,
+):
+    """Eval every checkpoint under CKPT_DIR into one store, then report.
+
+    Each model's ``model_name``/``seed``/θ* are read from its ``train_meta.json``
+    (θ* falls back to ``sweep.json``), so one command turns a directory of trained
+    runs into a full cross-model comparison. Dirs with no checkpoint are skipped.
+    """
+    from benchmarking.runner import evaluate
+
+    tile_metrics = () if (tile_metric and tile_metric[0].lower() in ("none", "off")) \
+        else tuple(tile_metric if tile_metric is not None else ["apls"])
+    report_metrics = list(metric or (["f1", "iou", "apls"] if tile_metrics else ["f1", "iou"]))
+
+    specs = _discover_ckpt_runs(Path(ckpt_dir))
+    if not specs:
+        raise typer.BadParameter(f"no model dirs found under {ckpt_dir}")
+
+    try:
+        from benchmarking.store import load_runs
+        existing = load_runs(store_dir)
+        seen = set(zip(existing["model_name"], existing["seed"])) if not existing.empty else set()
+    except FileNotFoundError:
+        seen = set()
+
+    typer.echo(f"discovered {len(specs)} model dir(s) under {ckpt_dir}:")
+    todo = []
+    for s in specs:
+        key = (s["model_name"], s["seed"])
+        if s["checkpoint"] is None:
+            typer.secho(f"  SKIP {s['model_name']:24} (no checkpoint in {s['run_dir'].name})",
+                        fg=typer.colors.YELLOW)
+        elif skip_existing and key in seen:
+            typer.secho(f"  SKIP {s['model_name']:24} (already in store, seed={s['seed']})",
+                        fg=typer.colors.BLUE)
+        else:
+            thr = s["threshold"]
+            typer.echo(f"  EVAL {s['model_name']:24} seed={s['seed']} "
+                       f"θ={thr if thr is not None else 'ckpt-default'}  {s['checkpoint']}")
+            todo.append(s)
+
+    if dry_run:
+        typer.echo("\n--dry-run: nothing evaluated.")
+        return
+    if not todo:
+        typer.echo("\nnothing to evaluate.")
+    for i, s in enumerate(todo, 1):
+        typer.secho(f"\n[{i}/{len(todo)}] {s['model_name']}", fg=typer.colors.GREEN)
+        evaluate(
+            dataset_dir=dataset_dir, checkpoint=s["checkpoint"],
+            model_name=s["model_name"], seed=s["seed"], store_dir=store_dir,
+            split=split, model=model, cell_m=cell_m, chip_px=chip_px,
+            batch_size=batch_size, label_source=label_source,
+            exp_tag=f"loss_{s['model_name']}",
+            config_yaml_path=s["config_yaml"], tile_metrics=tile_metrics,
+            device=device, threshold=s["threshold"], max_tiles=max_tiles,
+        )
+
+    if report:
+        typer.echo("\n" + "=" * 70)
+        _run_report(store_dir, report_metrics, aggregation, n_boot=2000, out=out)
 
 
 @app.command()
@@ -299,6 +426,11 @@ def report(
     out: Annotated[Optional[Path], typer.Option(help="Write the report to .md or .csv as well")] = None,
 ):
     """Per-model cross-seed mean +/- std + all pairwise comparisons, per metric."""
+    _run_report(store_dir, list(metric or ("iou", "f1")), aggregation, n_boot, out)
+
+
+def _run_report(store_dir, metrics, aggregation, n_boot, out):
+    """Shared body of the ``report`` command; also chained from ``eval-dir``."""
     import numpy as np
     import pandas as pd
 
@@ -309,7 +441,6 @@ def report(
         wilcoxon_paired,
     )
 
-    metrics = list(metric or ("iou", "f1"))
     md_parts, csv_rows = [], []
 
     for met in metrics:

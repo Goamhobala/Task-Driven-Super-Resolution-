@@ -427,14 +427,16 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
              model="unet", cell_m=CELL_M_DEFAULT, chip_px=None, batch_size=8,
              mask_source=None, mask_dirname=None, sen2sr_dir=None,
              config_yaml_path=None, exp_tag="", label_source="",
-             tile_metrics=(), check="first", device=None, threshold=None):
+             tile_metrics=(), check="first", device=None, threshold=None,
+             max_tiles=None):
     """Score a checkpoint over the split's footprint chips -> the sharded store.
 
     ``check`` runs the tp+fn-vs-mask invariant on the ``first`` tile (default),
     ``all`` tiles, or ``off``. ``threshold`` overrides the checkpoint's
     binarisation threshold hparam (e.g. the θ* a loss-ablation run tuned on
     val — see ``unet.train_ablation``); the value used is recorded in the runs
-    table either way. Returns the ``run_id``.
+    table either way. ``max_tiles`` scores only the first N tiles of the split
+    (a quick local smoke; ``None`` = all tiles). Returns the ``run_id``.
     """
     if model not in MODEL_FAMILIES:
         raise ValueError(f"unsupported model family {model!r} (choose from {MODEL_FAMILIES})")
@@ -458,6 +460,8 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
     plugins = resolve_tile_metrics(tile_metrics)
 
     df = _read_split_csv(dataset_dir, split)
+    if max_tiles is not None:
+        df = df.head(int(max_tiles))
     if model == "unet" and mask_dirname:
         # Same remap the training datamodule applies (missing masks = error).
         from sentinel2data.dataset.datasets import _remap_mask_paths
