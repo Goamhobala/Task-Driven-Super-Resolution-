@@ -143,9 +143,9 @@ esac
 MASK_DIRNAME="${MASK_DIRNAME:-}"   # empty for the graph (on-the-fly) sources
 
 # --- Tune budget -------------------------------------------------------------
-N_TRIALS="${N_TRIALS:-200}"
+N_TRIALS="${N_TRIALS:-60}"
 SEARCH_GPUS="${SEARCH_GPUS:-2}"
-TUNE_EPOCHS="${TUNE_EPOCHS:-8}"
+TUNE_EPOCHS="${TUNE_EPOCHS:-15}"
 PATIENCE="${PATIENCE:-3}"
 ENCODER_WEIGHTS="${ENCODER_WEIGHTS:-imagenet}"
 LR_MIN="${LR_MIN:-1e-5}"
