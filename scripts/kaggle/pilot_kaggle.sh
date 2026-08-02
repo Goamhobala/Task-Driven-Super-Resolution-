@@ -32,7 +32,7 @@ export STORE_DIR="${STORE_DIR:-/kaggle/working/benchmarks_loss_pilot}"
 export PRECISION="${PRECISION:-16-mixed}"     # T4: no native bf16
 export SEARCH_GPUS="${SEARCH_GPUS:-2}"        # one tuner per T4
 export NUM_WORKERS="${NUM_WORKERS:-2}"        # Kaggle: 4 CPUs
-export WANDB_MODE="${WANDB_MODE:-offline}"
+export WANDB_MODE="${WANDB_MODE:-online}"
 export BATCH_SIZES="${BATCH_SIZES:-2 4}"      # 512² fp16 on 16 GB: 8 mostly OOMs
 
 ARMS="${ARMS:-l10_new l3_new l2_new}"         # wbce, tl_ce, gap_ce
