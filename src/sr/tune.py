@@ -105,17 +105,27 @@ def build_objective(args, base_cfg: dict):
     if not search_lr_sr:
         print(f"[sr.tune] upsampler={upsampler!r} freeze_sr={freeze_sr}: "
               "lr_sr is not searched (no trainable SR params).")
-    # Loss arm (unet.losses.build_loss). The protocol's arms use PLAIN CE —
-    # pos_weight is itself a distribution-slot reweighting, so with an arm set
-    # it is a dead search dimension too (UNetLightning ignores it): skip it.
+    # Loss arm (unet.losses.build_loss). Amendment 2026-08-02 (per-arm tuning
+    # protocol): search dimensions are gated on what the arm actually
+    # CONSUMES, so TPE never models dead dimensions:
+    #   * pos_weight λ — searched for the λ-composing pixel slots (wbce +
+    #     the spatial maps, 2026-07-30 amendment). NOT searched for 'bce'
+    #     (the λ=1 floor by definition), 'balance_ce' (sets its own adaptive
+    #     per-batch λ; fixed-β ≡ wbce, see BalancedCELoss), or region-only
+    #     arms (dice/sdice/lcdice/focal_tversky — no CE term at all).
+    #   * tl_theta / gap_theta — binarization thresholds of the weight maps;
+    #     searched for the arms that build those maps (the official sources
+    #     disagree on the value: TL official code 0.5 vs papers' 0.375).
     loss_arm = args.loss_arm if args.loss_arm is not None else model_cfg.get("loss_arm")
     loss_hp = dict(
         pstar=args.pstar, gap_r=args.gap_r, gap_k=args.gap_k,
-        tl_ell=args.tl_ell, tl_theta=args.tl_theta,
+        tl_ell=args.tl_ell, tl_theta=args.tl_theta, gap_theta=args.gap_theta,
         tversky_alpha=args.tversky_alpha, cl_alpha=args.cl_alpha,
         cl_iters=args.cl_iters, sr_w=args.skel_w, sr_radius=args.skel_radius,
         warmup_start=args.warmup_start, warmup_ramp=args.warmup_ramp,
     )
+    if args.length:
+        data_cfg["length"] = args.length   # tune-time patches/epoch budget
     # Recipe v2 constants (not searched; pinned into the overlay so the refit
     # reproduces them): schedule, SR warmup, dormant L2-SP.
     lr_schedule = args.lr_schedule or model_cfg.get("lr_schedule", "cosine")
@@ -123,10 +133,19 @@ def build_objective(args, base_cfg: dict):
                         else float(model_cfg.get("sr_warmup_epochs", 1.0)))
     l2sp_lambda = (args.l2sp_lambda if args.l2sp_lambda is not None
                    else float(model_cfg.get("l2sp_lambda", 0.0)))
-    search_pos_weight = not loss_arm
+    search_pos_weight = True
+    search_tl_theta = search_gap_theta = False
     if loss_arm:
-        print(f"[sr.tune] loss_arm={loss_arm!r}: pos_weight is not searched "
-              "(protocol arms use plain CE).")
+        base = loss_arm.partition("+")[0]
+        pixel = args.pstar if base.startswith("pstar_") else base
+        lambda_arms = {"wbce", "gap_ce", "tl_ce", "gap_tl_ce", "t2_ce", "t4_ce"}
+        search_pos_weight = pixel in lambda_arms
+        thetas_on = args.search_thetas != "false"
+        search_tl_theta = thetas_on and pixel in ("tl_ce", "gap_tl_ce", "t2_ce", "t4_ce")
+        search_gap_theta = thetas_on and pixel in ("gap_ce", "gap_tl_ce")
+        print(f"[sr.tune] loss_arm={loss_arm!r} (pixel slot {pixel!r}): "
+              f"search pos_weight={search_pos_weight} tl_theta={search_tl_theta} "
+              f"gap_theta={search_gap_theta}")
         if "+" in loss_arm and args.warmup_start >= args.max_epochs:
             print(f"[sr.tune] WARNING: warmup_start={args.warmup_start} >= "
                   f"max_epochs={args.max_epochs}: the skeleton slot never "
@@ -140,11 +159,18 @@ def build_objective(args, base_cfg: dict):
         lr_sr = (trial.suggest_float("lr_sr", args.lr_sr_min, args.lr_sr_max, log=True)
                  if search_lr_sr else args.lr_sr_min)  # bicubic ignores lr_sr
         pos_weight = (trial.suggest_float("pos_weight", args.pos_weight_min,
-                                          args.pos_weight_max)
+                                          args.pos_weight_max, log=True)
                       if search_pos_weight
-                      else model_cfg.get("pos_weight", 5.0))  # unused by arms
+                      else model_cfg.get("pos_weight", 5.0))  # ignored by the arm
         encoder_name = trial.suggest_categorical("encoder_name", args.encoders)
         batch_size = trial.suggest_categorical("batch_size", args.batch_sizes)
+        trial_hp = dict(loss_hp)
+        if search_tl_theta:
+            trial_hp["tl_theta"] = trial.suggest_float(
+                "tl_theta", args.theta_min, args.theta_max)
+        if search_gap_theta:
+            trial_hp["gap_theta"] = trial.suggest_float(
+                "gap_theta", args.theta_min, args.theta_max)
 
         # Training seed: the SAME --train-seed for EVERY trial (so a trial's
         # score doesn't depend on which parallel worker ran it); --seed only
@@ -193,7 +219,7 @@ def build_objective(args, base_cfg: dict):
             sr_warmup_epochs=sr_warmup_epochs,
             l2sp_lambda=l2sp_lambda,
             loss_arm=loss_arm,
-            **loss_hp,
+            **trial_hp,
         )
 
         pruning_cb = PyTorchLightningPruningCallback(trial, monitor=MONITOR)
@@ -269,8 +295,9 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
     if loss_arm:
         model_overlay["loss_arm"] = loss_arm
         model_overlay.update(loss_hp or {})
-    else:
-        model_overlay["pos_weight"] = p["pos_weight"]  # legacy loss only
+    if "pos_weight" in p:
+        # legacy loss OR a λ-consuming arm (2026-08-02): pin the searched λ.
+        model_overlay["pos_weight"] = p["pos_weight"]
     has_lr_sr = "lr_sr" in p  # absent for R0 (bicubic) searches
     if has_lr_sr:
         model_overlay["lr_sr"] = p["lr_sr"]
@@ -370,7 +397,21 @@ def parse_args(argv=None):
     ap.add_argument("--gap-k", type=float, default=60.0, help="GapLoss K")
     ap.add_argument("--tl-ell", type=int, default=5, help="TL/T2/T4 filter length")
     ap.add_argument("--tl-theta", type=float, default=0.375,
-                    help="TL/T2/T4/gap_tl weight-map binarization threshold")
+                    help="TL/T2/T4/gap_tl weight-map binarization threshold "
+                         "(fixed value when --search-thetas false)")
+    ap.add_argument("--gap-theta", type=float, default=0.5,
+                    help="GapLoss weight-map binarization threshold (official "
+                         "code: 0.5; fixed value when --search-thetas false)")
+    ap.add_argument("--search-thetas", default="true", choices=["true", "false"],
+                    help="Search tl_theta/gap_theta for arms that build those "
+                         "maps (2026-08-02 amendment: the official sources "
+                         "disagree on θ, so it is a per-arm hyperparameter).")
+    ap.add_argument("--theta-min", type=float, default=0.3)
+    ap.add_argument("--theta-max", type=float, default=0.7)
+    ap.add_argument("--length", type=int, default=None,
+                    help="Tune-time patches/epoch (data.length override); the "
+                         "trials rank configs, they don't need full epochs — "
+                         "this is the main tune-cost lever.")
     ap.add_argument("--tversky-alpha", type=float, default=0.7)
     ap.add_argument("--cl-alpha", type=float, default=0.3)
     ap.add_argument("--cl-iters", type=int, default=5)
@@ -505,11 +546,16 @@ def main(argv=None):
     encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
     loss_hp = dict(
         pstar=args.pstar, gap_r=args.gap_r, gap_k=args.gap_k,
-        tl_ell=args.tl_ell, tl_theta=args.tl_theta,
+        tl_ell=args.tl_ell, tl_theta=args.tl_theta, gap_theta=args.gap_theta,
         tversky_alpha=args.tversky_alpha, cl_alpha=args.cl_alpha,
         cl_iters=args.cl_iters, sr_w=args.skel_w, sr_radius=args.skel_radius,
         warmup_start=args.warmup_start, warmup_ramp=args.warmup_ramp,
     )
+    # Searched θs override the fixed defaults in the pinned overlay (the best
+    # trial's values, like lr/pos_weight/batch).
+    for _k in ("tl_theta", "gap_theta"):
+        if _k in study.best_params:
+            loss_hp[_k] = study.best_params[_k]
     overlay_path = write_best_overlay(study, out_dir, encoder_weights, upsampler,
                                       freeze_sr, sr_pad, loss_arm, loss_hp,
                                       warm_start_unet, precision=args.precision,

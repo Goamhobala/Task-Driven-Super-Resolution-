@@ -40,9 +40,10 @@ Binary-head note: the papers write softmax/2-class; this repo uses a single
 sigmoid channel. For binary segmentation the two are equivalent; we binarize
 sigmoid(logits) at 0.5 during weight-map construction, as in the papers.
 
-pos_weight: the protocol's arms use *plain* CE (pos_weight=None). The old
-RoadSegLoss baseline used a positive-class weight — that is itself a
-distribution-slot reweighting, so it is OFF by default everywhere here.
+pos_weight (amended 2026-07-30): λ is a slot-orthogonal class-balance factor,
+W = (1+(λ−1)y)·W_spatial, normalized with the map (§4.4). It composes into
+every spatially-weighted arm (wbce/gap/tl/t2/t4/gap_tl) so arms compare at
+MATCHED class balance; only the 'bce' literature floor ignores it.
 """
 from __future__ import annotations
 
@@ -210,6 +211,17 @@ class WeightedCE(nn.Module):
     weight_fn: callable prob(detached, B,1,H,W) -> W. None => plain BCE.
     normalize (§4.4): loss = sum(W·ce)/sum(W), so E[loss] ≈ E[BCE] and the
     weighting only *redistributes* gradient, never inflates it.
+
+    pos_weight (amendment 2026-07-30): class balance λ is expressed as a
+    target-derived weight-map factor W_pos = 1 + (λ−1)·y — algebraically
+    identical to BCE's ``pos_weight`` kwarg — INSTEAD of being passed to
+    ``F.binary_cross_entropy_with_logits``. The kwarg form bypassed the §4.4
+    normalizer, inflating the wbce arm's loss scale relative to every other
+    arm (breaking the one-screening-LR argument). As a map factor it passes
+    through sum(W·ce)/sum(W) like the spatial maps, and composes with them
+    multiplicatively (W = W_pos · W_spatial), making λ a slot-orthogonal
+    factor available to any pixel-slot arm. With normalize=False the old
+    kwarg semantics are reproduced exactly.
     """
 
     def __init__(self, weight_fn: Callable | None = None, normalize: bool = True,
@@ -225,23 +237,37 @@ class WeightedCE(nn.Module):
             self.pos_weight = None
 
     def forward(self, logits, targets):
-        ce = F.binary_cross_entropy_with_logits(
-            logits, targets, pos_weight=self.pos_weight, reduction="none")
-        if self.weight_fn is None:
+        ce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+        W = None
+        if self.pos_weight is not None:
+            # §4.4: λ as a weight-map factor (== BCE's pos_weight kwarg
+            # algebraically), so it is normalized like the spatial maps.
+            W = 1.0 + (self.pos_weight - 1.0) * targets
+        if self.weight_fn is not None:
+            with torch.no_grad():
+                Ws = self.weight_fn(torch.sigmoid(logits).detach()).to(ce.device)
+            W = Ws if W is None else W * Ws
+        if W is None:
             return ce.mean()
-        with torch.no_grad():
-            W = self.weight_fn(torch.sigmoid(logits).detach()).to(ce.device)
         if self.normalize:
             return (W * ce).sum() / W.sum()
         return (W * ce).mean()
 
 
-def make_gap_ce(r: int = 4, K: float = 60.0, normalize: bool = True) -> WeightedCE:
-    return WeightedCE(lambda p: gap_weight_map(p, r=r, K=K), normalize=normalize)
+def make_gap_ce(r: int = 4, K: float = 60.0, normalize: bool = True,
+                pos_weight: float | None = None,
+                theta: float = 0.5) -> WeightedCE:
+    """theta: gap-map binarization threshold. The official code (Nanni's
+    MATLAB rebuild AND the paper) binarizes at 0.5; tunable since 2026-08-02
+    (the TL official uses 0.5 while the papers' text says 0.375 — θ is
+    unsettled across sources, so the pilot searches it per arm)."""
+    return WeightedCE(lambda p: gap_weight_map(p, r=r, K=K, thresh=theta),
+                      normalize=normalize, pos_weight=pos_weight)
 
 
 def make_tl_ce(ell: int = 5, normalize: bool = True, theta: float = 0.375,
-               extra_kernels: list[torch.Tensor] | None = None) -> WeightedCE:
+               extra_kernels: list[torch.Tensor] | None = None,
+               pos_weight: float | None = None) -> WeightedCE:
     """TL / T2 / T4 weighted CE. ``theta`` is the binarization threshold the
     weight map is built at. Default 0.375 = the Giannini/Nanni papers'
     hard-coded value AND the protocol's Appendix-B centre; the protocol grid
@@ -250,12 +276,14 @@ def make_tl_ce(ell: int = 5, normalize: bool = True, theta: float = 0.375,
     carry θ, so it cannot be confused with new runs)."""
     return WeightedCE(
         lambda p: tl_weight_map(p, ell=ell, thresh=theta, extra_kernels=extra_kernels),
-        normalize=normalize)
+        normalize=normalize, pos_weight=pos_weight)
 
 
 def make_gap_tl_ce(r: int = 4, K: float = 60.0, ell: int = 5,
                    theta: float = 0.375, normalize: bool = True,
-                   extra_kernels: list[torch.Tensor] | None = None) -> WeightedCE:
+                   extra_kernels: list[torch.Tensor] | None = None,
+                   pos_weight: float | None = None,
+                   gap_theta: float = 0.5) -> WeightedCE:
     """GL+TL blended pixel slot (Nanni et al. 2024, Table 2: GL+TL and
     GL+TL+DI are their best compounds on 3 of 4 datasets).
 
@@ -270,11 +298,46 @@ def make_gap_tl_ce(r: int = 4, K: float = 60.0, ell: int = 5,
     The paper's GL+TL+DI is then Phase B's ``pstar_dice`` with this as P*.
     """
     def blend(p: torch.Tensor) -> torch.Tensor:
-        wg = gap_weight_map(p, r=r, K=K)
+        wg = gap_weight_map(p, r=r, K=K, thresh=gap_theta)
         wt = tl_weight_map(p, ell=ell, thresh=theta, extra_kernels=extra_kernels)
         return wg / wg.mean().clamp_min(1e-8) + wt / wt.mean().clamp_min(1e-8)
 
-    return WeightedCE(blend, normalize=normalize)
+    # NB with pos_weight the exact 0.5·gap+0.5·tl identity holds only at λ=1
+    # (the λ factor reweights the shared normalizer); at λ>1 this is still the
+    # single-map blend, which is the form the amendment prescribes.
+    return WeightedCE(blend, normalize=normalize, pos_weight=pos_weight)
+
+
+class BalancedCELoss(nn.Module):
+    """BalanCE (Xie & Tu 2015, HED; in Xu et al. 2023 it tops recall):
+    L = weighted mean of CE under W = β·y + (1−β)·(1−y), §4.4-normalized.
+
+    beta=None (default) = the literature's ADAPTIVE form: β is the batch's
+    negative-pixel fraction, so the positive and negative terms contribute
+    equally whatever the imbalance — a per-batch inverse-frequency
+    λ_t = β/(1−β) (≈ 34 at ROSA_New's 2.84% road density). This is the only
+    form that earns its own arm: with FIXED β the (1−β) scale cancels under
+    the normalization and the loss is EXACTLY WeightedCE(pos_weight=β/(1−β))
+    — the wbce arm reparameterized (unit-tested identity). NB Jadon's repo
+    hard-codes β=0.25, i.e. positives DOWN-weighted ~3×; reachable via
+    beta= for completeness, never the arm default.
+
+    β is clamped to [1e-3, 1−1e-3] so an all-background batch degrades to
+    ≈ plain BCE over the negatives instead of 0/0.
+    """
+
+    def __init__(self, beta: float | None = None):
+        super().__init__()
+        self.beta = beta
+
+    def forward(self, logits, targets):
+        ce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+        if self.beta is None:
+            b = (1.0 - targets).mean().clamp(1e-3, 1.0 - 1e-3)
+        else:
+            b = torch.as_tensor(float(self.beta), dtype=ce.dtype, device=ce.device)
+        W = b * targets + (1.0 - b) * (1.0 - targets)
+        return (W * ce).sum() / W.sum()
 
 
 # --------------------------------------------------------------------------
@@ -293,6 +356,48 @@ class DiceLoss(nn.Module):
         inter = (p * targets).sum(dim=(1, 2, 3))
         denom = p.sum(dim=(1, 2, 3)) + targets.sum(dim=(1, 2, 3))
         return (1 - (2 * inter + self.smooth) / (denom + self.smooth)).mean()
+
+
+class SquaredDiceLoss(nn.Module):
+    """sDice (Milletari et al. 2016, V-Net): squared-denominator Dice,
+    1 − (2Σyp + ε)/(Σy² + Σp² + ε). Xu et al. (2023): best F1 on DeepGlobe.
+    On hard binary predictions it equals DiceLoss exactly (p² = p when
+    p ∈ {0,1}); on soft p the squared denominator shrinks the penalty for
+    confident predictions, steepening gradients for uncertain ones."""
+
+    def __init__(self, smooth: float = EPS):
+        super().__init__()
+        self.smooth = smooth
+
+    def forward(self, logits, targets):
+        p = torch.sigmoid(logits)
+        inter = (p * targets).sum(dim=(1, 2, 3))
+        denom = (p * p).sum(dim=(1, 2, 3)) + (targets * targets).sum(dim=(1, 2, 3))
+        return (1 - (2 * inter + self.smooth) / (denom + self.smooth)).mean()
+
+
+class LogCoshDiceLoss(nn.Module):
+    """lcDice (Jadon 2020): log(cosh(L_Dice)) — a smooth, outlier-tempered
+    transform of Dice (≈ L²/2 near 0, ≈ |L|−log2 for large L). Xu et al.
+    (2023): best F1 on the Massachusetts dataset.
+
+    VERBATIM the official ``Semantic_loss_functions.log_cosh_dice_loss``
+    (Jadon's repo, the suite Xu et al. build on): the Dice inside is computed
+    over the WHOLE BATCH pooled (their ``K.flatten`` flattens the batch dim),
+    smooth=1, then log((eˣ+e⁻ˣ)/2) = log·cosh. Deliberate deviation from the
+    house per-sample-then-mean ``DiceLoss``: the standalone lcdice arm's
+    claim is Xu's advertised form, so faithfulness wins over house
+    convention. (At B=1 the two aggregations coincide — unit-tested.)"""
+
+    def __init__(self, smooth: float = 1.0):
+        super().__init__()
+        self.smooth = smooth
+
+    def forward(self, logits, targets):
+        p = torch.sigmoid(logits)
+        inter = (p * targets).sum()
+        x = 1 - (2 * inter + self.smooth) / (p.sum() + targets.sum() + self.smooth)
+        return torch.log(torch.cosh(x))
 
 
 class TverskyLoss(nn.Module):
@@ -516,14 +621,29 @@ def _pixel_slot(name: str, hp: dict) -> nn.Module:
         # bce_dice stays plain (Giannini Eq. 3 / CoANet / Xu et al.);
         # "bce_dice + tunable pos_weight" = pstar_dice with pstar=wbce.
         return WeightedCE(None, pos_weight=hp.get("pos_weight", 5.0))
+    # Amendment 2026-07-30: λ (pos_weight) is slot-orthogonal — it composes
+    # multiplicatively with any spatial weight map inside the §4.4 normalizer
+    # (W = (1+(λ−1)y)·W_spatial). All spatially-weighted arms therefore accept
+    # it. hp without the key (library/test callers) → None → paper-faithful
+    # λ=1. Through the model path pos_weight is always present (default 5.0 /
+    # the tuned overlay value), giving matched class balance across arms.
+    lam = hp.get("pos_weight")
+    if name == "balance_ce":
+        # BalanCE: adaptive per-batch class balance — the "adaptive-λ" cell of
+        # the class-balance axis (bce: λ=1, wbce: fixed λ*, balance_ce: λ_t).
+        # Deliberately IGNORES the shared pos_weight λ*: it sets its own.
+        return BalancedCELoss(beta=hp.get("balance_beta"))
     if name == "gap_ce":
-        return make_gap_ce(r=hp.get("gap_r", 4), K=hp.get("gap_k", 60.0))
+        return make_gap_ce(r=hp.get("gap_r", 4), K=hp.get("gap_k", 60.0),
+                           theta=hp.get("gap_theta", 0.5), pos_weight=lam)
     if name == "tl_ce":
-        return make_tl_ce(ell=hp.get("tl_ell", 5), theta=hp.get("tl_theta", 0.375))
+        return make_tl_ce(ell=hp.get("tl_ell", 5), theta=hp.get("tl_theta", 0.375),
+                          pos_weight=lam)
     if name == "gap_tl_ce":
         return make_gap_tl_ce(r=hp.get("gap_r", 4), K=hp.get("gap_k", 60.0),
                               ell=hp.get("tl_ell", 5),
-                              theta=hp.get("tl_theta", 0.375))
+                              theta=hp.get("tl_theta", 0.375),
+                              gap_theta=hp.get("gap_theta", 0.5), pos_weight=lam)
     if name in ("t2_ce", "t4_ce"):
         # Giannini et al. 2026: TL's four line filters + four curvature filters
         # (T2 quarter-circles / T4 semicircles), base weight 8 -> reset to 1.
@@ -531,7 +651,8 @@ def _pixel_slot(name: str, hp: dict) -> nn.Module:
         # receptive-field consistency with TL; same argument at our GSD).
         n = hp.get("tl_ell", 5)
         extra = t2_kernels(n) if name == "t2_ce" else t4_kernels(n)
-        return make_tl_ce(ell=n, theta=hp.get("tl_theta", 0.375), extra_kernels=extra)
+        return make_tl_ce(ell=n, theta=hp.get("tl_theta", 0.375),
+                          extra_kernels=extra, pos_weight=lam)
     raise ValueError(f"unknown pixel slot {name!r}")
 
 
@@ -541,16 +662,24 @@ def build_loss(arm: str, **hp) -> ComposedLoss:
     Phase C: append '+cldice' or '+skelrec' to any compound,
     e.g. 'bce_dice+cldice' (α via cl_alpha, template weights rescaled by 1−α).
 
+    Region-only arms (Xu et al. 2023 standalone form): sdice | lcdice
+    (+ focal_tversky). Compounds: pstar_sdice | pstar_lcdice mirror
+    pstar_dice with the sDice / log-cosh-Dice region term.
+
     hp: gap_r, gap_k, tl_ell, tl_theta, tversky_alpha, cl_alpha, cl_iters,
-        sr_w, sr_radius, pstar ('bce'|'wbce'|'gap_ce'|'tl_ce'|'gap_tl_ce'|
-        't2_ce'|'t4_ce'), pos_weight, mix_w (pstar_* only; bce_dice anchor
-        stays frozen 0.5/0.5), warmup_start, warmup_ramp.
+        sr_w, sr_radius, balance_beta (balance_ce only; None = adaptive),
+        pstar ('bce'|'wbce'|'balance_ce'|'gap_ce'|'tl_ce'|'gap_tl_ce'|
+        't2_ce'|'t4_ce'), pos_weight (λ; consumed by wbce AND, since
+        2026-07-30, composed into gap/tl/t2/t4/gap_tl maps — 'bce' alone
+        stays strictly plain), mix_w (pstar_* only; bce_dice anchor stays
+        frozen 0.5/0.5), warmup_start, warmup_ramp.
     """
     base, _, skel = arm.partition("+")
     wu = dict(warmup_start=hp.get("warmup_start", 30),
               warmup_ramp=hp.get("warmup_ramp", 10))
 
-    if base in ("bce", "wbce", "gap_ce", "tl_ce", "gap_tl_ce", "t2_ce", "t4_ce"):
+    if base in ("bce", "wbce", "balance_ce", "gap_ce", "tl_ce", "gap_tl_ce",
+                "t2_ce", "t4_ce"):
         cfg = dict(pixel=_pixel_slot(base, hp), w_pix=1.0)
     elif base == "bce_dice":
         # The ANCHOR: frozen at the literature's 0.5/0.5 (Giannini Eq. 3) —
@@ -574,6 +703,24 @@ def build_loss(arm: str, **hp) -> ComposedLoss:
         cfg = dict(pixel=None, w_pix=0.0,
                    region=FocalTverskyLoss(alpha=hp.get("tversky_alpha", 0.7)),
                    w_reg=1.0)
+    elif base == "dice":
+        # Plain Dice standalone — the region-family reference for the sdice/
+        # lcdice comparison (Xu et al. 2023 test all three standalone).
+        cfg = dict(pixel=None, w_pix=0.0, region=DiceLoss(), w_reg=1.0)
+    elif base == "sdice":
+        # Xu et al. 2023 standalone form (their best on DeepGlobe).
+        cfg = dict(pixel=None, w_pix=0.0, region=SquaredDiceLoss(), w_reg=1.0)
+    elif base == "lcdice":
+        # Xu et al. 2023 standalone form (their best on Massachusetts).
+        cfg = dict(pixel=None, w_pix=0.0, region=LogCoshDiceLoss(), w_reg=1.0)
+    elif base == "pstar_sdice":
+        mw = hp.get("mix_w", 0.5)
+        cfg = dict(pixel=_pixel_slot(hp.get("pstar", "bce"), hp),
+                   region=SquaredDiceLoss(), w_pix=1.0 - mw, w_reg=mw)
+    elif base == "pstar_lcdice":
+        mw = hp.get("mix_w", 0.5)
+        cfg = dict(pixel=_pixel_slot(hp.get("pstar", "bce"), hp),
+                   region=LogCoshDiceLoss(), w_pix=1.0 - mw, w_reg=mw)
     else:
         raise ValueError(f"unknown arm {arm!r}")
 
@@ -595,4 +742,5 @@ def build_loss(arm: str, **hp) -> ComposedLoss:
     return ComposedLoss(**cfg)
 
 
-PHASE_A_ARMS = ["bce", "wbce", "gap_ce", "tl_ce", "gap_tl_ce", "t2_ce", "t4_ce"]
+PHASE_A_ARMS = ["bce", "wbce", "balance_ce", "gap_ce", "tl_ce", "gap_tl_ce",
+                "t2_ce", "t4_ce"]

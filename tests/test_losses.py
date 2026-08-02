@@ -9,10 +9,10 @@ import pytest
 import torch
 
 from unet.losses import (
-    ComposedLoss, DiceLoss, FocalTverskyLoss, SkeletonRecallLoss, SoftclDice,
-    TverskyLoss, WeightedCE, build_loss, gap_weight_map, make_gap_ce,
-    make_gap_tl_ce, make_tl_ce, t2_cells, t2_kernels, t4_cells, t4_kernels,
-    tl_weight_map,
+    BalancedCELoss, ComposedLoss, DiceLoss, FocalTverskyLoss, LogCoshDiceLoss,
+    SkeletonRecallLoss, SoftclDice, SquaredDiceLoss, TverskyLoss, WeightedCE,
+    build_loss, gap_weight_map, make_gap_ce, make_gap_tl_ce, make_tl_ce,
+    t2_cells, t2_kernels, t4_cells, t4_kernels, tl_weight_map,
 )
 
 H = W = 96
@@ -173,6 +173,53 @@ def test_scale_parity_with_bce(make):
     assert 0.3 < (wce / bce).item() < 3.0
 
 
+def test_wbce_normalized_scale_parity():
+    """Amendment 2026-07-30: pos_weight goes through the §4.4 normalizer as
+    W_pos = 1 + (λ−1)·y, so wbce sits at BCE's scale like every other
+    weighted CE (previously the kwarg bypassed normalization and inflated
+    the wbce arm's loss ~λ-fold on the positive share)."""
+    g = torch.Generator().manual_seed(7)
+    lg = torch.randn(2, 1, H, W, generator=g) * 3
+    tgt = blob_target()
+    bce = WeightedCE(None)(lg, tgt)
+    wbce = WeightedCE(None, pos_weight=5.0)(lg, tgt)
+    assert 0.3 < (wbce / bce).item() < 3.0
+    # exact algebra: weighted mean of the plain-CE map under W_pos
+    ce = torch.nn.functional.binary_cross_entropy_with_logits(
+        lg, tgt, reduction="none")
+    Wp = 1.0 + 4.0 * tgt
+    assert torch.allclose(wbce, (Wp * ce).sum() / Wp.sum(), atol=1e-6)
+
+
+def test_wbce_unnormalized_reproduces_kwarg_semantics():
+    """normalize=False must equal F.bce_with_logits(pos_weight=λ).mean()
+    exactly — the map form is the kwarg form, only the normalizer changed."""
+    g = torch.Generator().manual_seed(8)
+    lg = torch.randn(2, 1, H, W, generator=g)
+    tgt = blob_target()
+    old = torch.nn.functional.binary_cross_entropy_with_logits(
+        lg, tgt, pos_weight=torch.tensor(5.0))
+    new = WeightedCE(None, pos_weight=5.0, normalize=False)(lg, tgt)
+    assert torch.allclose(new, old, atol=1e-6)
+
+
+def test_pos_weight_composes_with_spatial_map():
+    """λ is slot-orthogonal: with a weight_fn present, W = W_pos · W_spatial
+    (one normalized weighted CE), enabling e.g. gap_ce at matched class
+    balance in the 2×k pixel-slot design."""
+    lg = logits_from(hline_with_gap()).float()
+    tgt = torch.from_numpy(hline_with_gap(gap=(0, 0)))[None, None]
+    fn = lambda p: gap_weight_map(p, r=4, K=60.0)
+    combined = WeightedCE(fn, pos_weight=5.0)(lg, tgt)
+    ce = torch.nn.functional.binary_cross_entropy_with_logits(
+        lg, tgt, reduction="none")
+    Wref = (1.0 + 4.0 * tgt) * gap_weight_map(torch.sigmoid(lg))
+    assert torch.allclose(combined, (Wref * ce).sum() / Wref.sum(), atol=1e-6)
+    # λ=1 leaves the spatial arm untouched
+    assert torch.allclose(WeightedCE(fn, pos_weight=1.0)(lg, tgt),
+                          WeightedCE(fn)(lg, tgt), atol=1e-6)
+
+
 def test_gradients_flow_only_through_ce():
     lg = logits_from(hline_with_gap()).requires_grad_(True)
     tgt = torch.from_numpy(hline_with_gap(gap=(0, 0)))[None, None]
@@ -199,6 +246,82 @@ def test_tversky_alpha_penalizes_fn():
     miss = logits_from(hline_with_gap(gap=(30, 60)))     # FN-heavy prediction
     lo, hi = TverskyLoss(alpha=0.3)(miss, tgt), TverskyLoss(alpha=0.7)(miss, tgt)
     assert hi > lo
+
+
+def test_sdice_equals_dice_on_binary_predictions():
+    """p ∈ {0,1} ⇒ Σp² = Σp, so sDice == Dice exactly (smooth=0); on soft
+    predictions the squared denominator makes them differ."""
+    lg = logits_from(hline_with_gap())
+    tgt = torch.from_numpy(hline_with_gap(gap=(0, 0)))[None, None]
+    assert torch.allclose(SquaredDiceLoss(smooth=0.0)(lg, tgt),
+                          DiceLoss(smooth=0.0)(lg, tgt), atol=1e-6)
+    g = torch.Generator().manual_seed(9)
+    soft = torch.randn(2, 1, H, W, generator=g)
+    assert not torch.allclose(SquaredDiceLoss(smooth=0.0)(soft, blob_target()),
+                              DiceLoss(smooth=0.0)(soft, blob_target()))
+
+
+def test_lcdice_matches_official_jadon():
+    """lcDice = log(cosh(1 − BATCH-POOLED dice)), smooth=1 — verbatim the
+    official Semantic_loss_functions.log_cosh_dice_loss (K.flatten pools the
+    batch dim), NOT log-cosh of the house per-sample DiceLoss."""
+    g = torch.Generator().manual_seed(10)
+    lg = torch.randn(2, 1, H, W, generator=g)
+    tgt = blob_target()
+    p = torch.sigmoid(lg)
+    x = 1 - (2 * (p * tgt).sum() + 1.0) / (p.sum() + tgt.sum() + 1.0)
+    out = LogCoshDiceLoss()(lg, tgt)
+    assert torch.allclose(out, torch.log(torch.cosh(x)), atol=1e-6)
+    # log-cosh ≈ x²/2 near 0: always below the raw pooled Dice loss
+    assert out <= x
+    # B=1: pooled == per-sample, so it reduces to log(cosh(house DiceLoss))
+    assert torch.allclose(
+        LogCoshDiceLoss()(lg[:1], tgt[:1]),
+        torch.log(torch.cosh(DiceLoss(smooth=1.0)(lg[:1], tgt[:1]))), atol=1e-6)
+
+
+def test_balance_ce_adaptive_matches_manual():
+    """Adaptive BalanCE: β = the batch's negative fraction; normalized
+    weighted mean under W = β·y + (1−β)·(1−y)."""
+    g = torch.Generator().manual_seed(11)
+    lg = torch.randn(2, 1, H, W, generator=g)
+    tgt = blob_target()
+    ce = torch.nn.functional.binary_cross_entropy_with_logits(
+        lg, tgt, reduction="none")
+    b = (1 - tgt).mean()
+    Wb = b * tgt + (1 - b) * (1 - tgt)
+    assert torch.allclose(BalancedCELoss()(lg, tgt),
+                          (Wb * ce).sum() / Wb.sum(), atol=1e-6)
+    # all-background batch: clamped β keeps it finite (≈ plain BCE on negs)
+    assert torch.isfinite(BalancedCELoss()(lg[:1], torch.zeros(1, 1, H, W)))
+
+
+def test_balance_ce_fixed_beta_is_wbce():
+    """The redundancy identity that justifies the arm design: FIXED-β BalanCE
+    ≡ WeightedCE(pos_weight=β/(1−β)) under §4.4 normalization — the (1−β)
+    scale cancels. Only the adaptive form earns its own arm."""
+    g = torch.Generator().manual_seed(12)
+    lg = torch.randn(2, 1, H, W, generator=g)
+    tgt = blob_target()
+    for beta in (0.25, 0.8):   # 0.25 = Jadon's hard-coded value
+        assert torch.allclose(
+            BalancedCELoss(beta=beta)(lg, tgt),
+            WeightedCE(None, pos_weight=beta / (1 - beta))(lg, tgt), atol=1e-5)
+
+
+def test_build_loss_threads_pos_weight_into_gap():
+    """Amendment 2026-07-30: build_loss('gap_ce', pos_weight=λ) must equal
+    WeightedCE(gap map, pos_weight=λ) — matched-λ arms need no shell changes.
+    Without the hp key the arm stays paper-faithful λ=1."""
+    lg = logits_from(hline_with_gap()).float()
+    tgt = torch.from_numpy(hline_with_gap(gap=(0, 0)))[None, None]
+    via_arm = build_loss("gap_ce", pos_weight=5.0)(lg, tgt)
+    direct = WeightedCE(lambda p: gap_weight_map(p, r=4, K=60.0),
+                        pos_weight=5.0)(lg, tgt)
+    assert torch.allclose(via_arm, direct, atol=1e-6)
+    plain = build_loss("gap_ce")(lg, tgt)
+    assert torch.allclose(plain, make_gap_ce()(lg, tgt), atol=1e-6)
+    assert not torch.allclose(via_arm, plain)
 
 
 def test_focal_tversky_exponent_one_is_tversky():
@@ -322,11 +445,14 @@ def test_gap_tl_blend_is_exact_average():
     assert torch.allclose(combined, 0.5 * (g + t), atol=1e-5)
 
 
-@pytest.mark.parametrize("arm", ["bce", "wbce", "gap_ce", "tl_ce", "gap_tl_ce",
+@pytest.mark.parametrize("arm", ["bce", "wbce", "balance_ce",
+                                 "gap_ce", "tl_ce", "gap_tl_ce",
                                  "t2_ce", "t4_ce",
                                  "bce_dice", "pstar_dice", "pstar_tversky",
-                                 "focal_tversky", "bce_dice+cldice",
-                                 "bce_dice+skelrec"])
+                                 "focal_tversky", "sdice", "lcdice",
+                                 "pstar_sdice", "pstar_lcdice",
+                                 "bce_dice+cldice", "bce_dice+skelrec",
+                                 "pstar_sdice+cldice", "pstar_lcdice+skelrec"])
 def test_all_arms_build_and_run(arm):
     loss = build_loss(arm, pstar="gap_ce")
     lg = logits_from(hline_with_gap()).requires_grad_(True)

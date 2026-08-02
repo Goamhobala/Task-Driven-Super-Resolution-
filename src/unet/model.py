@@ -66,6 +66,7 @@ class UNetLightning(pl.LightningModule):
         gap_k: float = 60.0,
         tl_ell: int = 5,
         tl_theta: float = 0.375,
+        gap_theta: float = 0.5,   # gap map binarization (official code: 0.5)
         tversky_alpha: float = 0.7,
         mix_w: float = 0.5,
         cl_alpha: float = 0.3,
@@ -83,11 +84,13 @@ class UNetLightning(pl.LightningModule):
 
             self.criterion = build_loss(
                 loss_arm, pstar=pstar, gap_r=gap_r, gap_k=gap_k, tl_ell=tl_ell,
-                tl_theta=tl_theta,
+                tl_theta=tl_theta, gap_theta=gap_theta,
                 tversky_alpha=tversky_alpha, mix_w=mix_w,
                 cl_alpha=cl_alpha, cl_iters=cl_iters,
                 sr_w=sr_w, sr_radius=sr_radius,
-                pos_weight=pos_weight,  # consumed ONLY by the wbce arm
+                # λ: composed into wbce AND the gap/tl/t2/t4 maps (2026-07-30);
+                # 'bce' and 'balance_ce' ignore it by design.
+                pos_weight=pos_weight,
                 warmup_start=warmup_start, warmup_ramp=warmup_ramp,
             )
             self.dice_loss = None
