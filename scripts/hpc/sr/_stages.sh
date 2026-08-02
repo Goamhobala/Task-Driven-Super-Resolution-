@@ -86,7 +86,10 @@ VENV_DIR="${VENV_DIR:-/scratch/${USER_NAME}/InstaRoad/.venv}"
 
 STAGE="${STAGE:-tune}"
 SEED="${SEED:-0}"
-NUM_WORKERS="${NUM_WORKERS:-0}"
+# 0 was a DDP-era guard; single-GPU-per-process search + lazy per-__getitem__
+# raster opens make forked loader workers safe. See _stages_tv.sh.
+# Default is computed below, after SEARCH_GPUS is known.
+NUM_WORKERS="${NUM_WORKERS:-}"
 PRECISION="${PRECISION:-bf16-mixed}"
 SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SEN2SRLite_RGBN}"
 WARM_START_CKPT="${WARM_START_CKPT:-}"
@@ -129,13 +132,15 @@ case "$LABELS" in
     MASK_SOURCE="graph" ;;   # = the Overture dataset's own masks_graph parquets
   osm)
     DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI}"
-    MASK_SOURCE="raster" ;;  # = <split>/mask_osm_2pt5 rasters
+    MASK_SOURCE="raster"
+    MASK_DIRNAME="${MASK_DIRNAME:-mask_osm_2pt5}" ;;  # OSM HR rasters
   all)
     DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_all}"
     MASK_SOURCE="graph" ;;   # = the all dataset's own masks_graph parquets
   *)
     echo "ERROR: LABELS must be cdngi|overture|osm|all, got '${LABELS}'." >&2; exit 2 ;;
 esac
+MASK_DIRNAME="${MASK_DIRNAME:-}"   # empty for the graph (on-the-fly) sources
 
 # --- Tune budget -------------------------------------------------------------
 N_TRIALS="${N_TRIALS:-200}"
@@ -152,13 +157,26 @@ POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-15.0}"
 ENCODERS="${ENCODERS:-resnet34}"      # NOT searched: encoder constancy is the control
 BATCH_SIZES="${BATCH_SIZES:-2 4 8}"   # 512px UNet stage is memory-heavy
 
+# Loader workers per training process: split the job's CPU allocation across
+# the stage's processes (search fans out SEARCH_GPUS tuners; fit/test run
+# one). See _stages_tv.sh for the rationale.
+if [ -z "${NUM_WORKERS}" ]; then
+  JOB_CPUS="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-4}}"
+  if [ "${STAGE}" = "tune" ]; then
+    NUM_WORKERS=$(( JOB_CPUS / SEARCH_GPUS ))
+  else
+    NUM_WORKERS=$(( JOB_CPUS - 1 ))
+  fi
+  [ "${NUM_WORKERS}" -lt 1 ] && NUM_WORKERS=1
+fi
+
 # --- Fit budget --------------------------------------------------------------
 REFIT_EPOCHS="${REFIT_EPOCHS:-100}"
 REFIT_GPUS="${REFIT_GPUS:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_joint}"
 
 # --- Loss (unet.losses.build_loss; empty = legacy Dice + pos-weighted BCE) ---
-LOSS_ARM="${LOSS_ARM:-}"
+LOSS_ARM="${LOSS_ARM:-wbce}"
 PSTAR="${PSTAR:-bce}"
 GAP_R="${GAP_R:-4}";                 GAP_K="${GAP_K:-60.0}"
 TL_ELL="${TL_ELL:-5}";               TL_THETA="${TL_THETA:-0.375}"
@@ -238,10 +256,16 @@ fi
 if [ "${MASK_SOURCE}" = "raster" ]; then
   # -print -quit: no pipe to `head`, so `find` can't die of SIGPIPE and trip
   # `set -o pipefail` (that silently killed the unet osm.sh check).
-  first_osm=$(find "${DATASET_DIR}"/*/mask_osm_2pt5 -maxdepth 1 -name '*.tif' -print -quit 2>/dev/null)
-  if [ -z "${first_osm}" ]; then
-    echo "ERROR: LABELS=osm but no masks under <split>/mask_osm_2pt5/." >&2
-    echo "  Generate with OpenStreetMapTest/dataset_hr_masks.py --scale 4" >&2
+  first_mask=$(find "${DATASET_DIR}"/*/"${MASK_DIRNAME}" -maxdepth 1 -name '*.tif' -print -quit 2>/dev/null)
+  if [ -z "${first_mask}" ]; then
+    echo "ERROR: MASK_SOURCE=raster but no masks under <split>/${MASK_DIRNAME}/." >&2
+    if [ "${LABELS}" = "osm" ]; then
+      echo "  Generate with OpenStreetMapTest/dataset_hr_masks.py --scale 4" >&2
+    else
+      echo "  Generate ONCE with (standalone, login node is fine):" >&2
+      echo "    ${VENV_DIR}/bin/python ${REPO_DIR}/src/sentinel2data/dataset/rasterize_hr_masks.py \\" >&2
+      echo "      --dataset-dir ${DATASET_DIR} --out-dirname ${MASK_DIRNAME}" >&2
+    fi
     exit 1
   fi
 fi
@@ -283,6 +307,7 @@ if [ "$STAGE" = "tune" ]; then
       --dataset-dir "$DATASET_DIR" \
       --sen2sr-dir "$SEN2SR_DIR" \
       --mask-source "$MASK_SOURCE" \
+      ${MASK_DIRNAME:+--mask-dirname "$MASK_DIRNAME"} \
       --upsampler "$UPSAMPLER" \
       --freeze-sr "$FREEZE_SR" \
       --sr-pad "$SR_PAD" \
@@ -382,7 +407,7 @@ if [ "$STAGE" = "bench" ]; then
   CONFIG_ARGS=()
   [ -f "${RUN_DIR}/best_params.yaml" ] && CONFIG_ARGS=(--config-yaml "${RUN_DIR}/best_params.yaml")
   MASK_ARGS_BENCH=(--mask-source "$MASK_SOURCE")
-  [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_BENCH+=(--mask-dirname "mask_osm_2pt5")
+  [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_BENCH+=(--mask-dirname "$MASK_DIRNAME")
   METRIC_ARGS=()
   if [ -n "${TILE_METRICS}" ]; then
     IFS=',' read -r -a _TMS <<< "${TILE_METRICS}"

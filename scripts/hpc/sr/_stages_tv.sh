@@ -88,7 +88,11 @@ VENV_DIR="${VENV_DIR:-/scratch/${USER_NAME}/InstaRoad/.venv}"
 
 STAGE="${STAGE:-tune}"
 SEED="${SEED:-0}"
-NUM_WORKERS="${NUM_WORKERS:-0}"
+# 0 was a DDP-era guard (GDAL handles + forked ranks). Search runs one
+# single-GPU process per GPU and the refit is single-GPU, and the datasets
+# open rasters lazily inside __getitem__, so forked loader workers are safe.
+# Default is computed below, after SEARCH_GPUS is known.
+NUM_WORKERS="${NUM_WORKERS:-}"
 PRECISION="${PRECISION:-bf16-mixed}"
 SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SEN2SRLite_RGBN}"
 WARM_START_CKPT="${WARM_START_CKPT:-}"
@@ -126,11 +130,19 @@ L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}"            # 0 = dormant L2-SP anchor
 
 SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-0}"
 
-# LABELS -> dataset dir + code-level mask_source
+# LABELS -> dataset dir + code-level mask_source (+ mask_dirname when raster).
+# LABELS=new reads the ONCE-OFF pre-rasterised HR label COGs (the labels are
+# frozen; per-crop graph rasterisation was the GPU-starving bottleneck).
+# Generate them one time per dataset (standalone script, no PYTHONPATH/GPU;
+# login node is fine):
+#   $VENV_DIR/bin/python $REPO_DIR/src/sentinel2data/dataset/rasterize_hr_masks.py \
+#     --dataset-dir <DATASET_DIR> --out-dirname mask_new_2pt5
+# Submit-time MASK_SOURCE=graph reverts to on-the-fly rasterisation.
 case "$LABELS" in
   new)
     DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_New}"
-    MASK_SOURCE="graph" ;;   # = the final dataset's own masks_graph parquets
+    MASK_SOURCE="${MASK_SOURCE:-raster}"   # pre-rasterised graph labels
+    MASK_DIRNAME="${MASK_DIRNAME:-mask_new_2pt5}" ;;
   all)
     DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_all}"
     MASK_SOURCE="graph" ;;
@@ -142,10 +154,12 @@ case "$LABELS" in
     MASK_SOURCE="graph" ;;
   osm)
     DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_New}"
-    MASK_SOURCE="raster" ;;  # = <split>/mask_osm_2pt5 rasters
+    MASK_SOURCE="raster"
+    MASK_DIRNAME="${MASK_DIRNAME:-mask_osm_2pt5}" ;;  # OSM HR rasters
   *)
     echo "ERROR: LABELS must be new|all|cdngi|overture|osm, got '${LABELS}'." >&2; exit 2 ;;
 esac
+MASK_DIRNAME="${MASK_DIRNAME:-}"   # empty for the graph (on-the-fly) sources
 
 # --- Tune budget (train/val — UNCHANGED from _stages.sh) ---------------------
 N_TRIALS="${N_TRIALS:-200}"
@@ -162,6 +176,22 @@ POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-15.0}"
 ENCODERS="${ENCODERS:-resnet34}"      # NOT searched: encoder constancy is the control
 BATCH_SIZES="${BATCH_SIZES:-2 4 8}"   # 512px UNet stage is memory-heavy
 
+# Loader workers per training process: split the job's CPU allocation across
+# the stage's processes (search fans out SEARCH_GPUS tuners; fit/test run one).
+# Workers spend most time blocked on the prefetch queue, so no cores are
+# reserved for the mains. With pre-rasterised masks (mask_new_2pt5) 1-2
+# workers already keep the GPU fed; set NUM_WORKERS explicitly only if GPU
+# utilisation sawtooths again.
+if [ -z "${NUM_WORKERS}" ]; then
+  JOB_CPUS="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-4}}"
+  if [ "${STAGE}" = "tune" ]; then
+    NUM_WORKERS=$(( JOB_CPUS / SEARCH_GPUS ))
+  else
+    NUM_WORKERS=$(( JOB_CPUS - 1 ))
+  fi
+  [ "${NUM_WORKERS}" -lt 1 ] && NUM_WORKERS=1
+fi
+
 # --- Fit budget (train+val, FIXED — no early stopping) -----------------------
 # Pre-registered and identical across arms. Nothing truncates it now, so budget
 # the SLURM walltime for the full count on the SLOWEST arm (sr4rs).
@@ -170,7 +200,7 @@ REFIT_GPUS="${REFIT_GPUS:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_joint_final}"
 
 # --- Loss (unet.losses.build_loss; empty = legacy Dice + pos-weighted BCE) ---
-LOSS_ARM="${LOSS_ARM:-}"
+LOSS_ARM="${LOSS_ARM:-wbce}"
 PSTAR="${PSTAR:-bce}"
 GAP_R="${GAP_R:-4}";                 GAP_K="${GAP_K:-60.0}"
 TL_ELL="${TL_ELL:-5}";               TL_THETA="${TL_THETA:-0.375}"
@@ -242,7 +272,7 @@ LOG_FILE="${RUN_DIR}/${STAGE}_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Logging to ${LOG_FILE}"
 echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}"
-echo "labels=${LABELS} (mask_source=${MASK_SOURCE})  upsampler=${UPSAMPLER}  freeze_sr=${FREEZE_SR}  sr_pad=${SR_PAD}  loss_arm=${LOSS_ARM:-legacy}"
+echo "labels=${LABELS} (mask_source=${MASK_SOURCE}${MASK_DIRNAME:+, mask_dirname=${MASK_DIRNAME}})  upsampler=${UPSAMPLER}  freeze_sr=${FREEZE_SR}  sr_pad=${SR_PAD}  loss_arm=${LOSS_ARM:-legacy}"
 echo "recipe: reg=${REG}${REG_TAG:+ [${REG_TAG}]}  clip=${CLIP}  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}  sr_snapshot_every=${SR_SNAPSHOT_EVERY}"
 echo "protocol: tune on train/val -> refit on '${TRAIN_SPLITS}' (merge_val=${MERGE_VAL}) -> report on test"
 echo "DATASET_DIR=${DATASET_DIR}  warm_start=${WARM_START_CKPT:-none}"
@@ -310,10 +340,19 @@ if [ -n "${WARM_START_CKPT}" ] && [ ! -f "${WARM_START_CKPT}" ]; then
   exit 1
 fi
 if [ "${MASK_SOURCE}" = "raster" ]; then
-  first_osm=$(find "${DATASET_DIR}"/*/mask_osm_2pt5 -maxdepth 1 -name '*.tif' -print -quit 2>/dev/null)
-  if [ -z "${first_osm}" ]; then
-    echo "ERROR: LABELS=osm but no masks under <split>/mask_osm_2pt5/." >&2
-    echo "  Generate with OpenStreetMapTest/dataset_hr_masks.py --scale 4" >&2
+  # -print -quit: no pipe to `head`, so `find` can't die of SIGPIPE and trip
+  # `set -o pipefail`.
+  first_mask=$(find "${DATASET_DIR}"/*/"${MASK_DIRNAME}" -maxdepth 1 -name '*.tif' -print -quit 2>/dev/null)
+  if [ -z "${first_mask}" ]; then
+    echo "ERROR: MASK_SOURCE=raster but no masks under <split>/${MASK_DIRNAME}/." >&2
+    if [ "${LABELS}" = "osm" ]; then
+      echo "  Generate with OpenStreetMapTest/dataset_hr_masks.py --scale 4" >&2
+    else
+      echo "  Generate ONCE with (standalone, login node is fine):" >&2
+      echo "    ${VENV_DIR}/bin/python ${REPO_DIR}/src/sentinel2data/dataset/rasterize_hr_masks.py \\" >&2
+      echo "      --dataset-dir ${DATASET_DIR} --out-dirname ${MASK_DIRNAME}" >&2
+      echo "  (or MASK_SOURCE=graph to rasterise on the fly — slow.)" >&2
+    fi
     exit 1
   fi
 fi
@@ -347,6 +386,7 @@ if [ "$STAGE" = "tune" ]; then
       --dataset-dir "$DATASET_DIR" \
       --sen2sr-dir "$SEN2SR_DIR" \
       --mask-source "$MASK_SOURCE" \
+      ${MASK_DIRNAME:+--mask-dirname "$MASK_DIRNAME"} \
       --upsampler "$UPSAMPLER" \
       --freeze-sr "$FREEZE_SR" \
       --sr-pad "$SR_PAD" \
@@ -440,7 +480,7 @@ if [ "$STAGE" = "bench" ]; then
   CONFIG_ARGS=()
   [ -f "${RUN_DIR}/best_params.yaml" ] && CONFIG_ARGS=(--config-yaml "${RUN_DIR}/best_params.yaml")
   MASK_ARGS_BENCH=(--mask-source "$MASK_SOURCE")
-  [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_BENCH+=(--mask-dirname "mask_osm_2pt5")
+  [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_BENCH+=(--mask-dirname "$MASK_DIRNAME")
   METRIC_ARGS=()
   if [ -n "${TILE_METRICS}" ]; then
     IFS=',' read -r -a _TMS <<< "${TILE_METRICS}"
@@ -529,6 +569,7 @@ python -m sr.cli fit \
   --data.dataset_dir "$DATASET_DIR" \
   --data.num_workers "$NUM_WORKERS" \
   --data.mask_source "$MASK_SOURCE" \
+  ${MASK_DIRNAME:+--data.mask_dirname "$MASK_DIRNAME"} \
   "${SPLIT_ARGS[@]}" \
   "${MODEL_ARGS[@]}" \
   --trainer.max_epochs "$REFIT_EPOCHS" \
@@ -568,6 +609,7 @@ python -m sr.cli test \
   --data.dataset_dir "$DATASET_DIR" \
   --data.num_workers "$NUM_WORKERS" \
   --data.mask_source "$MASK_SOURCE" \
+  ${MASK_DIRNAME:+--data.mask_dirname "$MASK_DIRNAME"} \
   "${MODEL_ARGS[@]}" \
   --trainer.devices 1 \
   --trainer.logger.init_args.project "$WANDB_PROJECT" \

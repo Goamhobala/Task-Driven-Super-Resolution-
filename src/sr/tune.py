@@ -61,10 +61,13 @@ from unet.tune import (
 
 
 def _data_kwargs(cfg: dict, dataset_dir: str | None, num_workers: int | None,
-                 mask_source: str | None = None) -> dict:
+                 mask_source: str | None = None,
+                 mask_dirname: str | None = None) -> dict:
     data = dict(cfg.get("data", {}))
     if mask_source:
         data["mask_source"] = mask_source
+    if mask_dirname:
+        data["mask_dirname"] = mask_dirname
     if data.get("norm_mean") is None or data.get("norm_std") is None:
         raise SystemExit(
             "Base config has no frozen norm stats (the post-SR adapter needs them). "
@@ -81,7 +84,7 @@ def _data_kwargs(cfg: dict, dataset_dir: str | None, num_workers: int | None,
 
 def build_objective(args, base_cfg: dict):
     data_cfg = _data_kwargs(base_cfg, args.dataset_dir, args.num_workers,
-                            args.mask_source)
+                            args.mask_source, args.mask_dirname)
     model_cfg = dict(base_cfg.get("model", {}))
     bands = tuple(data_cfg.get("bands", (1, 2, 3, 4)))
     upscale = data_cfg.get("upscale", 4)
@@ -245,6 +248,7 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
                        warm_start_unet: str | None = None,
                        precision: str | None = None,
                        mask_source: str | None = None,
+                       mask_dirname: str | None = None,
                        lr_schedule: str | None = None,
                        sr_warmup_epochs: float | None = None,
                        l2sp_lambda: float | None = None) -> Path:
@@ -284,6 +288,11 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
         # on graph masks (or vice versa) -- same reason unet.tune pins
         # mask_dirname.
         data_overlay["mask_source"] = mask_source
+    if mask_dirname:
+        # Pin WHICH raster folder too (mask_new_2pt5 vs mask_osm_2pt5): the
+        # datamodule default is mask_osm_2pt5, so an unpinned refit of a
+        # mask_new_2pt5 search would silently swap label sources.
+        data_overlay["mask_dirname"] = mask_dirname
     overlay = {"model": model_overlay, "data": data_overlay}
     if precision:
         # Pin the numerical regime the trials ran under (bf16-mixed by default)
@@ -344,6 +353,10 @@ def parse_args(argv=None):
                          "plus lr_sr). Overrides model.warm_start_unet.")
     ap.add_argument("--mask-source", default=None, choices=["graph", "raster"],
                     help="Override data.mask_source (graph = CDNGI, raster = OSM HR masks).")
+    ap.add_argument("--mask-dirname", default=None,
+                    help="Mask folder under <split>/ when mask_source=raster "
+                         "(mask_new_2pt5 = once-off pre-rasterised graph labels, "
+                         "mask_osm_2pt5 = OSM). Default: base config's value.")
 
     # loss arm + hyperparameters (unet.losses.build_loss; mirrors
     # unet.train_ablation). Default None = legacy Dice + pos-weighted BCE.
@@ -458,6 +471,7 @@ def main(argv=None):
     warm_start_unet = (args.warm_start_unet if args.warm_start_unet is not None
                        else model_cfg.get("warm_start_unet"))
     mask_source = args.mask_source or base_cfg.get("data", {}).get("mask_source", "graph")
+    mask_dirname = args.mask_dirname or base_cfg.get("data", {}).get("mask_dirname")
     lr_schedule = args.lr_schedule or model_cfg.get("lr_schedule", "cosine")
     sr_warmup_epochs = (args.sr_warmup_epochs if args.sr_warmup_epochs is not None
                         else float(model_cfg.get("sr_warmup_epochs", 1.0)))
@@ -500,6 +514,7 @@ def main(argv=None):
                                       freeze_sr, sr_pad, loss_arm, loss_hp,
                                       warm_start_unet, precision=args.precision,
                                       mask_source=mask_source,
+                                      mask_dirname=mask_dirname,
                                       lr_schedule=lr_schedule,
                                       sr_warmup_epochs=sr_warmup_epochs,
                                       l2sp_lambda=l2sp_lambda)
