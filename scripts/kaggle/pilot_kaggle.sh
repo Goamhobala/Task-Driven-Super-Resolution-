@@ -32,6 +32,9 @@
 #      Work -> the notebook). The restore block below copies its runs/ and
 #      benchmarks back into /kaggle/working automatically.
 set -euo pipefail
+# Kaggle's `!bash ...` swallows exit codes (the notebook "succeeds" even if
+# this script dies) — so shout on any abort instead of failing silently.
+trap 'echo "!! pilot_kaggle.sh ABORTED at line $LINENO (exit $?)" >&2' ERR
 
 export REPO_DIR="${REPO_DIR:-/kaggle/working/InstaRoadPrototype}"
 export INSTAROAD_ROOT="${INSTAROAD_ROOT:-/kaggle/working}"
@@ -57,8 +60,13 @@ MAX_SECONDS="${MAX_SECONDS:-67800}"           # 10.5 h: exit CLEANLY before the
 DEADLINE=$(( $(date +%s) + MAX_SECONDS ))
 
 # --- Scheduled-run state restore (prior output attached as input dataset) ----
-if [ ! -d "$RUNS_ROOT" ] || [ -z "$(ls -A "$RUNS_ROOT" 2>/dev/null)" ]; then
-  prev=$(ls -d /kaggle/input/*/runs 2>/dev/null | head -1)
+if [ ! -d "$RUNS_ROOT" ] || [ -z "$(ls -A "$RUNS_ROOT" 2>/dev/null || true)" ]; then
+  # glob probe, not `ls | head`: a failed ls under pipefail+set -e killed the
+  # whole script inside the command substitution (the 33-second "success").
+  prev=""
+  for _d in /kaggle/input/*/runs; do
+    [ -d "$_d" ] && { prev="$_d"; break; }
+  done
   if [ -n "${prev:-}" ]; then
     echo "== RESTORE: copying previous session state from ${prev%/runs} =="
     mkdir -p "$RUNS_ROOT" && cp -r "$prev"/. "$RUNS_ROOT"/
