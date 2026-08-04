@@ -127,3 +127,69 @@ searched** — use [scripts/hpc/sr_tune_r0.sh](../../scripts/hpc/sr_tune_r0.sh)
 (or pass `--upsampler bicubic` to `sr.tune`). The best trial is written as a
 `best_params.yaml` overlay (carrying the resolved `upsampler`) that you layer
 onto the base config for the full-length refit.
+
+## Two protocols: `_all` (holdout) and `_new` (final)
+
+The same arms run under two split protocols. They are kept in separate script
+families so their results can never end up in the same benchmark row.
+
+| | `r*_all.sh` → `_stages.sh` | `r*_new.sh` → `_stages_tv.sh` |
+| --- | --- | --- |
+| dataset | `ROSA_all` | `ROSA_New` (final) |
+| tune | train → score on val | *identical* |
+| refit | train only | **train + val** |
+| stopping | EarlyStopping on `val_iou` | **fixed, pre-registered budget** |
+| checkpoint | `..._best.ckpt` (argmax over val) | `..._final.ckpt` (end of budget) |
+| reported on | test | test |
+
+The `_new` series exists because the val split is a *budget*, not a permanent
+reservation. Optuna spends it choosing hyperparameters; after that, holding
+those tiles out of the fit costs ~17% of the training data and buys no extra
+inferential guarantee — test is still untouched either way. So the final models
+are refit on train+val.
+
+What that costs, and how it is paid: with val folded in there is no honest
+signal left to early-stop or select a checkpoint on, so
+[`configs/joint_sr_trainval.yaml`](configs/joint_sr_trainval.yaml) removes that
+machinery rather than letting it peek at training data — `limit_val_batches: 0`,
+no `EarlyStopping`, `monitor: null`. The epoch budget is therefore a
+**between-arm constant**: change `REFIT_EPOCHS` for one arm and the comparison
+is void. Recipe v2's cosine has `T_max = max_epochs`, so a fixed budget still
+ends at LR 0 — the schedule completes rather than being cut off.
+
+The checkpoint is deliberately named `unet_s2rosa_jointsr_final.ckpt`, never
+`..._best.ckpt`: `_best` means "argmax over a holdout" everywhere else in this
+repo, and the staged arms (`r6`/`r7`) warm-start from stage 1's checkpoint, so
+a name collision there would quietly reintroduce val-based selection into the
+final numbers. `_warm_tv.sh` looks for `_final` and says so if it finds a stray
+`_best` instead.
+
+```sh
+# per arm: search on train/val, refit on train+val, score test
+bash scripts/hpc/submit.sh sr/r0_new.sh  STAGE=tune
+bash scripts/hpc/submit.sh sr/r0_new.sh  STAGE=fit
+bash scripts/hpc/submit.sh sr/r0_new.sh  STAGE=bench
+# or all three in one allocation
+bash scripts/hpc/submit.sh --both sr/r0_new.sh
+```
+
+`TRAIN_SPLITS=train` reverts a `_new` arm to the holdout protocol on the same
+dataset (tagged `_holdout` in the run dir, study and benchmark name) if you
+want the merge itself as an ablation.
+
+### Norm stats come from the dataset
+
+`sentinel2data.cli norm-stats` writes `<dataset_dir>/norm_stats.yaml` by
+default, so each dataset already carries the stats computed from **its own**
+`splits/train.csv`. `_stages_tv.sh` reads that file, and echoes the resolved
+path plus its provenance at the top of every run log.
+
+It falls back to the repo copy at `src/unet/configs/norm_stats.yaml` only when
+the dataset has none, and then refuses to start unless you pass
+`NORM_FALLBACK_OK=1`. That copy belongs to whatever dataset it was last
+hand-copied from — its header still names `ROSA_RandomSampling110zones` — so on
+any other dataset it is a wrong mean/std applied to every input the model ever
+sees, with nothing downstream to flag it.
+
+The older `_stages.sh` (and the `unet` / `loss` engines) still hard-code the
+repo copy. Worth confirming it matched `ROSA_all` when the `_all` series ran.

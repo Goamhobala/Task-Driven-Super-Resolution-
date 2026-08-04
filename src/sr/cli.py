@@ -12,9 +12,16 @@ UNet on separate learning rates (``model.lr_sr`` / ``model.lr``):
 The plain ``unet.cli`` native path and ``unet.cli_upscale`` bicubic path are
 untouched; all three share the split CSVs, metrics and checkpoint convention.
 """
+import torch
+
 from sentinel2data.dataset.joint_sr_dataset import JointSRDataModule
 from sr.model import JointSRUNetLightning
 from unet.cli import UNetCLI
+
+# Keep the refit's numerical/throughput regime identical to the search's
+# (sr.tune sets the same two flags; see the comment there).
+torch.set_float32_matmul_precision("high")
+torch.backends.cudnn.benchmark = True
 
 
 class JointSRCLI(UNetCLI):

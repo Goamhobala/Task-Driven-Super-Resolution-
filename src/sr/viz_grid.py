@@ -81,13 +81,13 @@ FINETUNED_CKPT = "unet_s2rosa_jointsr_sen2sr_best.ckpt"
 
 
 # --------------------------------------------------------------------- inputs
-def read_patch(image_path, row, col):
-    """(4, 128, 128) float32 reflectance in [B4,B3,B2,B8] order."""
+def read_patch(image_path, row, col, crop=CROP):
+    """(4, crop, crop) float32 reflectance in [B4,B3,B2,B8] order."""
     with rasterio.open(image_path) as src:
-        if src.height < row + CROP or src.width < col + CROP:
+        if src.height < row + crop or src.width < col + crop:
             raise SystemExit(f"crop exceeds the {src.height}x{src.width} tile")
         x = src.read(list(SEN2SR_BANDS),
-                     window=Window(col, row, CROP, CROP)).astype("float32")
+                     window=Window(col, row, crop, crop)).astype("float32")
     x[x == NODATA] = 0.0
     np.nan_to_num(x, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     return x  # RAW values as stored (V2 COGs: already 0-1 reflectance)
@@ -137,11 +137,12 @@ def _read_mask_file(image_path, mask_path, row, col, upscale, hw):
     if not mask_path.exists():
         print(f"WARN: {mask_path.name} not found — GT panel left empty.")
         return np.zeros((hw, hw), dtype="float32"), "GT (missing)"
+    crop = hw // upscale
     with rasterio.open(image_path) as img:
         tile_dims = (img.height, img.width)
     with rasterio.open(mask_path) as src:
         if (src.height, src.width) == tile_dims:            # native 10 m mask
-            m = (src.read(1, window=Window(col, row, CROP, CROP)) > 0)
+            m = (src.read(1, window=Window(col, row, crop, crop)) > 0)
             t = torch.from_numpy(m.astype("float32"))[None, None]
             m = torch.nn.functional.interpolate(
                 t, scale_factor=upscale, mode="bicubic", align_corners=False,
@@ -152,8 +153,8 @@ def _read_mask_file(image_path, mask_path, row, col, upscale, hw):
 
 
 def read_gt(image_path, mask_path, row, col, upscale=4, graph_path=None,
-            dataset_dir=MASK_DATASET_DIR):
-    """(512, 512) binary GT + a panel label.
+            dataset_dir=MASK_DATASET_DIR, crop=CROP):
+    """(crop*upscale, crop*upscale) binary GT + a panel label.
 
     Default source is a NATIVE 2.5 m mask cached beside the image as
     `{stem}_mask_high.tif`, read at the scaled window. When that cache is
@@ -164,7 +165,7 @@ def read_gt(image_path, mask_path, row, col, upscale=4, graph_path=None,
     graph found we fall back to the 10 m `{stem}_mask.tif` (bicubic x4). An
     explicit `mask_path` always wins and is read as-is."""
     p = Path(image_path)
-    hw = CROP * upscale
+    hw = crop * upscale
 
     # Explicit --mask: honour it verbatim, no HR generation.
     if mask_path:

@@ -137,6 +137,19 @@ def test_curvature_kernels_are_four_distinct_rotations(maker, n):
     assert all(torch.rot90(k, 2, dims=(0, 1)).numpy().tobytes() in keys for k in ks)
 
 
+def test_skeletonize_batch_parallel_matches_serial():
+    """The 2026-08-03 batch-parallel skeletonization must be bit-identical
+    to the serial per-image loop (it is a performance change only)."""
+    from unet.losses import _sk_skeletonize, _skeletonize_batch
+
+    g = torch.Generator().manual_seed(13)
+    b = (torch.rand(4, 1, H, W, generator=g) > 0.85).float()
+    out = _skeletonize_batch(b)
+    for i in range(4):
+        ref = _sk_skeletonize(b[i, 0].numpy() > 0.5)
+        assert np.array_equal(out[i, 0].numpy().astype(bool), ref.astype(bool))
+
+
 def test_tl_floor_with_twelve_kernels():
     """gap_t2t4's TL side runs 4 line + 8 curvature kernels: the background
     floor (= n_kernels = 12) EXCEEDS the cap 10, so the base reset must

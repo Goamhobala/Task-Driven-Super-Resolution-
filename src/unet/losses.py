@@ -47,6 +47,8 @@ MATCHED class balance; only the 'bce' literature floor ignores it.
 """
 from __future__ import annotations
 
+import os
+from concurrent.futures import ProcessPoolExecutor
 from typing import Callable
 
 import numpy as np
@@ -66,13 +68,62 @@ EPS = 1.0  # smoothing, protocol §4.3
 # weight-map builders (CPU skeletonization + batched torch convolutions)
 # --------------------------------------------------------------------------
 
+def _skel_one(b: np.ndarray) -> np.ndarray:
+    """Worker: (H,W) bool -> float32 skeleton. Module-level for picklability."""
+    return _sk_skeletonize(b).astype(np.float32)
+
+
+_SKEL_POOL = None  # lazy singleton; False = parallelism disabled
+
+
+def _skel_pool():
+    """Process pool for batch-parallel skeletonization (2026-08-03 perf).
+
+    skimage's Zhang thinning is single-threaded Cython holding the GIL, and
+    it runs in the MAIN training process (loss forward), where it is the
+    step-time bottleneck of every gap/tl-family arm — dataloader workers
+    can't touch it. A fork-context process pool spreads the batch across
+    spare cores; workers only ever see numpy arrays (no CUDA in children).
+    SKEL_WORKERS env: 0/unset = auto (min(6, cores-2)), 1 = serial, N = N.
+    Any failure falls back to the serial path. Outputs are bit-identical to
+    serial (same per-image function, order preserved) — performance only.
+    """
+    global _SKEL_POOL
+    if _SKEL_POOL is None:
+        try:
+            n = int(os.environ.get("SKEL_WORKERS", "0"))
+            if n == 0:
+                n = min(6, max(1, (os.cpu_count() or 2) - 2))
+            if n <= 1:
+                _SKEL_POOL = False
+            else:
+                import multiprocessing as mp
+                _SKEL_POOL = ProcessPoolExecutor(
+                    max_workers=n, mp_context=mp.get_context("fork"))
+        except Exception:
+            _SKEL_POOL = False
+    return _SKEL_POOL
+
+
 def _skeletonize_batch(binary: torch.Tensor) -> torch.Tensor:
-    """(B,1,H,W) bool/float 0-1 -> float skeleton, on CPU (skimage, Zhang)."""
+    """(B,1,H,W) bool/float 0-1 -> float skeleton, on CPU (skimage, Zhang).
+    Parallelized across the batch when a pool is available (see _skel_pool);
+    bit-identical to the serial loop either way."""
     if _sk_skeletonize is None:
         raise ImportError("scikit-image is required for gap_ce / tl_ce arms")
     b_np = binary.detach().cpu().numpy() > 0.5
+    B = b_np.shape[0]
     out = np.zeros(b_np.shape, dtype=np.float32)
-    for i in range(b_np.shape[0]):
+    pool = _skel_pool() if B >= 2 else False
+    if pool:
+        try:
+            for i, sk in enumerate(pool.map(_skel_one, [b_np[i, 0] for i in range(B)])):
+                out[i, 0] = sk
+            return torch.from_numpy(out)
+        except Exception:
+            global _SKEL_POOL
+            _SKEL_POOL = False  # broken pool (e.g. dead workers): go serial
+    for i in range(B):
         out[i, 0] = _sk_skeletonize(b_np[i, 0])
     return torch.from_numpy(out)
 
