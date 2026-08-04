@@ -49,10 +49,10 @@ export BATCH_SIZES="${BATCH_SIZES:-8}"        # FIXED across arms (2026-08-03
                                               # this arm belongs on Lightning, NOT
                                               # at a smaller batch.
 
-ARMS="${ARMS:-l10_new l3_new l2_new}"         # wbce, tl_ce, gap_ce
+ARMS="${ARMS:-l3_new l2_new l4a_new l4b_new}"         # wbce, tl_ce, gap_ce
 TARGET_TRIALS="${TARGET_TRIALS:-30}"
 SEED="${SEED:-0}"
-MAX_SECONDS="${MAX_SECONDS:-37800}"           # 10.5 h: exit CLEANLY before the
+MAX_SECONDS="${MAX_SECONDS:-67800}"           # 10.5 h: exit CLEANLY before the
                                               # 12 h cap so Kaggle commits output
 DEADLINE=$(( $(date +%s) + MAX_SECONDS ))
 
