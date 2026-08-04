@@ -26,7 +26,9 @@ RUNS_ROOT="${RUNS_ROOT:-${INSTAROAD_ROOT}/runs}"
 
 declare -A TAG=( [l1_new]=bce [l2_new]=gap_ce [l3_new]=tl_ce [l9_new]=gap_tl_ce
                  [l10_new]=wbce [l11_new]=sdice [l12_new]=lcdice
-                 [l15_new]=balance_ce [l16_new]=dice )
+                 [l15_new]=balance_ce [l16_new]=dice
+                 [l4a_new]=t2_ce [l4b_new]=t4_ce
+                 [l17_new]=gap_t2_ce [l18_new]=gap_t4_ce [l19_new]=gap_t2t4_ce )
 
 trials_done () {
   python3 - "$1" "$2" <<'PY'

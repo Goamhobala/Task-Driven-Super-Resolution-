@@ -137,6 +137,19 @@ def test_curvature_kernels_are_four_distinct_rotations(maker, n):
     assert all(torch.rot90(k, 2, dims=(0, 1)).numpy().tobytes() in keys for k in ks)
 
 
+def test_tl_floor_with_twelve_kernels():
+    """gap_t2t4's TL side runs 4 line + 8 curvature kernels: the background
+    floor (= n_kernels = 12) EXCEEDS the cap 10, so the base reset must
+    happen before capping or the background saturates at max weight
+    (the 2026-08-03 ordering fix). Endpoint weighting must survive."""
+    m = np.zeros((H, W), np.float32)
+    m[10:48, 48] = 1
+    ks = t2_kernels(5) + t4_kernels(5)
+    Wmap = tl_weight_map(logits_from(m).sigmoid(), ell=5, extra_kernels=ks)[0, 0]
+    assert Wmap[70:90, 5:20].max() == 1     # far background floor reset
+    assert Wmap[44:54, 44:53].max() == 10   # free end still weighted up
+
+
 @pytest.mark.parametrize("maker", [t2_kernels, t4_kernels])
 def test_curvature_weight_map_conv_xcorr_invariance(maker):
     """W must be identical whether the kernel set is fed as-is or 180-rotated
@@ -261,23 +274,18 @@ def test_sdice_equals_dice_on_binary_predictions():
                               DiceLoss(smooth=0.0)(soft, blob_target()))
 
 
-def test_lcdice_matches_official_jadon():
-    """lcDice = log(cosh(1 − BATCH-POOLED dice)), smooth=1 — verbatim the
-    official Semantic_loss_functions.log_cosh_dice_loss (K.flatten pools the
-    batch dim), NOT log-cosh of the house per-sample DiceLoss."""
+def test_lcdice_is_logcosh_of_house_dice():
+    """lcDice = log(cosh(per-sample house DiceLoss)) — the form the pilot's
+    lcdice arm trained with, FROZEN for the study (2026-08-03). Documented
+    deviation: Jadon's official pools the batch into one Dice first; the two
+    coincide at B=1."""
     g = torch.Generator().manual_seed(10)
     lg = torch.randn(2, 1, H, W, generator=g)
     tgt = blob_target()
-    p = torch.sigmoid(lg)
-    x = 1 - (2 * (p * tgt).sum() + 1.0) / (p.sum() + tgt.sum() + 1.0)
+    d = DiceLoss()(lg, tgt)
     out = LogCoshDiceLoss()(lg, tgt)
-    assert torch.allclose(out, torch.log(torch.cosh(x)), atol=1e-6)
-    # log-cosh ≈ x²/2 near 0: always below the raw pooled Dice loss
-    assert out <= x
-    # B=1: pooled == per-sample, so it reduces to log(cosh(house DiceLoss))
-    assert torch.allclose(
-        LogCoshDiceLoss()(lg[:1], tgt[:1]),
-        torch.log(torch.cosh(DiceLoss(smooth=1.0)(lg[:1], tgt[:1]))), atol=1e-6)
+    assert torch.allclose(out, torch.log(torch.cosh(d)), atol=1e-6)
+    assert out <= d   # log-cosh ≈ x²/2 near 0: below the raw Dice loss
 
 
 def test_balance_ce_adaptive_matches_manual():
@@ -448,6 +456,7 @@ def test_gap_tl_blend_is_exact_average():
 @pytest.mark.parametrize("arm", ["bce", "wbce", "balance_ce",
                                  "gap_ce", "tl_ce", "gap_tl_ce",
                                  "t2_ce", "t4_ce",
+                                 "gap_t2_ce", "gap_t4_ce", "gap_t2t4_ce",
                                  "bce_dice", "pstar_dice", "pstar_tversky",
                                  "focal_tversky", "sdice", "lcdice",
                                  "pstar_sdice", "pstar_lcdice",

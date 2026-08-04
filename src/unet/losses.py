@@ -195,9 +195,13 @@ def tl_weight_map(prob: torch.Tensor, ell: int = 5, thresh: float = 0.375,
             D = torch.clamp(D, max=10.0)
             D = torch.where(D == 0, torch.ones_like(D), D)
             W = W + D
-        W = torch.where(W >= 10.0, torch.full_like(W, 10.0), W)
+        # Base reset BEFORE the cap: with >9 kernels (gap_t2t4's 12) the
+        # background floor (=n_kernels) exceeds the cap, and capping first
+        # would saturate the background at max weight instead of resetting
+        # it. Identical outcome for the paper's 4- and 8-kernel variants.
         if base_reset:
             W = torch.where(W == base, torch.ones_like(W), W)
+        W = torch.where(W >= 10.0, torch.full_like(W, 10.0), W)
     return W
 
 
@@ -284,8 +288,15 @@ def make_gap_tl_ce(r: int = 4, K: float = 60.0, ell: int = 5,
                    extra_kernels: list[torch.Tensor] | None = None,
                    pos_weight: float | None = None,
                    gap_theta: float = 0.5) -> WeightedCE:
-    """GL+TL blended pixel slot (Nanni et al. 2024, Table 2: GL+TL and
-    GL+TL+DI are their best compounds on 3 of 4 datasets).
+    """GL+TL blended pixel slot — SINGLE-MODEL counterpart of Nanni et al.
+    2024's best performer. CORRECTION (2026-08-03, verified against the
+    paper): their GL+TL / GL+TL+DI are SUM-RULE ENSEMBLES of separately
+    trained networks ("the sum rule between networks trained using GL, the
+    nets trained using TL, and nets trained using DI"), NOT a compound loss.
+    This blend trains ONE network whose CE attention map combines both — the
+    per-map mean-1 normalization below is what their ensemble never needed
+    (probability-space fusion never confronts the maps' scale mismatch,
+    GL's K·N vs TL's cap 10). One training + one inference vs their 2-3x.
 
     NOT a slot-taxonomy violation: both parents are weighted CEs over the
     SAME ce map, so their average is itself a single weighted CE whose
@@ -376,28 +387,22 @@ class SquaredDiceLoss(nn.Module):
         return (1 - (2 * inter + self.smooth) / (denom + self.smooth)).mean()
 
 
-class LogCoshDiceLoss(nn.Module):
+class LogCoshDiceLoss(DiceLoss):
     """lcDice (Jadon 2020): log(cosh(L_Dice)) — a smooth, outlier-tempered
     transform of Dice (≈ L²/2 near 0, ≈ |L|−log2 for large L). Xu et al.
     (2023): best F1 on the Massachusetts dataset.
 
-    VERBATIM the official ``Semantic_loss_functions.log_cosh_dice_loss``
-    (Jadon's repo, the suite Xu et al. build on): the Dice inside is computed
-    over the WHOLE BATCH pooled (their ``K.flatten`` flattens the batch dim),
-    smooth=1, then log((eˣ+e⁻ˣ)/2) = log·cosh. Deliberate deviation from the
-    house per-sample-then-mean ``DiceLoss``: the standalone lcdice arm's
-    claim is Xu's advertised form, so faithfulness wins over house
-    convention. (At B=1 the two aggregations coincide — unit-tested.)"""
-
-    def __init__(self, smooth: float = 1.0):
-        super().__init__()
-        self.smooth = smooth
+    Aggregation: HOUSE per-sample-then-mean Dice inside the transform —
+    dice/sdice/lcdice share one aggregation convention so their three-way
+    comparison isolates the transform. DOCUMENTED DEVIATION from Jadon's
+    official ``log_cosh_dice_loss``, which pools the whole batch into one
+    Dice (``K.flatten`` over the batch dim) before log·cosh; at B=1 the two
+    coincide. NB (2026-08-03): the pilot's lcdice arm TRAINED with this
+    per-sample form — it is frozen for the study; do not "fix" it to the
+    pooled form mid-study."""
 
     def forward(self, logits, targets):
-        p = torch.sigmoid(logits)
-        inter = (p * targets).sum()
-        x = 1 - (2 * inter + self.smooth) / (p.sum() + targets.sum() + self.smooth)
-        return torch.log(torch.cosh(x))
+        return torch.log(torch.cosh(super().forward(logits, targets)))
 
 
 class TverskyLoss(nn.Module):
@@ -644,6 +649,17 @@ def _pixel_slot(name: str, hp: dict) -> nn.Module:
                               ell=hp.get("tl_ell", 5),
                               theta=hp.get("tl_theta", 0.375),
                               gap_theta=hp.get("gap_theta", 0.5), pos_weight=lam)
+    if name in ("gap_t2_ce", "gap_t4_ce", "gap_t2t4_ce"):
+        # Combination series (2026-08-03): Gap + TL-line + curvature maps
+        # blended into ONE normalized CE — the single-loss counterpart of
+        # ensembles Nanni/Giannini build from separately trained nets.
+        n = hp.get("tl_ell", 5)
+        extra = {"gap_t2_ce": t2_kernels(n), "gap_t4_ce": t4_kernels(n),
+                 "gap_t2t4_ce": t2_kernels(n) + t4_kernels(n)}[name]
+        return make_gap_tl_ce(r=hp.get("gap_r", 4), K=hp.get("gap_k", 60.0),
+                              ell=n, theta=hp.get("tl_theta", 0.375),
+                              gap_theta=hp.get("gap_theta", 0.5),
+                              extra_kernels=extra, pos_weight=lam)
     if name in ("t2_ce", "t4_ce"):
         # Giannini et al. 2026: TL's four line filters + four curvature filters
         # (T2 quarter-circles / T4 semicircles), base weight 8 -> reset to 1.
@@ -679,7 +695,7 @@ def build_loss(arm: str, **hp) -> ComposedLoss:
               warmup_ramp=hp.get("warmup_ramp", 10))
 
     if base in ("bce", "wbce", "balance_ce", "gap_ce", "tl_ce", "gap_tl_ce",
-                "t2_ce", "t4_ce"):
+                "t2_ce", "t4_ce", "gap_t2_ce", "gap_t4_ce", "gap_t2t4_ce"):
         cfg = dict(pixel=_pixel_slot(base, hp), w_pix=1.0)
     elif base == "bce_dice":
         # The ANCHOR: frozen at the literature's 0.5/0.5 (Giannini Eq. 3) —
@@ -743,4 +759,4 @@ def build_loss(arm: str, **hp) -> ComposedLoss:
 
 
 PHASE_A_ARMS = ["bce", "wbce", "balance_ce", "gap_ce", "tl_ce", "gap_tl_ce",
-                "t2_ce", "t4_ce"]
+                "t2_ce", "t4_ce", "gap_t2_ce", "gap_t4_ce", "gap_t2t4_ce"]

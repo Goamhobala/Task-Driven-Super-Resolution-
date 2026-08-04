@@ -44,6 +44,13 @@ import lightning.pytorch as pl
 import torch
 from lightning.pytorch.callbacks import EarlyStopping
 
+# Free throughput on tensor-core GPUs, no change to bf16-AMP math:
+#  - TF32 for the matmuls that stay fp32 (silences Lightning's tensor-core hint)
+#  - cudnn conv-algorithm autotuning; safe because every shape is fixed
+#    (128px native crops -> 512px SR grid, constant batch size per trial).
+torch.set_float32_matmul_precision("high")
+torch.backends.cudnn.benchmark = True
+
 # Same imports the LightningCLI uses -- keep the search and the real fit identical.
 from sentinel2data.dataset.joint_sr_dataset import JointSRDataModule
 from sr.model import JointSRUNetLightning
@@ -138,11 +145,15 @@ def build_objective(args, base_cfg: dict):
     if loss_arm:
         base = loss_arm.partition("+")[0]
         pixel = args.pstar if base.startswith("pstar_") else base
-        lambda_arms = {"wbce", "gap_ce", "tl_ce", "gap_tl_ce", "t2_ce", "t4_ce"}
+        combo = {"gap_t2_ce", "gap_t4_ce", "gap_t2t4_ce"}
+        lambda_arms = {"wbce", "gap_ce", "tl_ce", "gap_tl_ce",
+                       "t2_ce", "t4_ce"} | combo
         search_pos_weight = pixel in lambda_arms
         thetas_on = args.search_thetas != "false"
-        search_tl_theta = thetas_on and pixel in ("tl_ce", "gap_tl_ce", "t2_ce", "t4_ce")
-        search_gap_theta = thetas_on and pixel in ("gap_ce", "gap_tl_ce")
+        search_tl_theta = thetas_on and (
+            pixel in ("tl_ce", "gap_tl_ce", "t2_ce", "t4_ce") or pixel in combo)
+        search_gap_theta = thetas_on and (
+            pixel in ("gap_ce", "gap_tl_ce") or pixel in combo)
         print(f"[sr.tune] loss_arm={loss_arm!r} (pixel slot {pixel!r}): "
               f"search pos_weight={search_pos_weight} tl_theta={search_tl_theta} "
               f"gap_theta={search_gap_theta}")

@@ -52,6 +52,8 @@ REFIT_EPOCHS="${REFIT_EPOCHS:-50}"
 WARMUP_START="${WARMUP_START:-15}"
 WARMUP_RAMP="${WARMUP_RAMP:-5}"
 SKIP_TEST="${SKIP_TEST:-1}"
+VAL_EVERY="${VAL_EVERY:-5}"   # val curves to wandb every 5 epochs (observation
+                              # only — selection stays end-of-budget); 0 = off
 BENCH_SPLIT="${BENCH_SPLIT:-val}"
 TILE_METRICS="${TILE_METRICS:-apls,cldice}"
 STORE_DIR="${STORE_DIR:-${INSTAROAD_ROOT}/benchmarks_loss_pilot}"
@@ -62,6 +64,14 @@ TUNE_EPOCHS="${TUNE_EPOCHS:-8}"
 TUNE_LENGTH="${TUNE_LENGTH:-2000}"      # patches/epoch during trials (~4.4x cheaper
                                         # than the full 8830; ranking, not fitting)
 POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-40}"  # log search up to ~inverse frequency (34)
+BATCH_SIZES="${BATCH_SIZES:-8}"         # FIXED across arms (amendment 2026-08-03):
+                                        # batch is an optimization nuisance, not a
+                                        # loss parameter — tune budget goes to
+                                        # lr + λ + θ; step axes stay comparable.
+                                        # 8 = the majority tuned choice + fastest;
+                                        # arms that cannot fit 8 (T4 16 GB?) must
+                                        # run on bigger-memory hardware, not drop
+                                        # the batch — it is a protocol constant.
 
 if [ "${TRAIN_SPLITS}" != "train" ]; then
   echo "WARN: pilot arm running with TRAIN_SPLITS='${TRAIN_SPLITS}' — this is no" >&2
@@ -73,7 +83,7 @@ if [ "${STAGE:-tune}" = "fit" ] && [ "${PILOT_SHARED_TUNE:-0}" = "1" ]; then
   _runs="${RUNS_ROOT:-${INSTAROAD_ROOT}/runs}"
   _tag="_$(echo "${LOSS_ARM}" | tr '+' '-')"
   _dst="${_runs}/sr_${EXP_TAG}${_tag}_holdout_seed${SEED:-0}"
-  _src="${PILOT_TUNE_FROM:-${_runs}/sr_${EXP_TAG}_wbce_holdout_seed${SEED:-0}}"
+  _src="${PILOT_TUNE_FROM:-${_runs}/sr_${EXP_TAG}_${PILOT_TUNE_FROM_ARM:-wbce}_holdout_seed${SEED:-0}}"
   if [ ! -f "${_dst}/best_params.yaml" ]; then
     if [ -f "${_src}/best_params.yaml" ]; then
       mkdir -p "${_dst}"

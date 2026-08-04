@@ -492,6 +492,20 @@ fi
 TRAIN_SPLITS_ARR=(${TRAIN_SPLITS})
 SPLIT_ARGS=(--data.train_splits "[$(IFS=,; echo "${TRAIN_SPLITS_ARR[*]}")]")
 
+# VAL_EVERY=N (holdout/pilot mode only): re-enable the val loop every N
+# epochs for wandb curve visibility. Selection stays end-of-budget (monitor
+# is null in the trainval overlay), so this observes without selecting.
+# Refused when val is folded into training — those would be train scores.
+VAL_ARGS=()
+if [ -n "${VAL_EVERY:-}" ] && [ "${VAL_EVERY}" != "0" ]; then
+  if [ "$MERGE_VAL" = "1" ]; then
+    echo "WARN: VAL_EVERY ignored — val is folded into training (TRAIN_SPLITS='${TRAIN_SPLITS}')." >&2
+  else
+    VAL_ARGS=(--trainer.check_val_every_n_epoch "$VAL_EVERY"
+              --trainer.limit_val_batches 1.0)
+  fi
+fi
+
 echo "=== REFIT on '${TRAIN_SPLITS}' (best config, FIXED ${REFIT_EPOCHS} epochs, no early stopping, ${REFIT_GPUS} GPU) ==="
 python -m sr.cli fit \
   --config "$BASE_CONFIG" \
@@ -506,6 +520,7 @@ python -m sr.cli fit \
   ${FIT_LENGTH:+--data.length "$FIT_LENGTH"} \
   "${SPLIT_ARGS[@]}" \
   "${MODEL_ARGS[@]}" \
+  ${VAL_ARGS[@]+"${VAL_ARGS[@]}"} \
   --trainer.max_epochs "$REFIT_EPOCHS" \
   --trainer.devices "$REFIT_GPUS" \
   --trainer.precision "$PRECISION" \
