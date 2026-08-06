@@ -407,6 +407,34 @@ if [ "$STAGE" = "bench" ]; then
     exit 2
   fi
 
+  # --- θ* sweep (2026-08-04): bench at the arm's tuned operating point ------
+  # benchmarking.runner scores at the checkpoint's threshold hparam (0.5 —
+  # the SR configs never set one) unless --threshold overrides it. θ* is
+  # loss-dependent by construction (a λ≈15 arm sits far from 0.5), so a
+  # common 0.5 confounds calibration with quality. The sweep selects θ* on
+  # VAL (always — even when BENCH_SPLIT=test, the confirmation runs use the
+  # val-selected θ*), one inference pass for the whole grid, macro per-chip
+  # IoU by default (SELECT_ON). sweep.json is reused when present (e.g.
+  # produced by the local runner); REFRESH_SWEEP=1 redoes it; SWEEP=0
+  # reverts to fixed 0.5.
+  THRESHOLD_ARGS=()
+  if [ "${SWEEP:-1}" = "1" ]; then
+    SWEEP_EXTRA=()
+    [ "${REFRESH_SWEEP:-0}" = "1" ] && SWEEP_EXTRA=(--refresh-sweep)
+    if [ ! -f "${RUN_DIR}/sweep.json" ] || [ "${REFRESH_SWEEP:-0}" = "1" ]; then
+      python "$REPO_DIR/scripts/local/theta_sweep_bench.py" \
+        --run-dir "$RUN_DIR" --model-name "$MODEL_NAME" \
+        --exp-tag "$EXP_TAG" --seed "$SEED" \
+        --dataset-dir "$DATASET_DIR" \
+        ${SEN2SR_DIR:+--sen2sr-dir "$SEN2SR_DIR"} \
+        --select-on "${SELECT_ON:-iou_mean}" \
+        --skip-bench ${SWEEP_EXTRA[@]+"${SWEEP_EXTRA[@]}"}
+    fi
+    THETA=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['best_threshold'])" "${RUN_DIR}/sweep.json")
+    echo "θ* = ${THETA}  [$([ -n "${SWEEP_EXTRA[*]:-}" ] && echo fresh || echo from sweep.json)]"
+    THRESHOLD_ARGS=(--threshold "$THETA")
+  fi
+
   CONFIG_ARGS=()
   [ -f "${RUN_DIR}/best_params.yaml" ] && CONFIG_ARGS=(--config-yaml "${RUN_DIR}/best_params.yaml")
   MASK_ARGS_BENCH=(--mask-source "$MASK_SOURCE")
@@ -431,7 +459,25 @@ if [ "$STAGE" = "bench" ]; then
     --label-source "$LABEL_SOURCE" \
     ${METRIC_ARGS[@]+"${METRIC_ARGS[@]}"} \
     ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"} \
+    ${THRESHOLD_ARGS[@]+"${THRESHOLD_ARGS[@]}"} \
     "${MASK_ARGS_BENCH[@]}"
+
+  # --- push θ*-swept val metrics into the arm's wandb run (not 0.5!) --------
+  if [ -f "${RUN_DIR}/sweep.json" ] && LATEST_RUN=$(readlink -f "$RUN_DIR/wandb/latest-run" 2>/dev/null) && [ -n "$LATEST_RUN" ]; then
+    WANDB_RUN_ID="${LATEST_RUN##*-}" WANDB_PROJECT="$WANDB_PROJECT" \
+    python - "${RUN_DIR}/sweep.json" <<'PY' || echo "WARN: wandb θ* push failed (non-fatal — numbers are in sweep.json + the store)" >&2
+import json, os, sys
+import wandb
+s = json.load(open(sys.argv[1]))
+best = s["sweep"][f"{float(s['best_threshold']):.4f}"]
+run = wandb.init(project=os.environ["WANDB_PROJECT"],
+                 id=os.environ["WANDB_RUN_ID"], resume="must")
+run.summary["bench_val/theta_star"] = float(s["best_threshold"])
+for k, v in best.items():
+    run.summary[f"bench_val/{k}_at_theta_star"] = v
+run.finish()
+PY
+  fi
 
   echo "=== BENCH DONE ===  store: ${STORE_DIR}"
   echo "Report: python -m benchmarking.cli report --store-dir ${STORE_DIR}"

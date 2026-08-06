@@ -38,7 +38,6 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -49,6 +48,7 @@ import torch
 import yaml
 from rasterio.windows import Window
 
+from benchmarking import strata
 from benchmarking.confusion_matrix import confusion_counts, pixel_metrics_from_counts
 from benchmarking.store import append_chips, append_run, append_tiles
 from benchmarking.tile_metrics import resolve_tile_metrics
@@ -129,6 +129,23 @@ def _read_split_csv(dataset_dir, split):
     if not csv.exists():
         raise FileNotFoundError(f"Split CSV not found: {csv}")
     return pd.read_csv(csv)
+
+
+def _safe_run_id(model_name: str, seed, split: str, stratum: str | None) -> str:
+    """Descriptive, filesystem-safe shard name (run_id IS the shard filename).
+
+    model_name is free-form, so anything outside [A-Za-z0-9._-] is folded to
+    '-'; without that a name containing '/' would silently write outside the
+    store dir.
+    """
+    def slug(s) -> str:
+        return "".join(ch if (ch.isalnum() or ch in "._-") else "-" for ch in str(s))
+
+    parts = [slug(model_name), f"seed{slug(seed)}", slug(split)]
+    if stratum:
+        parts.append(slug(stratum))
+    parts.append(datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"))
+    return "_".join(parts)
 
 
 # --------------------------------------------------------------------------- #
@@ -318,10 +335,24 @@ class SRMaskReader:
 # --------------------------------------------------------------------------- #
 # per-tile scoring
 # --------------------------------------------------------------------------- #
-def _batch_rows(metas, probs, masks, threshold, ms_per_chip, canvases, scale):
-    """Score one same-sized batch of chips -> rows; optionally stitch the
+def _new_rows(sweep_thresholds):
+    """Per-θ accumulator in sweep mode, flat list otherwise."""
+    return {t: [] for t in sweep_thresholds} if sweep_thresholds is not None else []
+
+
+def _accumulate(rows, out):
+    """Extend the per-θ dict (sweep mode) or the flat list (normal mode)."""
+    if isinstance(rows, dict):
+        for t, rs in out.items():
+            rows[t].extend(rs)
+    else:
+        rows.extend(out)
+
+
+def _rows_at_threshold(metas, probs, target, masks, threshold, ms_per_chip,
+                       canvases, scale):
+    """Score one same-sized batch at ONE θ -> rows; optionally stitch the
     binary prediction + GT into the tile canvases for the tile-metric plugins."""
-    target = torch.from_numpy(np.stack(masks))
     counts = confusion_counts(probs, target, threshold=threshold, from_logits=False)
     metrics = pixel_metrics_from_counts(counts)
     pred_bin = (probs.squeeze(1).numpy() >= threshold)
@@ -348,13 +379,32 @@ def _batch_rows(metas, probs, masks, threshold, ms_per_chip, canvases, scale):
     return rows
 
 
+def _batch_rows(metas, probs, masks, threshold, ms_per_chip, canvases, scale,
+                sweep_thresholds=None):
+    """Score one same-sized batch of chips -> rows.
+
+    ``sweep_thresholds`` scores the SAME probs at every θ in the sequence and
+    returns ``{θ: rows}`` — one forward pass, N binarisations, which is what
+    lets a θ sweep cost one inference pass instead of one per θ. Canvases are
+    never stitched in sweep mode: the tile-metric plugins are θ-dependent and
+    would need one canvas per θ, so ``evaluate`` rejects the combination.
+    """
+    target = torch.from_numpy(np.stack(masks))
+    if sweep_thresholds is not None:
+        return {t: _rows_at_threshold(metas, probs, target, masks, t,
+                                      ms_per_chip, None, scale)
+                for t in sweep_thresholds}
+    return _rows_at_threshold(metas, probs, target, masks, threshold,
+                              ms_per_chip, canvases, scale)
+
+
 def _score_tile_unet(pred: UNetPredictor, dataset_dir, row, cell_m, chip_px_opt,
-                     batch_size, plugins, check_gt):
+                     batch_size, plugins, check_gt, sweep_thresholds=None):
     """Footprint cells over one tile, batching same-sized chips through the GPU."""
     tile_id = Path(row["image_path"]).stem
     img_path = Path(dataset_dir) / row["image_path"]
     mask_path = Path(dataset_dir) / row["mask_path"]
-    rows, canvases, gt_road_px = [], None, None
+    rows, canvases, gt_road_px = _new_rows(sweep_thresholds), None, None
     with rasterio.open(img_path) as src, rasterio.open(mask_path) as msrc:
         chip_px = _chip_px_from_transform(src, cell_m, chip_px_opt, tile_id)
         gt_transform = src.transform
@@ -368,8 +418,10 @@ def _score_tile_unet(pred: UNetPredictor, dataset_dir, row, cell_m, chip_px_opt,
                 return
             metas, imgs, masks = zip(*buf)
             probs, ms = pred.predict_probs(list(imgs))
-            rows.extend(_batch_rows(metas, probs, list(masks), pred.threshold,
-                                    ms / len(buf), canvases, scale=1))
+            _accumulate(rows, _batch_rows(
+                metas, probs, list(masks), pred.threshold,
+                ms / len(buf), canvases, scale=1,
+                sweep_thresholds=sweep_thresholds))
             buf.clear()
 
         for ri, ci, r0, c0, h, w in _grid(H, W, chip_px):
@@ -389,14 +441,15 @@ def _score_tile_unet(pred: UNetPredictor, dataset_dir, row, cell_m, chip_px_opt,
 
 
 def _score_tile_sr(pred: SRPredictor, dataset_dir, row, cell_m, chip_px_opt,
-                   mask_source, mask_dirname, plugins, check_gt):
+                   mask_source, mask_dirname, plugins, check_gt,
+                   sweep_thresholds=None):
     """Footprint cells over one tile; predict at ``scale`` x, score against HR GT."""
     from affine import Affine
 
     tile_id = Path(row["image_path"]).stem
     img_path = Path(dataset_dir) / row["image_path"]
     s = pred.scale
-    rows, canvases, gt_road_px = [], None, None
+    rows, canvases, gt_road_px = _new_rows(sweep_thresholds), None, None
     with rasterio.open(img_path) as src:
         chip_px = _chip_px_from_transform(src, cell_m, chip_px_opt, tile_id)
         gt_transform = src.transform * Affine.scale(1.0 / s)
@@ -411,9 +464,10 @@ def _score_tile_sr(pred: SRPredictor, dataset_dir, row, cell_m, chip_px_opt,
             probs, ms = pred.predict_probs(img, chip_px)     # (1,1,s*cell,s*cell)
             probs = probs[..., : s * h, : s * w]             # real pixels only
             mask = gt.window(src, win, chip_px)              # (s*h, s*w)
-            rows.extend(_batch_rows(
+            _accumulate(rows, _batch_rows(
                 [(tile_id, ri, ci, r0, c0, h, w)], probs, [mask],
                 pred.threshold, ms, canvases, scale=s,
+                sweep_thresholds=sweep_thresholds,
             ))
         if check_gt:
             gt_road_px = gt.full_road_px(src)
@@ -428,7 +482,8 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
              mask_source=None, mask_dirname=None, sen2sr_dir=None,
              config_yaml_path=None, exp_tag="", label_source="",
              tile_metrics=(), check="first", device=None, threshold=None,
-             max_tiles=None):
+             max_tiles=None, sweep_thresholds=None,
+             stratum=None, stratum_col=None):
     """Score a checkpoint over the split's footprint chips -> the sharded store.
 
     ``check`` runs the tp+fn-vs-mask invariant on the ``first`` tile (default),
@@ -437,6 +492,21 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
     val — see ``unet.train_ablation``); the value used is recorded in the runs
     table either way. ``max_tiles`` scores only the first N tiles of the split
     (a quick local smoke; ``None`` = all tiles). Returns the ``run_id``.
+
+    ``sweep_thresholds`` switches on SWEEP MODE: every θ in the sequence is
+    scored off the same forward pass, so an N-point θ sweep costs one inference
+    pass instead of N. It returns ``{θ: chips DataFrame}`` and writes NOTHING to
+    the store — a sweep selects an operating point, it is not a benchmark run;
+    the bench at the chosen θ* is a separate ``evaluate`` call. ``tile_metrics``
+    are rejected in this mode because they are θ-dependent (one stitched canvas
+    per θ), which would defeat the point. ``threshold`` is ignored when set.
+
+    ``stratum`` restricts scoring to the tiles whose ``stratum_col`` (default
+    ``urbanisation_classification``) equals it -- e.g. ``stratum="Urban"``.
+    The value is matched case- and separator-insensitively and recorded on the
+    run row, so a stratified run is self-describing. To slice a store that was
+    already scored over the whole split, use ``benchmarking.cli report
+    --stratum`` instead; it needs no re-inference. See ``benchmarking.strata``.
     """
     if model not in MODEL_FAMILIES:
         raise ValueError(f"unsupported model family {model!r} (choose from {MODEL_FAMILIES})")
@@ -444,6 +514,18 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
         raise ValueError(f"check must be first|all|off, got {check!r}")
     if threshold is not None and not 0.0 < threshold < 1.0:
         raise ValueError(f"threshold must be in (0, 1), got {threshold}")
+    if sweep_thresholds is not None:
+        sweep_thresholds = [float(t) for t in sweep_thresholds]
+        if not sweep_thresholds:
+            raise ValueError("sweep_thresholds must be a non-empty sequence")
+        bad = [t for t in sweep_thresholds if not 0.0 < t < 1.0]
+        if bad:
+            raise ValueError(f"sweep thresholds must be in (0, 1), got {bad}")
+        if tile_metrics:
+            raise ValueError(
+                "tile_metrics are θ-dependent and cannot be swept off one pass "
+                f"(got {tuple(tile_metrics)}); sweep with tile_metrics=(), then "
+                "bench once at θ* with them on")
     if model == "sr":
         mask_source = mask_source or "graph"
         mask_dirname = mask_dirname or "mask_osm_2pt5"
@@ -460,6 +542,12 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
     plugins = resolve_tile_metrics(tile_metrics)
 
     df = _read_split_csv(dataset_dir, split)
+    # Stratify BEFORE max_tiles, so --max-tiles N means "N tiles of this
+    # stratum" rather than "whatever survives of the first N of the split".
+    stratum_col = stratum_col or strata.DEFAULT_COL
+    if stratum:
+        df, stratum = strata.filter_split_df(df, split, stratum_col, stratum)
+        print(f"stratum {stratum_col}={stratum}: {len(df)} tile(s)")
     if max_tiles is not None:
         df = df.head(int(max_tiles))
     if model == "unet" and mask_dirname:
@@ -469,13 +557,17 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
         df = _remap_mask_paths(df, dataset_dir, mask_dirname)
 
     config_yaml = Path(config_yaml_path).read_text() if config_yaml_path else ""
-    run_id = str(uuid.uuid4())
+    # run_id doubles as the shard FILENAME (store._write_shard), so it must stay
+    # filesystem-safe; model_name is free-form. Two runs of the same
+    # model/seed/split/stratum inside one second would collide, and the store
+    # refuses to overwrite -- that is the intended guard, not a bug.
+    run_id = _safe_run_id(model_name, seed, split, stratum)
     started = datetime.now(timezone.utc)
-    print(f"run {run_id[:8]} model={model_name} family={model} seed={seed} "
-          f"split={split} cell_m={cell_m} tiles={len(df)} device={device} "
-          f"mask_source={mask_source}")
+    print(f"run {run_id} family={model} cell_m={cell_m} tiles={len(df)} "
+          f"device={device} mask_source={mask_source}"
+          + (f" stratum={stratum} ({stratum_col})" if stratum else ""))
 
-    chip_rows, tile_rows = [], []
+    chip_rows, tile_rows = _new_rows(sweep_thresholds), []
     chip_px_used = None
     with torch.inference_mode():
         for i, (_, row) in enumerate(df.iterrows()):
@@ -486,14 +578,19 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
             check_gt = check == "all" or (check == "first" and i == 0)
             if model == "unet":
                 rows, canvases, chip_px_used, gt_road_px, gt_tf = _score_tile_unet(
-                    pred, dataset_dir, row, cell_m, chip_px, batch_size, plugins, check_gt)
+                    pred, dataset_dir, row, cell_m, chip_px, batch_size, plugins,
+                    check_gt, sweep_thresholds=sweep_thresholds)
             else:
                 rows, canvases, chip_px_used, gt_road_px, gt_tf = _score_tile_sr(
                     pred, dataset_dir, row, cell_m, chip_px, mask_source,
-                    mask_dirname, plugins, check_gt)
+                    mask_dirname, plugins, check_gt,
+                    sweep_thresholds=sweep_thresholds)
 
             if gt_road_px is not None:
-                got = sum(r["tp"] + r["fn"] for r in rows)
+                # tp+fn is the GT road-pixel count, which is θ-independent, so
+                # in sweep mode any one θ's rows prove the invariant for all.
+                probe = next(iter(rows.values())) if isinstance(rows, dict) else rows
+                got = sum(r["tp"] + r["fn"] for r in probe)
                 if got != gt_road_px:
                     raise RuntimeError(
                         f"{tile_id}: invariant failed — chips' tp+fn = {got} but the "
@@ -519,7 +616,23 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
                 for r in rows:
                     r.update(per_chip.get(r["chip_id"], {}))
 
-            chip_rows.extend(rows)
+            _accumulate(chip_rows, rows)
+
+    if sweep_thresholds is not None:
+        # A sweep picks an operating point; it is not a benchmark run, so it
+        # never touches the store (which is append-only and uuid-keyed — see
+        # store._write_shard). Bench once at θ* with a separate evaluate call.
+        out = {}
+        for t, rs in chip_rows.items():
+            c = pd.DataFrame(rs)
+            c["model_name"] = model_name
+            c["seed"] = int(seed)
+            c["threshold"] = t
+            out[t] = c
+        n = len(next(iter(out.values())))
+        print(f"swept {len(sweep_thresholds)} θ over {n} chips in ONE inference "
+              f"pass | nothing written to the store")
+        return out
 
     # GT resolution = native pixel size / family scale (NaN if non-metric CRS).
     with rasterio.open(Path(dataset_dir) / df.iloc[0]["image_path"]) as src:
@@ -530,6 +643,13 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
     chips["model_name"] = model_name
     chips["seed"] = int(seed)
     chips["run_id"] = run_id
+    # Per-chip stratum, so a whole-split store can be sliced later without
+    # re-reading the split CSV. Cheap, and makes the shard self-contained.
+    try:
+        chips["stratum"] = chips["tile_id"].astype(str).map(
+            strata.tile_strata(dataset_dir, split, stratum_col))
+    except (KeyError, FileNotFoundError):
+        chips["stratum"] = ""      # split CSV has no such column — not fatal
 
     run_row = {
         "run_id": run_id,
@@ -547,6 +667,10 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
         "checkpoint_path": str(Path(checkpoint).resolve()),
         "dataset_dir": str(Path(dataset_dir).resolve()),
         "dataset_split": split,
+        # "" = the whole split. A stratified run is NOT pixel-comparable with a
+        # whole-split run, so this is a comparability key in cli._GT_KEYS.
+        "stratum": stratum or "",
+        "stratum_col": (stratum_col if stratum else ""),
         "cell_m": float(cell_m),
         "chip_px": int(chip_px_used),
         "gt_res_m": float(gt_res_m),

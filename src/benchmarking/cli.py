@@ -24,9 +24,48 @@ import yaml
 app = typer.Typer(help="Road-segmentation benchmarking: eval + statistical comparison")
 
 # Runs-table columns that define "same ground truth / same protocol". Models
-# whose runs disagree on any of these are not pixel-comparable.
+# whose runs disagree on any of these are not pixel-comparable. ``stratum`` is
+# in here because an Urban-only run and a whole-split run cover different
+# geography — their pixel metrics are not the same quantity.
 _GT_KEYS = ("gt_res_m", "label_source", "mask_source", "mask_dirname",
-            "dataset_split", "cell_m")
+            "dataset_split", "cell_m", "stratum")
+
+
+def _apply_stratum(df, store_dir, stratum: Optional[str], stratum_col: Optional[str]):
+    """Restrict an already-loaded metric table to one stratum.
+
+    Prefers the per-chip ``stratum`` column written by newer runs; falls back to
+    a tile_id -> stratum join against the split CSV named in the runs table, so
+    stores written before that column existed can still be sliced. Returns
+    (df, resolved_stratum_or_None).
+    """
+    if not stratum:
+        return df, None
+    from benchmarking import strata as _s
+    from benchmarking.store import load_runs
+
+    col = stratum_col or _s.DEFAULT_COL
+    if "stratum" not in df.columns or df["stratum"].isna().all() or (df["stratum"] == "").all():
+        # Legacy store: recover the mapping from the dataset the runs point at.
+        runs = load_runs(store_dir)
+        pairs = {(r["dataset_dir"], r["dataset_split"]) for _, r in runs.iterrows()}
+        if len(pairs) != 1:
+            raise typer.BadParameter(
+                "--stratum needs one dataset/split in the store to join against, "
+                f"found {sorted(pairs)}"
+            )
+        dsdir, split = pairs.pop()
+        df = _s.annotate_chips(df, dsdir, split, col)
+    choices = sorted(df["stratum"].dropna().astype(str).unique())
+    choices = [c for c in choices if c]
+    try:
+        resolved = _s.resolve(stratum, choices)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
+    out = df[df["stratum"].astype(str) == resolved]
+    if out.empty:
+        raise typer.BadParameter(f"stratum {resolved!r} matched no rows in the store")
+    return out, resolved
 
 
 @app.callback()
@@ -259,9 +298,16 @@ def run_eval(
     device: Annotated[Optional[str], typer.Option(help="cuda | cpu (default: auto)")] = None,
     threshold: Annotated[Optional[float], typer.Option(help="Override the checkpoint's binarisation threshold (e.g. a tuned θ*)")] = None,
     max_tiles: Annotated[Optional[int], typer.Option(help="Score only the first N tiles of the split (quick local smoke)")] = None,
+    stratum: Annotated[Optional[str], typer.Option(help="Score only this stratum, e.g. Urban | PeriUrban | Rural (case/dash-insensitive)")] = None,
+    stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
     wandb_meta: Annotated[Optional[Path], typer.Option(help="train_meta.json with a `wandb` block: resume that run and push the bench metrics (incl. APLS) to its summary")] = None,
 ):
-    """Score a checkpoint over the split's footprint chips -> the sharded store."""
+    """Score a checkpoint over the split's footprint chips -> the sharded store.
+
+    ``--stratum Urban`` restricts scoring to that stratum. To break down a store
+    you have ALREADY scored over the whole split, prefer ``report --stratum`` --
+    same arithmetic, no re-inference.
+    """
     from benchmarking.runner import evaluate
 
     run_id = evaluate(
@@ -272,6 +318,7 @@ def run_eval(
         exp_tag=exp_tag, label_source=label_source,
         tile_metrics=tuple(tile_metric or ()), check=check, device=device,
         threshold=threshold, max_tiles=max_tiles,
+        stratum=stratum, stratum_col=stratum_col,
     )
     if wandb_meta is not None:
         _push_bench_to_wandb(wandb_meta, run_id, store_dir, split)
@@ -293,6 +340,8 @@ def run_eval_dir(
     label_source: Annotated[str, typer.Option(help="GT label source stamped on every run (comparability key)")] = "",
     device: Annotated[Optional[str], typer.Option(help="cuda | cpu (default: auto)")] = None,
     max_tiles: Annotated[Optional[int], typer.Option(help="Score only the first N tiles per model (quick local smoke)")] = None,
+    stratum: Annotated[Optional[str], typer.Option(help="Score only this stratum, e.g. Urban | PeriUrban | Rural")] = None,
+    stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
     skip_existing: Annotated[bool, typer.Option(help="Skip a (model_name, seed) already in the store")] = True,
     report: Annotated[bool, typer.Option(help="Run `report` over the store when all evals finish")] = True,
     out: Annotated[Optional[Path], typer.Option(help="Write the final report to .md or .csv")] = None,
@@ -317,14 +366,22 @@ def run_eval_dir(
     try:
         from benchmarking.store import load_runs
         existing = load_runs(store_dir)
-        seen = set(zip(existing["model_name"], existing["seed"])) if not existing.empty else set()
+        # Keyed on stratum too: the same (model, seed) may legitimately appear
+        # once per stratum, and those are different runs, not duplicates.
+        if existing.empty:
+            seen = set()
+        else:
+            strat = (existing["stratum"].fillna("") if "stratum" in existing.columns
+                     else [""] * len(existing))
+            seen = set(zip(existing["model_name"], existing["seed"], strat))
     except FileNotFoundError:
         seen = set()
 
-    typer.echo(f"discovered {len(specs)} model dir(s) under {ckpt_dir}:")
+    typer.echo(f"discovered {len(specs)} model dir(s) under {ckpt_dir}:"
+               + (f"  [stratum={stratum}]" if stratum else ""))
     todo = []
     for s in specs:
-        key = (s["model_name"], s["seed"])
+        key = (s["model_name"], s["seed"], stratum or "")
         if s["checkpoint"] is None:
             typer.secho(f"  SKIP {s['model_name']:24} (no checkpoint in {s['run_dir'].name})",
                         fg=typer.colors.YELLOW)
@@ -352,11 +409,13 @@ def run_eval_dir(
             exp_tag=f"loss_{s['model_name']}",
             config_yaml_path=s["config_yaml"], tile_metrics=tile_metrics,
             device=device, threshold=s["threshold"], max_tiles=max_tiles,
+            stratum=stratum, stratum_col=stratum_col,
         )
 
     if report:
         typer.echo("\n" + "=" * 70)
-        _run_report(store_dir, report_metrics, aggregation, n_boot=2000, out=out)
+        _run_report(store_dir, report_metrics, aggregation, n_boot=2000, out=out,
+                    stratum=stratum, stratum_col=stratum_col)
 
 
 @app.command()
@@ -368,10 +427,13 @@ def compare(
     n_boot: Annotated[int, typer.Option(help="Bootstrap resamples")] = 2000,
     seed: Annotated[int, typer.Option(help="Bootstrap RNG seed")] = 0,
     force: Annotated[bool, typer.Option(help="Compare even across different GT")] = False,
+    stratum: Annotated[Optional[str], typer.Option(help="Compare only within this stratum, e.g. Urban | PeriUrban | Rural")] = None,
+    stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
 ):
     """Paired bootstrap 95% CI + Wilcoxon signed-rank between two models.
 
     Seed-averages each unit first (one value per model/unit), then pairs on it.
+    ``--stratum`` restricts the pairing to that stratum's chips.
     """
     import numpy as np
 
@@ -379,13 +441,15 @@ def compare(
 
     _guard_comparable(store_dir, [model_a, model_b], force)
     df, unit = _load_metric_table(store_dir, metric)
+    df, resolved = _apply_stratum(df, store_dir, stratum, stratum_col)
     avg = df.groupby(["model_name", "chip_id"], as_index=False)[metric].mean()
     boot = bootstrap_paired_diff(
         avg, model_a, model_b, metric=metric, n_boot=n_boot, rng=np.random.default_rng(seed)
     )
     wil = wilcoxon_paired(avg, model_a, model_b, metric=metric)
     verdict = "significant" if wil["p_value"] < 0.05 else "not significant"
-    typer.echo(f"{model_a} vs {model_b} on seed-averaged per-{unit} {metric}:")
+    typer.echo(f"{model_a} vs {model_b} on seed-averaged per-{unit} {metric}"
+               + (f" [stratum={resolved}]" if resolved else "") + ":")
     typer.echo(
         f"  bootstrap  diff = {boot['diff_mean']:+.4f}  "
         f"95% CI [{boot['ci_lo']:+.4f}, {boot['ci_hi']:+.4f}]  n_pairs = {boot['n_pairs']}"
@@ -424,12 +488,60 @@ def report(
     aggregation: Annotated[str, typer.Option(help="micro or macro cross-seed aggregation")] = "micro",
     n_boot: Annotated[int, typer.Option(help="Bootstrap resamples for pairwise")] = 2000,
     out: Annotated[Optional[Path], typer.Option(help="Write the report to .md or .csv as well")] = None,
+    stratum: Annotated[Optional[str], typer.Option(help="Report only this stratum, e.g. Urban | PeriUrban | Rural. Slices the existing store — no re-inference.")] = None,
+    stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
+    by_stratum: Annotated[bool, typer.Option(help="Report every stratum in turn (overrides --stratum)")] = False,
 ):
-    """Per-model cross-seed mean +/- std + all pairwise comparisons, per metric."""
-    _run_report(store_dir, list(metric or ("iou", "f1")), aggregation, n_boot, out)
+    """Per-model cross-seed mean +/- std + all pairwise comparisons, per metric.
+
+    ``--stratum Urban`` restricts the report to that stratum; ``--by-stratum``
+    loops over all of them. Both slice the store you already have -- the chips
+    are per-tile, so this is the same arithmetic as a stratified eval without
+    re-running inference.
+    """
+    metrics = list(metric or ("iou", "f1"))
+    if by_stratum:
+        for s in _store_strata(store_dir, stratum_col):
+            typer.secho(f"\n{'#' * 70}\n# stratum: {s}\n{'#' * 70}", fg=typer.colors.CYAN)
+            _run_report(store_dir, metrics, aggregation, n_boot,
+                        _stratum_out(out, s), stratum=s, stratum_col=stratum_col)
+        return
+    _run_report(store_dir, metrics, aggregation, n_boot, out,
+                stratum=stratum, stratum_col=stratum_col)
 
 
-def _run_report(store_dir, metrics, aggregation, n_boot, out):
+def _store_strata(store_dir, stratum_col: Optional[str]) -> list[str]:
+    """Strata present in a store, from the chips column or the split CSV join."""
+    from benchmarking import strata as _s
+    from benchmarking.store import load_chips, load_runs
+
+    chips = load_chips(store_dir)
+    if "stratum" not in chips.columns or chips["stratum"].fillna("").eq("").all():
+        runs = load_runs(store_dir)
+        pairs = {(r["dataset_dir"], r["dataset_split"]) for _, r in runs.iterrows()}
+        if len(pairs) != 1:
+            raise typer.BadParameter(
+                "--by-stratum needs one dataset/split in the store to join "
+                f"against, found {sorted(pairs)}"
+            )
+        dsdir, split = pairs.pop()
+        chips = _s.annotate_chips(chips, dsdir, split, stratum_col or _s.DEFAULT_COL)
+    found = sorted(c for c in chips["stratum"].dropna().astype(str).unique() if c)
+    if not found:
+        raise typer.BadParameter("no strata found in this store")
+    return found
+
+
+def _stratum_out(out: Optional[Path], stratum: str) -> Optional[Path]:
+    """Per-stratum output path, so --by-stratum doesn't overwrite one file."""
+    if out is None:
+        return None
+    out = Path(out)
+    return out.with_name(f"{out.stem}_{stratum}{out.suffix}")
+
+
+def _run_report(store_dir, metrics, aggregation, n_boot, out,
+                stratum=None, stratum_col=None):
     """Shared body of the ``report`` command; also chained from ``eval-dir``."""
     import numpy as np
     import pandas as pd
@@ -442,16 +554,22 @@ def _run_report(store_dir, metrics, aggregation, n_boot, out):
     )
 
     md_parts, csv_rows = [], []
+    label = ""
 
     for met in metrics:
         df, unit = _load_metric_table(store_dir, met)
+        df, resolved = _apply_stratum(df, store_dir, stratum, stratum_col)
+        if resolved:
+            label = f" [stratum={resolved}]"
         models = sorted(df["model_name"].unique())
         if len(models) > 1:
             # Report only warns (force=True): it summarises whatever exists.
             _guard_comparable(store_dir, models, force=True)
 
         agg = aggregation if met in _MICRO_DERIVABLE and "tp" in df.columns else "macro"
-        typer.echo(f"\n== per-model {met} (mean +/- std across seeds, {agg}, per-{unit}) ==")
+        n_units = df["chip_id"].nunique() if "chip_id" in df.columns else len(df)
+        typer.echo(f"\n== per-model {met} (mean +/- std across seeds, {agg}, "
+                   f"per-{unit}){label}  n_{unit}s={n_units} ==")
         summary_rows = []
         for m in models:
             try:
@@ -459,7 +577,8 @@ def _run_report(store_dir, metrics, aggregation, n_boot, out):
                 typer.echo(f"  {m:24} {o['mean']:.4f} +/- {o['std']:.4f}  (n_seeds={o['n_seeds']})")
                 summary_rows.append([m, f"{o['mean']:.4f}", f"{o['std']:.4f}", o["n_seeds"]])
                 csv_rows.append({"metric": met, "model": m, "mean": o["mean"],
-                                 "std": o["std"], "n_seeds": o["n_seeds"]})
+                                 "std": o["std"], "n_seeds": o["n_seeds"],
+                                 "stratum": resolved or "all"})
             except ValueError as e:
                 typer.echo(f"  {m:24} <{e}>")
 
@@ -481,7 +600,7 @@ def _run_report(store_dir, metrics, aggregation, n_boot, out):
                                   f"[{boot['ci_lo']:+.4f}, {boot['ci_hi']:+.4f}]",
                                   f"{wil['p_value']:.3g}", sig.strip() or ""])
 
-        md_parts.append(f"## {met} ({agg}, per-{unit})\n\n"
+        md_parts.append(f"## {met} ({agg}, per-{unit}){label}\n\n"
                         + _md_table(["model", "mean", "std", "n_seeds"], summary_rows))
         if pair_rows:
             md_parts.append(_md_table(["model A", "model B", "diff", "95% CI", "p", "sig"],
