@@ -171,8 +171,8 @@ LR_MIN="${LR_MIN:-1e-5}"
 LR_MAX="${LR_MAX:-1e-2}"
 LR_SR_MIN="${LR_SR_MIN:-1e-7}"   # searched only when SR is learned & unfrozen
 LR_SR_MAX="${LR_SR_MAX:-1e-3}"
-POS_WEIGHT_MIN="${POS_WEIGHT_MIN:-1.0}"
-POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-15.0}"
+POS_WEIGHT_MIN="${POS_WEIGHT_MIN:-3.352251180486363}"
+POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-3.352251180486363}"
 ENCODERS="${ENCODERS:-resnet34}"      # NOT searched: encoder constancy is the control
 BATCH_SIZES="${BATCH_SIZES:-2 4 8}"   # 512px UNet stage is memory-heavy
 
@@ -200,10 +200,17 @@ REFIT_GPUS="${REFIT_GPUS:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_joint_final}"
 
 # --- Loss (unet.losses.build_loss; empty = legacy Dice + pos-weighted BCE) ---
-LOSS_ARM="${LOSS_ARM:-wbce}"
+LOSS_ARM="${LOSS_ARM:-gap_tl_ce}"
 PSTAR="${PSTAR:-bce}"
 GAP_R="${GAP_R:-4}";                 GAP_K="${GAP_K:-60.0}"
-TL_ELL="${TL_ELL:-5}";               TL_THETA="${TL_THETA:-0.375}"
+TL_ELL="${TL_ELL:-5}";               TL_THETA="${TL_THETA:-0.5409065645350193}"
+GAP_THETA="${GAP_THETA:-0.38105240274638613}"        # official gap binarization
+# R-SERIES RULE: the loss is a FROZEN CONTROL across R-arms. Pin the pilot
+# winner's config at submit time: SEARCH_THETAS=false TL_THETA=<θ*>
+# GAP_THETA=<θ*> POS_WEIGHT_MIN=<λ*> POS_WEIGHT_MAX=<λ*> (min==max = a
+# constant). Leaving SEARCH_THETAS=true re-searches loss hps per R-arm and
+# confounds the SR comparison.
+SEARCH_THETAS="${SEARCH_THETAS:-true}"
 TVERSKY_ALPHA="${TVERSKY_ALPHA:-0.7}"
 CL_ALPHA="${CL_ALPHA:-0.3}";         CL_ITERS="${CL_ITERS:-5}"
 SKEL_W="${SKEL_W:-1.0}";             SKEL_RADIUS="${SKEL_RADIUS:-1}"
@@ -218,13 +225,18 @@ if [ -n "$LOSS_ARM" ]; then
   LOSS_ARGS_TUNE=(--loss-arm "$LOSS_ARM" --pstar "$PSTAR"
                   --gap-r "$GAP_R" --gap-k "$GAP_K"
                   --tl-ell "$TL_ELL" --tl-theta "$TL_THETA"
+                  --gap-theta "$GAP_THETA" --search-thetas "$SEARCH_THETAS"
                   --tversky-alpha "$TVERSKY_ALPHA"
                   --cl-alpha "$CL_ALPHA" --cl-iters "$CL_ITERS"
                   --skel-w "$SKEL_W" --skel-radius "$SKEL_RADIUS"
                   --warmup-start "$WARMUP_START" --warmup-ramp "$WARMUP_RAMP")
+  # NB tl_theta/gap_theta/pos_weight are NOT in the fit belt: the tune pins
+  # them (searched or fixed) into best_params.yaml, and an explicit --model.*
+  # here would override the pinned values with the env defaults. The overlay
+  # is authoritative for those dims. (Ported from the LS twin, 2026-08-04.)
   LOSS_ARGS_FIT=(--model.loss_arm "$LOSS_ARM" --model.pstar "$PSTAR"
                  --model.gap_r "$GAP_R" --model.gap_k "$GAP_K"
-                 --model.tl_ell "$TL_ELL" --model.tl_theta "$TL_THETA"
+                 --model.tl_ell "$TL_ELL"
                  --model.tversky_alpha "$TVERSKY_ALPHA"
                  --model.cl_alpha "$CL_ALPHA" --model.cl_iters "$CL_ITERS"
                  --model.sr_w "$SKEL_W" --model.sr_radius "$SKEL_RADIUS"
