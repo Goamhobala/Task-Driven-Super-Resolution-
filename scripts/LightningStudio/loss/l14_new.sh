@@ -6,7 +6,7 @@
 #   bash scripts/LightningStudio/run.sh loss/l14_new.sh STAGE=fit PSTAR=wbce
 set -euo pipefail
 LOSS_ARM="pstar_lcdice"
-PSTAR="${PSTAR:-wbce}"      # <- Phase A winner P*
+PSTAR="${PSTAR:-gap_tl_ce}"   # Phase A winner (benched at θ*, val)
 # mix_w is FIXED at build_loss's 0.5 for the pilot (JointSRUNetLightning does
 # not expose it; thread it through sr/model.py if Phase B ever searches it).
 
