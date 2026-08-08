@@ -422,10 +422,17 @@ if [ "$STAGE" = "bench" ]; then
     SWEEP_EXTRA=()
     [ "${REFRESH_SWEEP:-0}" = "1" ] && SWEEP_EXTRA=(--refresh-sweep)
     if [ ! -f "${RUN_DIR}/sweep.json" ] || [ "${REFRESH_SWEEP:-0}" = "1" ]; then
+      # Every path is passed EXPLICITLY. The script falls back to its author's
+      # laptop paths when these are unset, and STORE_DIR above is a plain
+      # assignment (not exported), so it would not reach a child process.
+      # --skip-bench means the store is never written here — the bench below
+      # does that — but pass it anyway so nothing can default to /Volumes/...
       python "$REPO_DIR/scripts/local/theta_sweep_bench.py" \
         --run-dir "$RUN_DIR" --model-name "$MODEL_NAME" \
         --exp-tag "$EXP_TAG" --seed "$SEED" \
         --dataset-dir "$DATASET_DIR" \
+        --runs-dir "$RUNS_ROOT" \
+        --store-dir "${STORE_DIR}_theta" \
         ${SEN2SR_DIR:+--sen2sr-dir "$SEN2SR_DIR"} \
         --select-on "${SELECT_ON:-iou_mean}" \
         --skip-bench ${SWEEP_EXTRA[@]+"${SWEEP_EXTRA[@]}"}

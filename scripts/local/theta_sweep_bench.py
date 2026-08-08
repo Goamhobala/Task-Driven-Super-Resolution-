@@ -81,10 +81,36 @@ from pathlib import Path
 # Defaults — these mirror scripts/LightningStudio/sr/_stages_tv.sh in pilot
 # (holdout) mode. Change them here and the emitted rows stop matching the
 # existing shards, so don't, unless you mean to.
+#
+# PATHS FOLLOW THE ORCHESTRATOR'S ENVIRONMENT. All three pilot orchestrators
+# (LightningStudio/hpc `_stages_tv.sh`, `pilot_kaggle.sh`, `pilot_modal.sh`)
+# export the same three variables, so exporting them once — or running inside
+# the Modal container, where modal_app._base_env sets them — is enough to point
+# this script at the right place. Local laptop paths are the last resort.
+#
+#   DATASET_DIR  the dir CONTAINING splits/ (local: …/ROSA_New/ROSADataset,
+#                Modal: /data/ROSA_New — same meaning, different layout depth)
+#   RUNS_ROOT    where the sr_<exp>_<tag>_holdout_seed<N>/ dirs live
+#   SEN2SR_DIR   SR weights, for --sen2sr-dir (r0 is bicubic and needs none)
+#
+# STORE_DIR is deliberately NOT taken as-is: on Modal it points at
+# benchmarks_loss_pilot, which already holds the θ=0.5 shards, and θ* rows must
+# not land in the same store (the store is append-only, and mixing protocols in
+# one table is exactly what the amendment log warns against). So a bare
+# STORE_DIR gets a `_theta` suffix; set THETA_STORE_DIR to override outright.
 # --------------------------------------------------------------------------- #
-DEF_RUNS_DIR = "/Volumes/MAC_KIOXIA/Data/runslightning"
-DEF_DATASET = "/Volumes/MAC_KIOXIA/Data/ROSA_New/ROSADataset"
-DEF_STORE = "/Volumes/MAC_KIOXIA/Data/benchmarks_loss_pilot_theta"
+def _default_store() -> str:
+    if os.environ.get("THETA_STORE_DIR"):
+        return os.environ["THETA_STORE_DIR"]
+    if os.environ.get("STORE_DIR"):
+        return os.environ["STORE_DIR"].rstrip("/") + "_theta"
+    return "/Volumes/MAC_KIOXIA/Data/benchmarks_loss_pilot_theta"
+
+
+DEF_RUNS_DIR = os.environ.get("RUNS_ROOT") or "/Volumes/MAC_KIOXIA/Data/runslightning"
+DEF_DATASET = os.environ.get("DATASET_DIR") or "/Volumes/MAC_KIOXIA/Data/ROSA_New/ROSADataset"
+DEF_STORE = _default_store()
+DEF_SEN2SR = os.environ.get("SEN2SR_DIR") or None
 
 SPLIT = "val"                     # pilot decision split; test stays unseen
 MODEL_FAMILY = "sr"
@@ -288,7 +314,8 @@ def already_in_store(store_dir: Path, model_name: str, seed: int) -> bool:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--runs-dir", default=DEF_RUNS_DIR)
+    p.add_argument("--runs-dir", default=DEF_RUNS_DIR,
+                   help="Dir of run dirs to discover [default: $RUNS_ROOT]")
     p.add_argument("--run-dir", default=None,
                    help="Explicit SINGLE run dir — bypasses --runs-dir discovery "
                         "and the TAGS name-parsing entirely (this is how the "
@@ -297,14 +324,19 @@ def main(argv=None) -> int:
     p.add_argument("--model-name", default=None, help="with --run-dir: the bench model_name")
     p.add_argument("--exp-tag", default=None, help="with --run-dir: the bench exp_tag")
     p.add_argument("--seed", type=int, default=0, help="with --run-dir: the run's seed")
-    p.add_argument("--dataset-dir", default=DEF_DATASET)
-    p.add_argument("--store-dir", default=DEF_STORE)
+    p.add_argument("--dataset-dir", default=DEF_DATASET,
+                   help="Dataset root containing splits/ [default: $DATASET_DIR]")
+    p.add_argument("--store-dir", default=DEF_STORE,
+                   help="Where the θ* bench rows go [default: $THETA_STORE_DIR, else "
+                        "${STORE_DIR}_theta — never STORE_DIR itself, which holds the "
+                        "θ=0.5 shards]")
     p.add_argument("--arms", default="", help="space/comma list of loss tags (default: all found)")
     p.add_argument("--device", default=None, help="mps | cuda | cpu (default: auto)")
-    p.add_argument("--sen2sr-dir", default=None,
+    p.add_argument("--sen2sr-dir", default=DEF_SEN2SR,
                    help="Override the checkpoint's baked-in SR weights dir. r0 arms are "
                         "bicubic and need none, but the hparams still record the TRAINING "
-                        "node's path — set this if load_from_checkpoint goes looking for it.")
+                        "node's path — set this if load_from_checkpoint goes looking for it. "
+                        "[default: $SEN2SR_DIR]")
     p.add_argument("--select-on", default="iou_mean",
                    choices=["iou_mean", "f1_mean", "iou_micro", "f1_micro"])
     p.add_argument("--lo", type=float, default=0.05)
@@ -370,9 +402,18 @@ def main(argv=None) -> int:
     unusable = [s for s in specs if s["checkpoint"] is None]
     usable, dupes = resolve_duplicates(usable, args.prefer_platform)
 
-    print(f"runs-dir   : {runs_dir}")
-    print(f"dataset    : {args.dataset_dir}")
-    print(f"store      : {store_dir}")
+    def _src(var: str) -> str:
+        return f"  [${var}]" if os.environ.get(var) else ""
+
+    print(f"runs-dir   : {runs_dir}{_src('RUNS_ROOT')}")
+    print(f"dataset    : {args.dataset_dir}{_src('DATASET_DIR')}")
+    if args.skip_bench:
+        print("store      : (unused — --skip-bench writes only sweep.json)")
+    else:
+        print(f"store      : {store_dir}"
+              f"{_src('THETA_STORE_DIR') or (_src('STORE_DIR') and '  [$STORE_DIR + _theta]')}")
+    if args.sen2sr_dir:
+        print(f"sen2sr     : {args.sen2sr_dir}{_src('SEN2SR_DIR')}")
     print(f"select θ*  : {args.select_on}")
     print(f"θ grid     : {args.lo}..{args.hi} step {args.step} "
           f"({len(theta_grid(args.step, args.lo, args.hi))} points, one pass)")
@@ -409,7 +450,12 @@ def main(argv=None) -> int:
     if args.device == "mps":
         print("  NB benchmarking.runner._sync() only synchronises CUDA, so the "
               "`inference_ms` column is meaningless on mps. Metrics are unaffected.")
-    store_dir.mkdir(parents=True, exist_ok=True)
+    # Only touch the store if something is actually going to be written to it.
+    # --skip-bench (how _stages_tv.sh drives the sweep) writes sweep.json into
+    # the RUN dir and nothing else, so creating the store there would fail on a
+    # default path that does not exist on this machine — for no reason at all.
+    if not args.skip_bench:
+        store_dir.mkdir(parents=True, exist_ok=True)
 
     benched, skipped, failed = [], [], []
     for i, spec in enumerate(todo, 1):
