@@ -211,6 +211,14 @@ GAP_THETA="${GAP_THETA:-0.38105240274638613}"        # official gap binarization
 # constant). Leaving SEARCH_THETAS=true re-searches loss hps per R-arm and
 # confounds the SR comparison.
 SEARCH_THETAS="${SEARCH_THETAS:-true}"
+# mix_w — the P*<->region ratio of the pstar_* compounds (2026-08-05). Searched
+# for those arms only (consumption-gated in sr.tune, same rule as the θs); the
+# bce_dice anchor stays frozen at 0.5/0.5 by build_loss's design. Kept in sync
+# with the Lightning twin.
+MIX_W="${MIX_W:-0.5}"                   # fixed value when SEARCH_MIX_W=false
+SEARCH_MIX_W="${SEARCH_MIX_W:-false}"
+MIX_W_MIN="${MIX_W_MIN:-0.25}"
+MIX_W_MAX="${MIX_W_MAX:-0.75}"
 TVERSKY_ALPHA="${TVERSKY_ALPHA:-0.7}"
 CL_ALPHA="${CL_ALPHA:-0.3}";         CL_ITERS="${CL_ITERS:-5}"
 SKEL_W="${SKEL_W:-1.0}";             SKEL_RADIUS="${SKEL_RADIUS:-1}"
@@ -226,6 +234,8 @@ if [ -n "$LOSS_ARM" ]; then
                   --gap-r "$GAP_R" --gap-k "$GAP_K"
                   --tl-ell "$TL_ELL" --tl-theta "$TL_THETA"
                   --gap-theta "$GAP_THETA" --search-thetas "$SEARCH_THETAS"
+                  --mix-w "$MIX_W" --search-mix-w "$SEARCH_MIX_W"
+                  --mix-w-min "$MIX_W_MIN" --mix-w-max "$MIX_W_MAX"
                   --tversky-alpha "$TVERSKY_ALPHA"
                   --cl-alpha "$CL_ALPHA" --cl-iters "$CL_ITERS"
                   --skel-w "$SKEL_W" --skel-radius "$SKEL_RADIUS"

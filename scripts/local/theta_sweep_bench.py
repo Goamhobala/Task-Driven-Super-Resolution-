@@ -123,10 +123,17 @@ FINAL_CKPT = Path("checkpoints") / "unet_s2rosa_jointsr_final.ckpt"
 # Known loss tags, longest-first so `gap_t2t4_ce` wins over `t2_ce` etc. when
 # splitting `sr_r0_new_<tag>_holdout`. Mirrors the TAG tables in the three
 # pilot orchestrators.
+_BASE_TAGS = [
+    "bce", "gap_ce", "tl_ce", "gap_tl_ce", "wbce", "sdice", "lcdice",
+    "balance_ce", "dice", "t2_ce", "t4_ce", "gap_t2_ce", "gap_t4_ce",
+    "gap_t2t4_ce", "pstar_dice", "pstar_sdice", "pstar_lcdice",
+    "pstar_tversky", "bce_dice", "focal_tversky",
+]
+# Phase C appends '+cldice' / '+skelrec' to any base, and _stages_tv.sh
+# sanitises '+' to '-' when it builds LOSS_TAG. Generated rather than listed so
+# the two stay in step.
 TAGS = sorted(
-    ["bce", "gap_ce", "tl_ce", "gap_tl_ce", "wbce", "sdice", "lcdice",
-     "balance_ce", "dice", "t2_ce", "t4_ce", "gap_t2_ce", "gap_t4_ce",
-     "gap_t2t4_ce", "pstar_dice", "pstar_sdice", "pstar_lcdice"],
+    _BASE_TAGS + [f"{b}-{s}" for b in _BASE_TAGS for s in ("cldice", "skelrec")],
     key=len, reverse=True,
 )
 

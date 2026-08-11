@@ -130,6 +130,7 @@ def build_objective(args, base_cfg: dict):
         tversky_alpha=args.tversky_alpha, cl_alpha=args.cl_alpha,
         cl_iters=args.cl_iters, sr_w=args.skel_w, sr_radius=args.skel_radius,
         warmup_start=args.warmup_start, warmup_ramp=args.warmup_ramp,
+        mix_w=args.mix_w,
     )
     if args.length:
         data_cfg["length"] = args.length   # tune-time patches/epoch budget
@@ -141,7 +142,7 @@ def build_objective(args, base_cfg: dict):
     l2sp_lambda = (args.l2sp_lambda if args.l2sp_lambda is not None
                    else float(model_cfg.get("l2sp_lambda", 0.0)))
     search_pos_weight = True
-    search_tl_theta = search_gap_theta = False
+    search_tl_theta = search_gap_theta = search_mix_w = False
     if loss_arm:
         base = loss_arm.partition("+")[0]
         pixel = args.pstar if base.startswith("pstar_") else base
@@ -154,9 +155,14 @@ def build_objective(args, base_cfg: dict):
             pixel in ("tl_ce", "gap_tl_ce", "t2_ce", "t4_ce") or pixel in combo)
         search_gap_theta = thetas_on and (
             pixel in ("gap_ce", "gap_tl_ce") or pixel in combo)
+        #   * mix_w — the P*<->region ratio of the pstar_* compounds. Searched
+        #     for those only: bce_dice is the frozen 0.5/0.5 anchor by design,
+        #     and every other base has no region slot to trade against.
+        search_mix_w = (args.search_mix_w != "false"
+                        and base.startswith("pstar_"))
         print(f"[sr.tune] loss_arm={loss_arm!r} (pixel slot {pixel!r}): "
               f"search pos_weight={search_pos_weight} tl_theta={search_tl_theta} "
-              f"gap_theta={search_gap_theta}")
+              f"gap_theta={search_gap_theta} mix_w={search_mix_w}")
         if "+" in loss_arm and args.warmup_start >= args.max_epochs:
             print(f"[sr.tune] WARNING: warmup_start={args.warmup_start} >= "
                   f"max_epochs={args.max_epochs}: the skeleton slot never "
@@ -182,6 +188,9 @@ def build_objective(args, base_cfg: dict):
         if search_gap_theta:
             trial_hp["gap_theta"] = trial.suggest_float(
                 "gap_theta", args.theta_min, args.theta_max)
+        if search_mix_w:
+            trial_hp["mix_w"] = trial.suggest_float(
+                "mix_w", args.mix_w_min, args.mix_w_max)
 
         # Training seed: the SAME --train-seed for EVERY trial (so a trial's
         # score doesn't depend on which parallel worker ran it); --seed only
@@ -419,6 +428,21 @@ def parse_args(argv=None):
                          "disagree on θ, so it is a per-arm hyperparameter).")
     ap.add_argument("--theta-min", type=float, default=0.3)
     ap.add_argument("--theta-max", type=float, default=0.7)
+    ap.add_argument("--mix-w", type=float, default=0.5,
+                    help="P*<->region mixing ratio for pstar_* compounds: "
+                         "L = (1-mix_w)*P* + mix_w*region. Fixed value when "
+                         "--search-mix-w false; always pinned into the overlay.")
+    ap.add_argument("--search-mix-w", default="true", choices=["true", "false"],
+                    help="Search mix_w for pstar_* compound arms (2026-08-05). "
+                         "It is the compound's one genuinely free parameter — "
+                         "no paper default exists — and adding a region term "
+                         "changes where the optimum sits, so a compound "
+                         "compared at a frozen 0.5 is not being compared at "
+                         "its best. Consumption-gated like the θs: ignored by "
+                         "non-compound arms and by the bce_dice anchor, which "
+                         "build_loss deliberately freezes at 0.5/0.5.")
+    ap.add_argument("--mix-w-min", type=float, default=0.25)
+    ap.add_argument("--mix-w-max", type=float, default=0.75)
     ap.add_argument("--length", type=int, default=None,
                     help="Tune-time patches/epoch (data.length override); the "
                          "trials rank configs, they don't need full epochs — "
@@ -561,10 +585,11 @@ def main(argv=None):
         tversky_alpha=args.tversky_alpha, cl_alpha=args.cl_alpha,
         cl_iters=args.cl_iters, sr_w=args.skel_w, sr_radius=args.skel_radius,
         warmup_start=args.warmup_start, warmup_ramp=args.warmup_ramp,
+        mix_w=args.mix_w,
     )
-    # Searched θs override the fixed defaults in the pinned overlay (the best
-    # trial's values, like lr/pos_weight/batch).
-    for _k in ("tl_theta", "gap_theta"):
+    # Searched θs and mix_w override the fixed defaults in the pinned overlay
+    # (the best trial's values, like lr/pos_weight/batch).
+    for _k in ("tl_theta", "gap_theta", "mix_w"):
         if _k in study.best_params:
             loss_hp[_k] = study.best_params[_k]
     overlay_path = write_best_overlay(study, out_dir, encoder_weights, upsampler,

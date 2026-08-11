@@ -128,6 +128,13 @@ GAP_R="${GAP_R:-4}";                 GAP_K="${GAP_K:-60.0}"
 TL_ELL="${TL_ELL:-5}";               TL_THETA="${TL_THETA:-0.375}"
 GAP_THETA="${GAP_THETA:-0.5}"        # official gap binarization
 SEARCH_THETAS="${SEARCH_THETAS:-true}"  # tune searches θs for map-building arms
+# mix_w — the P*<->region ratio of the pstar_* compounds (2026-08-05). Searched
+# for those arms only (consumption-gated in sr.tune, same rule as the θs); the
+# bce_dice anchor stays frozen at 0.5/0.5 by build_loss's design.
+MIX_W="${MIX_W:-0.5}"                   # fixed value when SEARCH_MIX_W=false
+SEARCH_MIX_W="${SEARCH_MIX_W:-true}"
+MIX_W_MIN="${MIX_W_MIN:-0.25}"
+MIX_W_MAX="${MIX_W_MAX:-0.75}"
 TUNE_LENGTH="${TUNE_LENGTH:-}"       # tune-time patches/epoch (cost lever)
 FIT_LENGTH="${FIT_LENGTH:-}"         # fit-time patches/epoch (between-arm constant!)
 TVERSKY_ALPHA="${TVERSKY_ALPHA:-0.7}"
@@ -145,6 +152,8 @@ if [ -n "$LOSS_ARM" ]; then
                   --gap-r "$GAP_R" --gap-k "$GAP_K"
                   --tl-ell "$TL_ELL" --tl-theta "$TL_THETA"
                   --gap-theta "$GAP_THETA" --search-thetas "$SEARCH_THETAS"
+                  --mix-w "$MIX_W" --search-mix-w "$SEARCH_MIX_W"
+                  --mix-w-min "$MIX_W_MIN" --mix-w-max "$MIX_W_MAX"
                   --tversky-alpha "$TVERSKY_ALPHA"
                   --cl-alpha "$CL_ALPHA" --cl-iters "$CL_ITERS"
                   --skel-w "$SKEL_W" --skel-radius "$SKEL_RADIUS"

@@ -17,6 +17,12 @@ dependencies = [
 [project.optional-dependencies]
 sentinel2 = [
     "sknw",
+    # sknw declares `numba` unpinned. Modern numba caps numpy<2.5, so on a fresh
+    # resolve where something else drags numpy to 2.5 the solver backtracks numba
+    # all the way to 0.53.1 -> llvmlite 0.36.0, which refuses to build on Python
+    # >=3.10 (hard version guard in its setup.py). This floor keeps numba modern
+    # and lets numpy settle at 2.4.x instead. Verified on linux and macos/3.12.
+    "numba>=0.62",
     "scikit-image",
     "opencv-python",
     "earthengine-api>=1.7.22",
