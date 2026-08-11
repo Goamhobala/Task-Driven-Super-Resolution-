@@ -1,6 +1,6 @@
 """PyTorch port of the SR4RS generator (Cresson 2020, TF1 -> torch).
 
-Architecture (verified against the checkpoint's graph, not guessed):
+Architecture (verified against the checkpoint's graph:
   stem   conv 9x9 (4->64) + bias -> LeakyReLU                       -> E
   16x    ResBlock(64): conv3x3+b -> LReLU -> PixelNorm ->
                        conv3x3+b -> PixelNorm -> (+ block input)
