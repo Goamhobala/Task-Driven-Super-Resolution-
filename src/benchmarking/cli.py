@@ -31,6 +31,38 @@ _GT_KEYS = ("gt_res_m", "label_source", "mask_source", "mask_dirname",
             "dataset_split", "cell_m", "stratum")
 
 
+def _with_stratum(df, store_dir, stratum_col: Optional[str]):
+    """Ensure every row has a ``stratum``, filling only the ones that lack it.
+
+    A store can be MIXED: shards written before runner stamped a per-chip
+    stratum have none, newer shards do. Treating that all-or-nothing would
+    silently drop the older arms from a stratified report, so fill per-row --
+    the tiles table never carries the column and always takes the join path.
+    """
+    from benchmarking import strata as _s
+    from benchmarking.store import load_runs
+
+    col = stratum_col or _s.DEFAULT_COL
+    have = df["stratum"] if "stratum" in df.columns else None
+    missing = have.isna() | have.astype(str).eq("") if have is not None else None
+    if have is not None and not missing.any():
+        return df
+
+    runs = load_runs(store_dir)
+    pairs = {(r["dataset_dir"], r["dataset_split"]) for _, r in runs.iterrows()}
+    if len(pairs) != 1:
+        raise typer.BadParameter(
+            "--stratum needs one dataset/split in the store to join against, "
+            f"found {sorted(pairs)}"
+        )
+    dsdir, split = pairs.pop()
+    joined = _s.annotate_chips(df.drop(columns=["stratum"], errors="ignore"),
+                               dsdir, split, col)["stratum"]
+    out = df.copy()
+    out["stratum"] = joined if have is None else have.where(~missing, joined)
+    return out
+
+
 def _apply_stratum(df, store_dir, stratum: Optional[str], stratum_col: Optional[str]):
     """Restrict an already-loaded metric table to one stratum.
 
@@ -41,23 +73,10 @@ def _apply_stratum(df, store_dir, stratum: Optional[str], stratum_col: Optional[
     """
     if not stratum:
         return df, None
+    df = _with_stratum(df, store_dir, stratum_col)
     from benchmarking import strata as _s
-    from benchmarking.store import load_runs
 
-    col = stratum_col or _s.DEFAULT_COL
-    if "stratum" not in df.columns or df["stratum"].isna().all() or (df["stratum"] == "").all():
-        # Legacy store: recover the mapping from the dataset the runs point at.
-        runs = load_runs(store_dir)
-        pairs = {(r["dataset_dir"], r["dataset_split"]) for _, r in runs.iterrows()}
-        if len(pairs) != 1:
-            raise typer.BadParameter(
-                "--stratum needs one dataset/split in the store to join against, "
-                f"found {sorted(pairs)}"
-            )
-        dsdir, split = pairs.pop()
-        df = _s.annotate_chips(df, dsdir, split, col)
-    choices = sorted(df["stratum"].dropna().astype(str).unique())
-    choices = [c for c in choices if c]
+    choices = sorted(c for c in df["stratum"].dropna().astype(str).unique() if c)
     try:
         resolved = _s.resolve(stratum, choices)
     except ValueError as e:
@@ -512,20 +531,9 @@ def report(
 
 def _store_strata(store_dir, stratum_col: Optional[str]) -> list[str]:
     """Strata present in a store, from the chips column or the split CSV join."""
-    from benchmarking import strata as _s
-    from benchmarking.store import load_chips, load_runs
+    from benchmarking.store import load_chips
 
-    chips = load_chips(store_dir)
-    if "stratum" not in chips.columns or chips["stratum"].fillna("").eq("").all():
-        runs = load_runs(store_dir)
-        pairs = {(r["dataset_dir"], r["dataset_split"]) for _, r in runs.iterrows()}
-        if len(pairs) != 1:
-            raise typer.BadParameter(
-                "--by-stratum needs one dataset/split in the store to join "
-                f"against, found {sorted(pairs)}"
-            )
-        dsdir, split = pairs.pop()
-        chips = _s.annotate_chips(chips, dsdir, split, stratum_col or _s.DEFAULT_COL)
+    chips = _with_stratum(load_chips(store_dir), store_dir, stratum_col)
     found = sorted(c for c in chips["stratum"].dropna().astype(str).unique() if c)
     if not found:
         raise typer.BadParameter("no strata found in this store")
