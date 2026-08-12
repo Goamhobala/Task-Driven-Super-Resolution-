@@ -300,3 +300,64 @@ def test_grid_partitions_ragged_tiles():
     assert sum(h * w for *_, h, w in cells) == 80 * 96
     ids = {(ri, ci) for ri, ci, *_ in cells}
     assert ids == {(r, c) for r in range(3) for c in range(3)}
+
+
+# --------------------------------------------------------------------------- #
+# buffered F1 (benchmarking.buffered_metrics) through the real scoring path
+# --------------------------------------------------------------------------- #
+def test_buffer_px_adds_columns_and_is_sweepable(dataset, unet_ckpt, tmp_path):
+    """The columns must appear in BOTH modes, and — the part that matters —
+    sweep mode must produce them, because that is what lets theta_sweep_bench
+    select θ* on buffered F1. The tile-metric plugins cannot do this: they score
+    a stitched tile and evaluate() rejects them outright in sweep mode."""
+    store = tmp_path / "store"
+    evaluate(dataset_dir=dataset, checkpoint=unet_ckpt, model_name="buf", seed=0,
+             store_dir=store, model="unet", cell_m=CELL_M, check="first",
+             device="cpu", buffer_px=3)
+    chips = bstore.load_chips(store)
+    cols = {"buffered_f1", "buffered_precision", "buffered_recall"}
+    assert cols <= set(chips.columns)
+    for col in cols:
+        v = chips[col].dropna()
+        assert ((v >= 0) & (v <= 1)).all(), f"{col} out of range"
+
+    swept = evaluate(
+        dataset_dir=dataset, checkpoint=unet_ckpt, model_name="buf", seed=0,
+        store_dir=None, model="unet", cell_m=CELL_M, check="off", device="cpu",
+        sweep_thresholds=[0.3, 0.5, 0.7], buffer_px=3)
+    assert set(swept) == {0.3, 0.5, 0.7}
+    for df in swept.values():
+        assert cols <= set(df.columns)
+
+
+def test_buffered_f1_at_least_strict_f1(dataset, unet_ckpt, tmp_path):
+    """A buffer can only ever forgive, never punish: relaxing the match at
+    rho=3 must not score below the strict pixel F1 on the same chips. This is
+    the cheapest guard against the buffer being applied to the wrong mask."""
+    store = tmp_path / "store"
+    evaluate(dataset_dir=dataset, checkpoint=unet_ckpt, model_name="buf2", seed=0,
+             store_dir=store, model="unet", cell_m=CELL_M, check="off",
+             device="cpu", buffer_px=3)
+    chips = bstore.load_chips(store)
+    both = chips[chips["buffered_f1"].notna() & chips["f1"].notna()]
+    assert len(both) > 0
+    assert (both["buffered_f1"] >= both["f1"] - 1e-9).all()
+
+
+def test_sweep_gt_distance_cache_matches_uncached(dataset, unet_ckpt):
+    """The sweep hoists the GT distance transform out of the θ loop. Scoring one
+    θ via the sweep path and via the normal path must agree exactly."""
+    swept = evaluate(
+        dataset_dir=dataset, checkpoint=unet_ckpt, model_name="c", seed=0,
+        store_dir=None, model="unet", cell_m=CELL_M, check="off", device="cpu",
+        sweep_thresholds=[0.5], buffer_px=3)[0.5]
+    direct = evaluate(
+        dataset_dir=dataset, checkpoint=unet_ckpt, model_name="c", seed=0,
+        store_dir=None, model="unet", cell_m=CELL_M, check="off", device="cpu",
+        sweep_thresholds=[0.5], buffer_px=None)[0.5]
+    # same chips, same order
+    assert list(swept["chip_id"]) == list(direct["chip_id"])
+    assert swept["buffered_f1"].notna().any()
+    # and the pixel columns are untouched by the buffer flag
+    for col in ("iou", "f1", "tp", "fp", "fn"):
+        assert swept[col].to_numpy() == pytest.approx(direct[col].to_numpy())

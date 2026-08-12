@@ -350,9 +350,17 @@ def _accumulate(rows, out):
 
 
 def _rows_at_threshold(metas, probs, target, masks, threshold, ms_per_chip,
-                       canvases, scale):
+                       canvases, scale, buffer_px=None, gt_dists=None):
     """Score one same-sized batch at ONE θ -> rows; optionally stitch the
-    binary prediction + GT into the tile canvases for the tile-metric plugins."""
+    binary prediction + GT into the tile canvases for the tile-metric plugins.
+
+    ``buffer_px`` adds the buffered precision/recall/F1 columns (see
+    ``benchmarking.buffered_metrics``). Unlike the tile-metric plugins, these
+    are computed PER CHIP right here, which is what lets a θ sweep select on
+    them — the plugins run on stitched tiles and are rejected in sweep mode.
+    ``gt_dists`` carries the per-chip GT distance transforms, hoisted out of
+    the θ loop by the caller because the GT does not move as θ sweeps.
+    """
     counts = confusion_counts(probs, target, threshold=threshold, from_logits=False)
     metrics = pixel_metrics_from_counts(counts)
     pred_bin = (probs.squeeze(1).numpy() >= threshold)
@@ -360,7 +368,7 @@ def _rows_at_threshold(metas, probs, target, masks, threshold, ms_per_chip,
     for i, (tile_id, ri, ci, r0, c0, h, w) in enumerate(metas):
         tp, fp = counts.tp[i].item(), counts.fp[i].item()
         fn, tn = counts.fn[i].item(), counts.tn[i].item()
-        rows.append({
+        row = {
             "chip_id": f"{tile_id}_r{ri}_c{ci}", "tile_id": tile_id,
             "patch_row_id": ri, "patch_col_id": ci,
             "tp": tp, "fp": fp, "fn": fn, "tn": tn,
@@ -369,7 +377,14 @@ def _rows_at_threshold(metas, probs, target, masks, threshold, ms_per_chip,
             "recall": metrics["recall"][i].item(),
             "accuracy": _accuracy(tp, fp, fn, tn),
             "inference_ms": ms_per_chip,
-        })
+        }
+        if buffer_px is not None:
+            from benchmarking.buffered_metrics import buffered_scores
+
+            row.update(buffered_scores(
+                pred_bin[i], np.asarray(masks[i]), rho=buffer_px,
+                gt_dist=None if gt_dists is None else gt_dists[i]))
+        rows.append(row)
         if canvases is not None:
             pred_full, gt_full = canvases
             r, c = scale * r0, scale * c0
@@ -380,7 +395,7 @@ def _rows_at_threshold(metas, probs, target, masks, threshold, ms_per_chip,
 
 
 def _batch_rows(metas, probs, masks, threshold, ms_per_chip, canvases, scale,
-                sweep_thresholds=None):
+                sweep_thresholds=None, buffer_px=None):
     """Score one same-sized batch of chips -> rows.
 
     ``sweep_thresholds`` scores the SAME probs at every θ in the sequence and
@@ -391,15 +406,27 @@ def _batch_rows(metas, probs, masks, threshold, ms_per_chip, canvases, scale,
     """
     target = torch.from_numpy(np.stack(masks))
     if sweep_thresholds is not None:
+        # The GT is the same at every θ, so its distance transform is computed
+        # ONCE per batch instead of once per (chip, θ). With a 37-point grid
+        # that is the difference between 1 and 37 EDTs per chip, and it is the
+        # reason selecting θ on buffered F1 costs one inference pass like every
+        # other criterion.
+        gt_dists = None
+        if buffer_px is not None:
+            from benchmarking.buffered_metrics import gt_distance
+
+            gt_dists = [gt_distance(m) for m in masks]
         return {t: _rows_at_threshold(metas, probs, target, masks, t,
-                                      ms_per_chip, None, scale)
+                                      ms_per_chip, None, scale,
+                                      buffer_px=buffer_px, gt_dists=gt_dists)
                 for t in sweep_thresholds}
     return _rows_at_threshold(metas, probs, target, masks, threshold,
-                              ms_per_chip, canvases, scale)
+                              ms_per_chip, canvases, scale, buffer_px=buffer_px)
 
 
 def _score_tile_unet(pred: UNetPredictor, dataset_dir, row, cell_m, chip_px_opt,
-                     batch_size, plugins, check_gt, sweep_thresholds=None):
+                     batch_size, plugins, check_gt, sweep_thresholds=None,
+                     buffer_px=None):
     """Footprint cells over one tile, batching same-sized chips through the GPU."""
     tile_id = Path(row["image_path"]).stem
     img_path = Path(dataset_dir) / row["image_path"]
@@ -421,7 +448,7 @@ def _score_tile_unet(pred: UNetPredictor, dataset_dir, row, cell_m, chip_px_opt,
             _accumulate(rows, _batch_rows(
                 metas, probs, list(masks), pred.threshold,
                 ms / len(buf), canvases, scale=1,
-                sweep_thresholds=sweep_thresholds))
+                sweep_thresholds=sweep_thresholds, buffer_px=buffer_px))
             buf.clear()
 
         for ri, ci, r0, c0, h, w in _grid(H, W, chip_px):
@@ -442,7 +469,7 @@ def _score_tile_unet(pred: UNetPredictor, dataset_dir, row, cell_m, chip_px_opt,
 
 def _score_tile_sr(pred: SRPredictor, dataset_dir, row, cell_m, chip_px_opt,
                    mask_source, mask_dirname, plugins, check_gt,
-                   sweep_thresholds=None):
+                   sweep_thresholds=None, buffer_px=None):
     """Footprint cells over one tile; predict at ``scale`` x, score against HR GT."""
     from affine import Affine
 
@@ -467,7 +494,7 @@ def _score_tile_sr(pred: SRPredictor, dataset_dir, row, cell_m, chip_px_opt,
             _accumulate(rows, _batch_rows(
                 [(tile_id, ri, ci, r0, c0, h, w)], probs, [mask],
                 pred.threshold, ms, canvases, scale=s,
-                sweep_thresholds=sweep_thresholds,
+                sweep_thresholds=sweep_thresholds, buffer_px=buffer_px,
             ))
         if check_gt:
             gt_road_px = gt.full_road_px(src)
@@ -483,7 +510,7 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
              config_yaml_path=None, exp_tag="", label_source="",
              tile_metrics=(), check="first", device=None, threshold=None,
              max_tiles=None, sweep_thresholds=None,
-             stratum=None, stratum_col=None):
+             stratum=None, stratum_col=None, buffer_px=None):
     """Score a checkpoint over the split's footprint chips -> the sharded store.
 
     ``check`` runs the tp+fn-vs-mask invariant on the ``first`` tile (default),
@@ -526,6 +553,16 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
                 "tile_metrics are θ-dependent and cannot be swept off one pass "
                 f"(got {tuple(tile_metrics)}); sweep with tile_metrics=(), then "
                 "bench once at θ* with them on")
+    # buffer_px is NOT subject to that restriction, and the difference is the
+    # whole reason it lives in _rows_at_threshold rather than in
+    # tile_metrics.py. The plugins score a STITCHED TILE, so sweeping them
+    # would need one full-tile canvas per θ. Buffered F1 is computed per CHIP
+    # off the same probs the pixel metrics already use, so all 37 θ come out of
+    # one inference pass — which is what makes θ* selectable on it.
+    if buffer_px is not None:
+        buffer_px = float(buffer_px)
+        if buffer_px < 0:
+            raise ValueError(f"buffer_px must be >= 0, got {buffer_px}")
     if model == "sr":
         mask_source = mask_source or "graph"
         mask_dirname = mask_dirname or "mask_osm_2pt5"
@@ -579,12 +616,13 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
             if model == "unet":
                 rows, canvases, chip_px_used, gt_road_px, gt_tf = _score_tile_unet(
                     pred, dataset_dir, row, cell_m, chip_px, batch_size, plugins,
-                    check_gt, sweep_thresholds=sweep_thresholds)
+                    check_gt, sweep_thresholds=sweep_thresholds,
+                    buffer_px=buffer_px)
             else:
                 rows, canvases, chip_px_used, gt_road_px, gt_tf = _score_tile_sr(
                     pred, dataset_dir, row, cell_m, chip_px, mask_source,
                     mask_dirname, plugins, check_gt,
-                    sweep_thresholds=sweep_thresholds)
+                    sweep_thresholds=sweep_thresholds, buffer_px=buffer_px)
 
             if gt_road_px is not None:
                 # tp+fn is the GT road-pixel count, which is θ-independent, so

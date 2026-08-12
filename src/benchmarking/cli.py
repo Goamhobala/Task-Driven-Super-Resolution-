@@ -319,6 +319,7 @@ def run_eval(
     max_tiles: Annotated[Optional[int], typer.Option(help="Score only the first N tiles of the split (quick local smoke)")] = None,
     stratum: Annotated[Optional[str], typer.Option(help="Score only this stratum, e.g. Urban | PeriUrban | Rural (case/dash-insensitive)")] = None,
     stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
+    buffer_px: Annotated[Optional[float], typer.Option(help="Add buffered precision/recall/F1 with this pixel tolerance (3 = 7.5 m at 2.5 m GSD). Unlike --tile-metric these are per-chip and sweepable.")] = None,
     wandb_meta: Annotated[Optional[Path], typer.Option(help="train_meta.json with a `wandb` block: resume that run and push the bench metrics (incl. APLS) to its summary")] = None,
 ):
     """Score a checkpoint over the split's footprint chips -> the sharded store.
@@ -337,7 +338,7 @@ def run_eval(
         exp_tag=exp_tag, label_source=label_source,
         tile_metrics=tuple(tile_metric or ()), check=check, device=device,
         threshold=threshold, max_tiles=max_tiles,
-        stratum=stratum, stratum_col=stratum_col,
+        stratum=stratum, stratum_col=stratum_col, buffer_px=buffer_px,
     )
     if wandb_meta is not None:
         _push_bench_to_wandb(wandb_meta, run_id, store_dir, split)
