@@ -26,7 +26,9 @@ SR_PAD=8
 # Hps (GAP_R, TL_ELL, CL_ALPHA, SKEL_W, ...) pass through _stages.sh too.
 LOSS_ARM="${LOSS_ARM:-}"
 SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SR4RS_RGBN}"
-BATCH_SIZES="${BATCH_SIZES:-1 2 4}"  # 8 OOMs on 44GB: SR4RS runs 256-ch convs
-                                     # (incl. a 9x9) at the full 512px grid
+BATCH_SIZES="${BATCH_SIZES:-4}"      # PINNED, not searched (2026-08-12) -- see
+                                     # _stages.sh. 4 is the SR-series constant and
+                                     # the largest that fits: 8 OOMs on 44GB (SR4RS
+                                     # runs 256-ch convs, incl. a 9x9, at 512px).
 
 source "$REPO_DIR/scripts/hpc/sr/_stages.sh"

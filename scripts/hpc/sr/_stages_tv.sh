@@ -174,7 +174,14 @@ LR_SR_MAX="${LR_SR_MAX:-1e-3}"
 POS_WEIGHT_MIN="${POS_WEIGHT_MIN:-3.352251180486363}"
 POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-3.352251180486363}"
 ENCODERS="${ENCODERS:-resnet34}"      # NOT searched: encoder constancy is the control
-BATCH_SIZES="${BATCH_SIZES:-2 4 8}"   # 512px UNet stage is memory-heavy
+BATCH_SIZES="${BATCH_SIZES:-4}"       # PINNED, not searched (2026-08-12). `length` is
+                                      # fixed per epoch, so a bs=1 trial takes 4x the
+                                      # optimiser steps of a bs=4 trial and wins the
+                                      # tune on step count alone -- batch size is a
+                                      # confound, not a hyperparameter. 4 is a
+                                      # between-arm constant for the whole SR series.
+                                      # NB never change this on a RESUME_FIT: it
+                                      # changes steps/epoch and breaks cosine T_max.
 
 # Loader workers per training process: split the job's CPU allocation across
 # the stage's processes (search fans out SEARCH_GPUS tuners; fit/test run one).
