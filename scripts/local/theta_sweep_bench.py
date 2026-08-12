@@ -224,7 +224,7 @@ def summarise(c) -> dict:
     """Per-chip rows at one θ -> the summary recorded in sweep.json."""
     tp, fp, fn = float(c["tp"].sum()), float(c["fp"].sum()), float(c["fn"].sum())
     eps = 1e-9
-    return {
+    out = {
         # macro = mean over chips; this is what report/Wilcoxon rank on
         "iou_mean": float(c["iou"].mean()),
         "f1_mean": float(c["f1"].mean()),
@@ -235,6 +235,14 @@ def summarise(c) -> dict:
         "f1_micro": 2 * tp / (2 * tp + fp + fn + eps),
         "n_chips": int(len(c)),
     }
+    # Present only when --buffer-px was passed. NaN-skipping means: a chip with
+    # no road on either side is undefined for the buffered scores (same rule as
+    # cldice) and must not be averaged in as a 0 — that would reward an arm for
+    # correctly predicting nothing on empty chips.
+    for col in ("buffered_f1", "buffered_precision", "buffered_recall"):
+        if col in c.columns:
+            out[f"{col}_mean"] = float(c[col].mean(skipna=True))
+    return out
 
 
 def sweep_arm(spec: dict, args) -> dict:
@@ -265,6 +273,7 @@ def sweep_arm(spec: dict, args) -> dict:
         check="first",
         device=args.device,
         sweep_thresholds=grid,
+        buffer_px=args.buffer_px,
         max_tiles=args.sweep_max_tiles or args.max_tiles,
     )
     results = {t: summarise(c) for t, c in per_theta.items()}
@@ -281,6 +290,7 @@ def sweep_arm(spec: dict, args) -> dict:
         "source": "scripts/local/theta_sweep_bench.py",
         "split": SPLIT,
         "selected_on": key,
+        "buffer_px": args.buffer_px,
         "aggregation": "macro (mean over chips)" if key.endswith("_mean") else "micro (pooled counts)",
         "method": "single inference pass, all θ scored off the same probs",
         "grid": {"lo": args.lo, "hi": args.hi, "step": args.step, "n": len(grid)},
@@ -345,7 +355,16 @@ def main(argv=None) -> int:
                         "node's path — set this if load_from_checkpoint goes looking for it. "
                         "[default: $SEN2SR_DIR]")
     p.add_argument("--select-on", default="iou_mean",
-                   choices=["iou_mean", "f1_mean", "iou_micro", "f1_micro"])
+                   choices=["iou_mean", "f1_mean", "iou_micro", "f1_micro",
+                            "buffered_f1_mean", "buffered_precision_mean",
+                            "buffered_recall_mean"],
+                   help="quantity θ* maximises. The buffered_* choices require "
+                        "--buffer-px (they are absent from the sweep otherwise).")
+    p.add_argument("--buffer-px", type=float, default=None,
+                   help="record buffered precision/recall/F1 at every θ with this "
+                        "pixel tolerance (3 = 7.5 m at 2.5 m). Costs one extra "
+                        "distance transform per chip per θ; the GT transform is "
+                        "cached across θ by the runner.")
     p.add_argument("--lo", type=float, default=0.05)
     p.add_argument("--hi", type=float, default=0.95)
     p.add_argument("--step", type=float, default=0.025,
@@ -534,6 +553,7 @@ def _process(spec: dict, args, store_dir: Path, benched: list, skipped: list) ->
         check="first",
         device=args.device,
         threshold=theta,
+        buffer_px=args.buffer_px,
         max_tiles=args.max_tiles,
     )
     benched.append(spec["model_name"])

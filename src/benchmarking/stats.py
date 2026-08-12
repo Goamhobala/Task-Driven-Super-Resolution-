@@ -58,7 +58,13 @@ __all__ = [
 # Pixel metrics that can be re-derived from summed (tp, fp, fn, tn) counts. Only
 # these admit a "micro" (count-pooled) cross-seed aggregation; a graph metric
 # like APLS has no count decomposition and must use macro.
-_MICRO_DERIVABLE = ("iou", "f1", "precision", "recall", "accuracy")
+# Metrics that admit a count-pooled ("micro") aggregation. The buffered ones
+# qualify because their denominators (tp+fp, tp+fn) sit in the same row, so the
+# pooled value is an exact weighted mean of the stored ratios — see
+# `_micro_buffered`. APLS/clDice do NOT: they are computed on a stitched tile
+# and carry no per-chip denominator to pool over.
+_MICRO_DERIVABLE = ("iou", "f1", "precision", "recall", "accuracy",
+                    "buffered_f1", "buffered_precision", "buffered_recall")
 
 
 def _paired_values(
@@ -163,8 +169,52 @@ def wilcoxon_paired(
     }
 
 
+def _micro_buffered(g: pd.DataFrame, metric: str) -> float:
+    """Pool the BUFFERED scores over the group's chips.
+
+    The stored buffered_* columns are per-chip RATIOS, but their denominators
+    are already in the same row, so the pooled quantity is recoverable exactly
+    without re-scoring anything:
+
+        buffered_precision_i = (pred px within rho of GT)_i / (tp + fp)_i
+        buffered_recall_i    = (GT px within rho of pred)_i / (tp + fn)_i
+
+    so micro precision is the (tp+fp)-weighted mean of the per-chip precisions,
+    and micro recall the (tp+fn)-weighted mean of the recalls — i.e. counts
+    pooled over all pixels, exactly as `_micro_metric_from_counts` does for the
+    strict metrics. Micro F1 is then the harmonic mean of those two, NOT the
+    weighted mean of the per-chip F1s (which is not a pooled quantity at all).
+
+    Chips with a zero denominator drop out on both sides: an empty prediction
+    contributes nothing to precision, and a road-free chip nothing to recall —
+    the same rule the NaN convention in `buffered_metrics` encodes.
+    """
+    def pooled(ratio_col: str, den: pd.Series) -> float:
+        r = g[ratio_col]
+        keep = r.notna() & (den > 0)
+        if not keep.any():
+            return float("nan")
+        return float((r[keep] * den[keep]).sum() / den[keep].sum())
+
+    n_pred = g["tp"] + g["fp"]
+    n_gt = g["tp"] + g["fn"]
+    if metric == "buffered_precision":
+        return pooled("buffered_precision", n_pred)
+    if metric == "buffered_recall":
+        return pooled("buffered_recall", n_gt)
+    if metric == "buffered_f1":
+        prec = pooled("buffered_precision", n_pred)
+        rec = pooled("buffered_recall", n_gt)
+        if not (prec == prec) or not (rec == rec) or (prec + rec) == 0:
+            return float("nan") if (prec != prec or rec != rec) else 0.0
+        return 2.0 * prec * rec / (prec + rec)
+    raise ValueError(f"{metric!r} is not a buffered metric")
+
+
 def _micro_metric_from_counts(g: pd.DataFrame, metric: str) -> float:
     """Pool tp/fp/fn/tn over the group's tiles, then derive one scalar metric."""
+    if metric.startswith("buffered_"):
+        return _micro_buffered(g, metric)
     tp = float(g["tp"].sum())
     fp = float(g["fp"].sum())
     fn = float(g["fn"].sum())

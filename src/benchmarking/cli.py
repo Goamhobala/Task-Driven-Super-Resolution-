@@ -491,7 +491,9 @@ def variance(
     from benchmarking.stats import _MICRO_DERIVABLE, cross_seed_ci
 
     df, unit = _load_metric_table(store_dir, metric)
-    agg = aggregation if metric in _MICRO_DERIVABLE and "tp" in df.columns else "macro"
+    need = {"tp", "fp", "fn", metric} if metric.startswith("buffered_") else {"tp"}
+    agg = (aggregation if metric in _MICRO_DERIVABLE and need <= set(df.columns)
+           else "macro")
     out = cross_seed_ci(df, {"model_name": model_name}, metric=metric, aggregation=agg)
     typer.echo(f"{model_name}: {metric} across {out['n_seeds']} seed(s) [{agg}, per-{unit}]")
     typer.echo(
@@ -575,7 +577,13 @@ def _run_report(store_dir, metrics, aggregation, n_boot, out,
             # Report only warns (force=True): it summarises whatever exists.
             _guard_comparable(store_dir, models, force=True)
 
-        agg = aggregation if met in _MICRO_DERIVABLE and "tp" in df.columns else "macro"
+        # A buffered metric is micro-derivable only when its own ratio column is
+        # present alongside the counts its denominator comes from; "tp" alone is
+        # not enough. Falling back to macro is right for apls/cldice, which have
+        # no per-chip denominator at all.
+        need = {"tp", "fp", "fn", met} if met.startswith("buffered_") else {"tp"}
+        agg = (aggregation if met in _MICRO_DERIVABLE and need <= set(df.columns)
+               else "macro")
         n_units = df["chip_id"].nunique() if "chip_id" in df.columns else len(df)
         typer.echo(f"\n== per-model {met} (mean +/- std across seeds, {agg}, "
                    f"per-{unit}){label}  n_{unit}s={n_units} ==")
