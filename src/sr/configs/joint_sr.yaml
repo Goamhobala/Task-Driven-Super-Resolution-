@@ -95,9 +95,21 @@ model:
                               # (a perfect tracker makes the task loss exactly
                               # affine-invariant). Diagnose with adapt_lag_max.
   adaptive_norm_warmup_steps: 0  # delay the EMA (e.g. past the SR LR ramp)
-  adaptive_norm_check_every: 50  # steps between std-hard-band checks (1 host
+  adaptive_norm_check_every: 50  # steps between std-band checks (1 host
                               # sync each, so not every step). 0 disables the
                               # guard entirely — tests only, never a run.
+  # Std band, as multiples of the run's STARTING std. ASYMMETRIC on purpose:
+  #   collapse is the catastrophe — gain into the generator is rs/band_std, so
+  #     lower std -> higher gain -> faster drift. Positive feedback. Tight.
+  #   growth is self-stabilising — rising std LOWERS the gain — and some
+  #     contrast growth is what task-driven SR is for. Its real risk (output
+  #     stops resembling imagery) is sr_psnr_vs_init's job, not a moment's.
+  # A band exit raises AdaptiveNormBandExit; sr.tune prunes that TRIAL, while
+  # production fits fail loudly.
+  std_band_raise_lo: 0.5
+  std_band_raise_hi: 4.0
+  std_band_warn_lo: 0.7
+  std_band_warn_hi: 1.5
   norm_recalibrate: "off"     # off | pre | post | auto — exact PreciseBN-style
                               # (QUOTED: bare `off` is boolean False in YAML)
                               # recompute of the post-SR stats over

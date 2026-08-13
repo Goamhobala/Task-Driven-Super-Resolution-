@@ -204,7 +204,17 @@ ENCODER_WEIGHTS="${ENCODER_WEIGHTS:-imagenet}"
 LR_MIN="${LR_MIN:-1e-5}"
 LR_MAX="${LR_MAX:-1e-2}"
 LR_SR_MIN="${LR_SR_MIN:-1e-7}"   # searched only when SR is learned & unfrozen
-LR_SR_MAX="${LR_SR_MAX:-1e-3}"
+# 1e-3 was 100x the design default (1e-5) and the whole upper decade is
+# known-wasted budget: on 2026-08-13 a sampled lr_sr=3.1e-4 drove the post-SR
+# std out of its band inside 1,400 steps on SEN2SR -- the arm most resistant to
+# this, since its FFT constraint pins the means. Under Adam the per-step weight
+# displacement is ~lr regardless of gradient scale, so the rate at which the
+# pretrained SR is destroyed is set by the ABSOLUTE lr_sr, not by lr_sr/lr.
+# That is also why lr and lr_sr stay INDEPENDENTLY sampled rather than being
+# reparametrised as a ratio alpha=lr_sr/lr: a ratio would couple the SR's
+# destruction rate to the UNet's lr, dragging a trial that wants a fast UNet
+# toward a destructive SR lr for no physical reason. Do not "simplify" it back.
+LR_SR_MAX="${LR_SR_MAX:-1e-4}"
 POS_WEIGHT_MIN="${POS_WEIGHT_MIN:-3.352251180486363}"
 POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-3.352251180486363}"
 ENCODERS="${ENCODERS:-resnet34}"      # NOT searched: encoder constancy is the control

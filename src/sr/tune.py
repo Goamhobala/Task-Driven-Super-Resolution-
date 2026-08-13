@@ -53,7 +53,7 @@ torch.backends.cudnn.benchmark = True
 
 # Same imports the LightningCLI uses -- keep the search and the real fit identical.
 from sentinel2data.dataset.joint_sr_dataset import JointSRDataModule
-from sr.model import JointSRUNetLightning
+from sr.model import AdaptiveNormBandExit, JointSRUNetLightning
 # Study plumbing shared with unet.tune (single source of truth: the retry-on-
 # DDL-race create, the journal/RDB storage handling, the best-score tracker).
 from unet.tune import (
@@ -298,6 +298,22 @@ def build_objective(args, base_cfg: dict):
             trial.set_user_attr("oom", True)
             raise optuna.TrialPruned(
                 f"OOM: batch_size={batch_size}, upsampler={upsampler}")
+        except AdaptiveNormBandExit as exc:
+            # A band exit means THIS hyperparameter corner destroys the SR
+            # front-end -- which is a finding about the corner, not a bug. It
+            # must fail the TRIAL, not the study: on 2026-08-13 an unhandled
+            # one took down a whole tune after Optuna sampled lr_sr=3.1e-4
+            # (30x the design default). Pruned rather than failed, for the same
+            # reason as OOM: the sampler only models COMPLETE and PRUNED
+            # trials, so a FAIL here would let TPE keep proposing the same
+            # region for the rest of the study.
+            trial.set_user_attr("adaptive_norm_band_exit", True)
+            trial.set_user_attr("band_std_ratios", getattr(exc, "ratios", []))
+            print(f"[sr.tune] trial {trial.number} pruned: post-SR std left "
+                  f"the band {getattr(exc, 'band', None)} at lr_sr={lr_sr:.3g} "
+                  f"(lr={lr:.3g}). Ratios: "
+                  f"{['%.3f' % v for v in getattr(exc, 'ratios', [])]}")
+            raise optuna.TrialPruned(f"adaptive_norm band exit: lr_sr={lr_sr:.3g}")
         finally:
             # OOM (an expected outcome for the larger searched batch sizes with
             # heavy SR nets) leaves the allocator full — release before the
@@ -632,10 +648,13 @@ def main(argv=None):
 
     objective = build_objective(args, base_cfg)
     study = create_study_shared(study_name, args.storage, args.seed)
-    # The objective converts OOM to TrialPruned (so TPE learns the region);
-    # catch= stays as a backstop for OOMs escaping outside trainer.fit.
+    # The objective converts OOM and adaptive-norm band exits to TrialPruned
+    # (so TPE learns the region); catch= stays as a backstop for either
+    # escaping outside trainer.fit -- a bad corner of the search space must
+    # never be able to end the study.
     study.optimize(objective, n_trials=args.n_trials, timeout=args.timeout,
-                   gc_after_trial=True, catch=(torch.cuda.OutOfMemoryError,))
+                   gc_after_trial=True,
+                   catch=(torch.cuda.OutOfMemoryError, AdaptiveNormBandExit))
 
     n_complete = sum(t.state == optuna.trial.TrialState.COMPLETE
                      for t in study.trials)

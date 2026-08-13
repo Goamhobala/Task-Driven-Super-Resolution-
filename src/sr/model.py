@@ -59,11 +59,26 @@ _VAR_FLOOR = 1e-12
 # between it and the slow (adaptive_norm_momentum) EMA IS the lag term the
 # plan asks to monitor (§4.1). Never used in the forward path.
 _ADAPT_FAST_M = 0.2
-# Std hard band, as multiples of the construction-time dataset std (§4.3).
+# Std band defaults, as multiples of the construction-time dataset std (§4.3).
 # Warn first, then RAISE — deliberately not a clamp: a silent floor is a
 # trapdoor that only engages long after the run entered the failure mode.
+#
+# ASYMMETRIC, because the two directions are not equally dangerous:
+#   * COLLAPSE is the catastrophe this feature exists to prevent. The adapter's
+#     gradient gain into the generator is reflectance_scale/band_std, so as std
+#     falls the gain explodes and the drift it causes accelerates — positive
+#     feedback. Tight bound, non-negotiable.
+#   * GROWTH is self-stabilising under a tracking normaliser: rising std LOWERS
+#     the gain, and the U-Net's input stays whitened either way. Some contrast
+#     growth is arguably what task-driven SR is for. Its real risk is the SR
+#     output ceasing to resemble imagery, which is `sr_psnr_vs_init`'s job, not
+#     a moment's. Loose bound, and the warning is the actionable signal.
+# Empirical anchor: the first tune run (2026-08-13) tripped a symmetric 2.0
+# upper bound on a SEN2SR trial whose sampled lr_sr=3.1e-4 was 30x the design
+# default — means DC-pinned and steady, blue-band std growing monotonically
+# (1.6x @ step 1050 -> 2.1x @ 1400). Correct detection, wrong severity.
 _STD_WARN_LO, _STD_WARN_HI = 0.7, 1.5
-_STD_RAISE_LO, _STD_RAISE_HI = 0.5, 2.0
+_STD_RAISE_LO, _STD_RAISE_HI = 0.5, 4.0
 # scripts/sr4rs/sanity_viz.py's own "LARGE — investigate!" threshold, reused
 # so the training-time monitor and the offline check agree on what is large.
 _MEAN_DRIFT_WARN = 0.05
@@ -72,6 +87,24 @@ NORM_RECALIBRATE_MODES = ("off", "pre", "post", "auto")
 # Batches used by the before/after IoU probe around a recalibration swap.
 # A bounded SUBSAMPLE, deliberately named as such wherever it is reported.
 _VAL_SNAPSHOT_BATCHES = 64
+
+
+class AdaptiveNormBandExit(RuntimeError):
+    """The post-SR band std left its hard band (§4.3).
+
+    A dedicated type so callers can distinguish "this hyperparameter corner is
+    unusable" from a genuine bug. `sr.tune` catches it and prunes the TRIAL —
+    a band exit is exactly the kind of signal the sampler should learn from,
+    and letting it propagate would take down the whole study over one bad
+    corner of the search space (which is what happened on 2026-08-13).
+
+    Production fits do NOT catch it: there the loud failure is the point.
+    """
+
+    def __init__(self, message, ratios=None, band=None):
+        super().__init__(message)
+        self.ratios = list(ratios) if ratios is not None else []
+        self.band = band
 
 
 class _preserve_rng:
@@ -200,6 +233,15 @@ class JointSRUNetLightning(UNetLightning):
         # so it is not done every step; at the default momentum (horizon 100
         # steps) 50 cannot miss an excursion by more than half a horizon.
         adaptive_norm_check_every: int = 50,
+        # Std band limits, as multiples of the run's starting std. ASYMMETRIC
+        # by design — see the module constants for why collapse and growth are
+        # not equally dangerous. Exposed as hparams so an arm with a known
+        # reason to expect contrast growth can loosen the upper side without
+        # touching the lower one, which is the actual catastrophe bound.
+        std_band_raise_lo: float = _STD_RAISE_LO,
+        std_band_raise_hi: float = _STD_RAISE_HI,
+        std_band_warn_lo: float = _STD_WARN_LO,
+        std_band_warn_hi: float = _STD_WARN_HI,
         # Exact PreciseBN-style recompute of the post-SR statistics (Wu &
         # Johnson 2021), over `norm_recalibrate_batches` train batches through
         # the SR stage ONLY (no UNet, no backward):
@@ -646,35 +688,62 @@ class JointSRUNetLightning(UNetLightning):
             self._check_std_band()
 
     def _check_std_band(self):
-        """Std hard band (§4.3). Warn once, then RAISE — never clamp.
+        """Asymmetric std band (§4.3). Warn once, then RAISE — never clamp.
 
         A silent floor would be a trapdoor: by the time e.g. a 1e-2 x init_std
         clamp engaged, the gradient gain into the generator would already be
         100x its initial 15-33x, i.e. the run entered the failure mode long
         before. Fail loud and early instead.
+
+        Collapse and growth get different bounds because they carry different
+        risk (module constants). Raises :class:`AdaptiveNormBandExit` so a tune
+        can prune the trial rather than lose the study.
         """
+        lo_r = float(getattr(self.hparams, "std_band_raise_lo", _STD_RAISE_LO))
+        hi_r = float(getattr(self.hparams, "std_band_raise_hi", _STD_RAISE_HI))
+        lo_w = float(getattr(self.hparams, "std_band_warn_lo", _STD_WARN_LO))
+        hi_w = float(getattr(self.hparams, "std_band_warn_hi", _STD_WARN_HI))
         init = self._adapt_init_std.reshape(-1)
         ratio = (self.band_std.reshape(-1) / init.clamp_min(1e-12)).float().cpu()
         r = [float(v) for v in ratio]
-        if any(v < _STD_RAISE_LO or v > _STD_RAISE_HI for v in r):
-            raise RuntimeError(
-                "adaptive_norm: post-SR band std left the hard band "
-                f"[{_STD_RAISE_LO}x, {_STD_RAISE_HI}x] of the dataset std at "
-                f"step {self.global_step}.\n"
+        collapsed = [i for i, v in enumerate(r) if v < lo_r]
+        grew = [i for i, v in enumerate(r) if v > hi_r]
+        if collapsed or grew:
+            if collapsed:
+                what = (f"band(s) {collapsed} COLLAPSED below {lo_r}x the "
+                        "starting std. The adapter's gradient gain into the "
+                        "generator is reflectance_scale/band_std, so this is "
+                        "positive feedback: lower std -> higher gain -> faster "
+                        "drift. This is the runaway the feature exists to stop.")
+            else:
+                what = (f"band(s) {grew} GREW past {hi_r}x the starting std. "
+                        "Growth is self-stabilising (rising std lowers the "
+                        "gain), so passing this bound means the scale moved "
+                        "very far, not merely upward.")
+            raise AdaptiveNormBandExit(
+                f"adaptive_norm: {what}\n"
+                f"  step                  : {self.global_step}\n"
                 f"  std/init_std per band : {['%.3f' % v for v in r]}\n"
+                f"  band                  : [{lo_r}x, {hi_r}x]\n"
                 f"  band_std              : {[float(v) for v in self.band_std.reshape(-1)]}\n"
                 f"  init  std             : {[float(v) for v in init]}\n"
                 f"  band_mean             : {[float(v) for v in self.band_mean.reshape(-1)]}\n"
-                "The SR output scale is running away — lower lr_sr, lower "
-                "adaptive_norm_momentum (a slower EMA lags more, and that lag "
-                "IS the restoring force), or enable the L2-SP anchor.")
-        if not self._adapt_warned and any(v < _STD_WARN_LO or v > _STD_WARN_HI
-                                          for v in r):
+                "First thing to check is lr_sr: under Adam the per-step weight "
+                "displacement is ~lr regardless of gradient scale, so the rate "
+                "at which the pretrained SR is destroyed is set by the ABSOLUTE "
+                "lr_sr. Then: lower adaptive_norm_momentum (a slower EMA lags "
+                "more, and that lag IS the restoring force), or enable L2-SP. "
+                "Read sr_psnr_vs_init alongside this — moments cannot tell you "
+                "whether the SR is still an SR.",
+                ratios=r, band=(lo_r, hi_r))
+        if not self._adapt_warned and any(v < lo_w or v > hi_w for v in r):
             self._adapt_warned = True
+            side = "below" if any(v < lo_w for v in r) else "above"
             print(f"[joint_sr] WARN adaptive_norm: band std at "
-                  f"{['%.3f' % v for v in r]}x the dataset std (step "
-                  f"{self.global_step}) — outside [{_STD_WARN_LO}, "
-                  f"{_STD_WARN_HI}]. Watch sr_psnr_vs_init.")
+                  f"{['%.3f' % v for v in r]}x the starting std (step "
+                  f"{self.global_step}) — {side} the warn band "
+                  f"[{lo_w}, {hi_w}]. Not fatal; watch sr_psnr_vs_init to see "
+                  "whether the SR output is still imagery.")
 
     def _log_adapt_stats(self):
         """Per-band moments + the three diagnostics the plan asks for."""

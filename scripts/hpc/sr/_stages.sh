@@ -151,7 +151,10 @@ ENCODER_WEIGHTS="${ENCODER_WEIGHTS:-imagenet}"
 LR_MIN="${LR_MIN:-1e-5}"
 LR_MAX="${LR_MAX:-1e-2}"
 LR_SR_MIN="${LR_SR_MIN:-1e-7}"   # searched only when UPSAMPLER=sen2sr && !FREEZE_SR
-LR_SR_MAX="${LR_SR_MAX:-1e-3}"
+# Tightened from 1e-3 (2026-08-13): a sampled 3.1e-4 destroyed the SR front-end
+# within 1,400 steps. See _stages_tv.sh for the full reasoning, incl. why lr and
+# lr_sr stay independently sampled rather than reparametrised as a ratio.
+LR_SR_MAX="${LR_SR_MAX:-1e-4}"
 POS_WEIGHT_MIN="${POS_WEIGHT_MIN:-1.0}"
 POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-15.0}"
 ENCODERS="${ENCODERS:-resnet34}"      # NOT searched: encoder constancy is the control
