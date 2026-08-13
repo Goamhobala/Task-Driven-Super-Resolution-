@@ -147,7 +147,7 @@ L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}"            # 0 = dormant L2-SP anchor
 # (the store is append-only -- §4.6).
 ADAPTIVE_NORM="${ADAPTIVE_NORM:-1}"
 ADAPTIVE_NORM_M="${ADAPTIVE_NORM_M:-0.01}"
-NORM_RECALIBRATE="${NORM_RECALIBRATE:-off}"
+NORM_RECALIBRATE="${NORM_RECALIBRATE:-post}"
 case "$NORM_RECALIBRATE" in
   off|pre|post|auto) : ;;
   *) echo "ERROR: NORM_RECALIBRATE must be off|pre|post|auto, got '${NORM_RECALIBRATE}'." >&2; exit 2 ;;
