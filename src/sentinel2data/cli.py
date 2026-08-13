@@ -1,6 +1,6 @@
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Optional, Tuple
+from typing import Annotated, List, Optional, Tuple
 import typer
 import yaml
 
@@ -162,6 +162,16 @@ def norm_stats(
         Optional[Tuple[float, float]],
         typer.Option(help="Clip SAR bands (VV/VH asc+desc) to LO HI before stats"),
     ] = None,
+    splits: Annotated[
+        Optional[List[str]],
+        typer.Option(
+            "--splits",
+            help="Split(s) to accumulate over (repeat the flag). Default: train. "
+                 "Use `--splits train --splits val` for the train+val refit "
+                 "protocol, writing to <root>/norm_stats_tv.yaml. 'test' is "
+                 "rejected — stats over the report split leak it.",
+        ),
+    ] = None,
 ):
     """Per-band mean/std over the TRAIN split (frozen, no leakage) -> a LightningCLI
     config (data.norm_mean / data.norm_std), merged into the unet config so train and
@@ -173,10 +183,13 @@ def norm_stats(
         write_stats_yaml,
     )
 
+    splits = tuple(splits) if splits else ("train",)
     out = out or dataset_dir / "norm_stats.yaml"
-    names, mean, std = compute(dataset_dir, exclude_zero=exclude_zero, sar_clip=sar_clip)
-    saved = write_stats_yaml(out, mean, std)
-    typer.echo(f"\nSaved {saved}")
+    # So that we can include the validation set stats when refitting on train + valid
+    names, mean, std = compute(dataset_dir, exclude_zero=exclude_zero,
+                               sar_clip=sar_clip, splits=splits)
+    saved = write_stats_yaml(out, mean, std, splits=splits)
+    typer.echo(f"\nSaved {saved}  (splits: {'+'.join(splits)})")
     print_table(names, mean, std)
 
 

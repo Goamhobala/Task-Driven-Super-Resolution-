@@ -70,6 +70,36 @@ SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-1.0}"  # SR-group ramp; model auto-off
                                              # for frozen/bicubic/warm-start
 L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}"            # 0 = dormant L2-SP anchor
 
+# --- Adaptive post-SR normalisation (docs/adaptive_norm_plan.md) -------------
+# The post-SR z-score uses FROZEN dataset stats; SR4RS's output is unanchored
+# and can drift out from under them under task-only fine-tuning. Both default
+# OFF, so every arm already in the benchmark store keeps its exact recipe.
+#   ADAPTIVE_NORM=1        per-batch EMA of the post-SR moments
+#   ADAPTIVE_NORM_M=0.01   EMA momentum (PINNED, never searched)
+#   NORM_RECALIBRATE=pre   exact PreciseBN recompute: off|pre|post|auto
+#                          `pre` is the complete, zero-risk fix for the FROZEN
+#                          arms (r1/r5); `post` cleans EMA lag out of the
+#                          shipped ckpt; `auto` picks per arm.
+# Both contribute to ANORM_TAG so the run dir, Optuna study and benchmark
+# model_name can never collide with the frozen-stats rows of the same arm
+# (the store is append-only -- §4.6).
+ADAPTIVE_NORM="${ADAPTIVE_NORM:-0}"
+ADAPTIVE_NORM_M="${ADAPTIVE_NORM_M:-0.01}"
+NORM_RECALIBRATE="${NORM_RECALIBRATE:-off}"
+case "$NORM_RECALIBRATE" in
+  off|pre|post|auto) : ;;
+  *) echo "ERROR: NORM_RECALIBRATE must be off|pre|post|auto, got '${NORM_RECALIBRATE}'." >&2; exit 2 ;;
+esac
+ANORM_TAG=""
+ADAPTIVE_NORM_FLAG="false"
+if [ "$ADAPTIVE_NORM" = "1" ] || [ "$ADAPTIVE_NORM" = "true" ]; then
+  ADAPTIVE_NORM_FLAG="true"
+  ANORM_TAG="_anorm"
+fi
+if [ "$NORM_RECALIBRATE" != "off" ]; then
+  ANORM_TAG="${ANORM_TAG}_recal${NORM_RECALIBRATE}"
+fi
+
 SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-0}"
 
 # LABELS -> dataset dir + code-level mask_source (+ mask_dirname when raster).
@@ -180,10 +210,127 @@ WANDB_CONFIG="$REPO_DIR/src/unet/configs/wandb.yaml"
 # --- Norm stats: read them from the DATASET, not from the repo ---------------
 # Prefer <dataset_dir>/norm_stats.yaml (computed from ITS OWN splits/train.csv);
 # fall back to the repo copy only with NORM_FALLBACK_OK=1. NORM_CONFIG overrides.
+#
+# RUNS_ROOT is shared with _warm_tv.sh, which reconstructs the STAGE-1 run dir
+# from it — override one and you must override both, so they read the same var.
+# (Resolved BEFORE the norm stats so the train+val generation below has a
+# guaranteed-writable fallback location.)
+RUNS_ROOT="${RUNS_ROOT:-${INSTAROAD_ROOT}/runs}"
+RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}"
+mkdir -p "$RUN_DIR"
+
+# §4.7 stats provenance under the train+val refit: norm_stats.yaml is computed
+# on the TRAIN split, but the refit trains on train+val. NORM_TV=1 switches the
+# FIT stage to <dataset>/norm_stats_tv.yaml. Deliberately OPT-IN: the convention
+# must be held CONSTANT across every arm inside a comparison, so flipping it
+# silently mid-series would void the series. The tune stage always keeps
+# train-only stats — val is a holdout there. Test zones never contribute under
+# either convention. Bench does not read norm stats at all (it restores them
+# from the checkpoint), so NORM_TV is a fit-stage concern only.
+#
+# If the file is missing it is GENERATED, not treated as an error: a hard fail
+# here burns a whole GPU allocation on a one-line omission. Three properties
+# make the auto-generation safe on a shared filesystem with many arms in flight:
+#
+#   * DETERMINISTIC — the numbers are a streaming reduction over the tiles
+#     listed in splits/{train,val}.csv, so two jobs that generate it
+#     concurrently produce byte-identical output. A race cannot yield arms
+#     trained under disagreeing stats, which is the only failure that would
+#     actually matter.
+#   * ATOMIC PUBLISH — written to a per-PID temp file and `mv`d into place
+#     (same filesystem, so the rename is atomic). No job can ever read a
+#     half-written YAML.
+#   * SINGLE SCAN — an mkdir lock (atomic on POSIX) means one job does the I/O
+#     while the others wait for the file to appear. Waiters take over if the
+#     holder dies, so a killed job cannot wedge the queue.
+#
+# NORM_TV_AUTO=0 restores the old hard failure for anyone who would rather be
+# told than have a file appear underneath them.
 NORM_CONFIG_DATASET="${DATASET_DIR}/norm_stats.yaml"
+NORM_CONFIG_TV="${DATASET_DIR}/norm_stats_tv.yaml"
 NORM_CONFIG_REPO="$REPO_DIR/src/unet/configs/norm_stats.yaml"
+NORM_TV_WAIT="${NORM_TV_WAIT:-1800}"   # s to wait on another job's generation
+USE_TV_STATS=0
+if [ "${NORM_TV:-0}" = "1" ] && [ "$STAGE" = "fit" ] && [ "$MERGE_VAL" = "1" ]; then
+  USE_TV_STATS=1
+elif [ "${NORM_TV:-0}" = "1" ]; then
+  echo "NOTE: NORM_TV=1 ignored for stage='${STAGE}' (merge_val=${MERGE_VAL})."
+  echo "  Train+val stats apply to the REFIT only: tune scores on val as a"
+  echo "  holdout, and bench restores the stats from the checkpoint."
+fi
+
+generate_tv_stats () {   # $1 = destination path; echoes nothing, returns 0/1
+  local dest="$1" tmp="$1.tmp.$$" t0 rc
+  t0=$(date +%s)
+  echo "  generating $(basename "$dest") over train+val ..."
+  PYTHONPATH="$REPO_DIR/src" "$VENV_DIR/bin/python" -m sentinel2data.cli norm-stats \
+      --dataset-dir "$DATASET_DIR" --splits train --splits val --out "$tmp"
+  rc=$?
+  if [ $rc -ne 0 ] || [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
+  echo "  wrote ${dest} in $(( $(date +%s) - t0 ))s"
+  return 0
+}
+
+if [ "$USE_TV_STATS" = "1" ] && [ -z "${NORM_CONFIG:-}" ] && [ ! -f "$NORM_CONFIG_TV" ]; then
+  if [ "${NORM_TV_AUTO:-1}" != "1" ]; then
+    echo "ERROR: NORM_TV=1 but ${NORM_CONFIG_TV} does not exist, and" >&2
+    echo "  NORM_TV_AUTO=0 disabled generating it. Create it with:" >&2
+    echo "    ${VENV_DIR}/bin/python -m sentinel2data.cli norm-stats \\" >&2
+    echo "      --dataset-dir ${DATASET_DIR} --splits train --splits val \\" >&2
+    echo "      --out ${NORM_CONFIG_TV}" >&2
+    exit 2
+  fi
+  echo "NORM_TV=1: ${NORM_CONFIG_TV} not found — generating it."
+  NORM_TV_LOCK="${NORM_CONFIG_TV}.lock"
+  if mkdir "$NORM_TV_LOCK" 2>/dev/null; then
+    trap 'rmdir "'"$NORM_TV_LOCK"'" 2>/dev/null || true' EXIT
+    if ! generate_tv_stats "$NORM_CONFIG_TV"; then
+      # Read-only dataset dir, quota, whatever. Fall back to a run-local copy:
+      # the CONTENT is identical either way (same deterministic reduction over
+      # the same split CSVs), so cross-arm comparability is preserved — the
+      # only cost is that each arm recomputes it.
+      echo "WARN: could not write ${NORM_CONFIG_TV} — falling back to a" >&2
+      echo "  run-local copy under ${RUN_DIR}. Content is identical (the" >&2
+      echo "  computation is deterministic), so arms stay comparable; only the" >&2
+      echo "  redundant rescan is lost. Promote it into the dataset dir to fix." >&2
+      NORM_CONFIG_TV="${RUN_DIR}/norm_stats_tv.yaml"
+      if ! generate_tv_stats "$NORM_CONFIG_TV"; then
+        echo "ERROR: train+val norm-stats generation failed. See above." >&2
+        exit 2
+      fi
+    fi
+    rmdir "$NORM_TV_LOCK" 2>/dev/null || true
+    trap - EXIT
+  else
+    echo "  another job holds ${NORM_TV_LOCK}; waiting up to ${NORM_TV_WAIT}s ..."
+    _waited=0
+    while [ ! -f "$NORM_CONFIG_TV" ] && [ "$_waited" -lt "$NORM_TV_WAIT" ]; do
+      sleep 10; _waited=$(( _waited + 10 ))
+    done
+    if [ ! -f "$NORM_CONFIG_TV" ]; then
+      # The holder died (or is slower than the wait). Take the lock over rather
+      # than wedging the queue — worst case two jobs write identical bytes.
+      echo "  waited ${_waited}s with no file; assuming a dead holder and" >&2
+      echo "  generating it here instead." >&2
+      rmdir "$NORM_TV_LOCK" 2>/dev/null || true
+      generate_tv_stats "$NORM_CONFIG_TV" || {
+        echo "ERROR: train+val norm-stats generation failed. See above." >&2
+        exit 2; }
+    else
+      echo "  ${NORM_CONFIG_TV} appeared after ${_waited}s."
+    fi
+  fi
+fi
+
 if [ -n "${NORM_CONFIG:-}" ]; then
   NORM_SOURCE="explicit NORM_CONFIG override"
+elif [ "$USE_TV_STATS" = "1" ] && [ -f "$NORM_CONFIG_TV" ]; then
+  NORM_CONFIG="$NORM_CONFIG_TV"
+  NORM_SOURCE="dataset train+val (NORM_TV=1)"
 elif [ -f "$NORM_CONFIG_DATASET" ]; then
   NORM_CONFIG="$NORM_CONFIG_DATASET"
   NORM_SOURCE="dataset"
@@ -191,11 +338,6 @@ else
   NORM_CONFIG="$NORM_CONFIG_REPO"
   NORM_SOURCE="repo fallback"
 fi
-# RUNS_ROOT is shared with _warm_tv.sh, which reconstructs the STAGE-1 run dir
-# from it — override one and you must override both, so they read the same var.
-RUNS_ROOT="${RUNS_ROOT:-${INSTAROAD_ROOT}/runs}"
-RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${PROTO_TAG}_seed${SEED}"
-mkdir -p "$RUN_DIR"
 
 # The refit's checkpoint. Named _final, never _best: under this protocol no
 # checkpoint was ever selected on a holdout, and the filename says so.
@@ -207,6 +349,7 @@ echo "Logging to ${LOG_FILE}"
 echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}"
 echo "labels=${LABELS} (mask_source=${MASK_SOURCE}${MASK_DIRNAME:+, mask_dirname=${MASK_DIRNAME}})  upsampler=${UPSAMPLER}  freeze_sr=${FREEZE_SR}  sr_pad=${SR_PAD}  loss_arm=${LOSS_ARM:-legacy}"
 echo "recipe: reg=${REG}${REG_TAG:+ [${REG_TAG}]}  clip=${CLIP}  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}  sr_snapshot_every=${SR_SNAPSHOT_EVERY}"
+echo "adapter: adaptive_norm=${ADAPTIVE_NORM_FLAG} (m=${ADAPTIVE_NORM_M})  norm_recalibrate=${NORM_RECALIBRATE}${ANORM_TAG:+  tag=${ANORM_TAG}}"
 echo "protocol: tune on train/val -> fit on '${TRAIN_SPLITS}' (merge_val=${MERGE_VAL}) -> report on $([ "$MERGE_VAL" = "1" ] && echo test || echo "val (holdout/pilot mode)")"
 echo "DATASET_DIR=${DATASET_DIR}  warm_start=${WARM_START_CKPT:-none}"
 echo "norm_stats=${NORM_CONFIG}  [${NORM_SOURCE}]"
@@ -312,7 +455,7 @@ fi
 if [ "$STAGE" = "tune" ]; then
   STORAGE="${STORAGE:-sqlite:///${RUN_DIR}/study.db}"
   SAMPLER_OFFSET="${SAMPLER_OFFSET:-0}"
-  STUDY_NAME="sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${PROTO_TAG}_seed${SEED}"
+  STUDY_NAME="sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}"
 
   run_tuner () {   # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
     local gpu="$1" ntrials="$2" seed="$3" pin=""
@@ -339,6 +482,9 @@ if [ "$STAGE" = "tune" ]; then
       --lr-schedule "$LR_SCHEDULE" \
       --sr-warmup-epochs "$SR_WARMUP_EPOCHS" \
       --l2sp-lambda "$L2SP_LAMBDA" \
+      --adaptive-norm "$ADAPTIVE_NORM_FLAG" \
+      --adaptive-norm-momentum "$ADAPTIVE_NORM_M" \
+      --norm-recalibrate "$NORM_RECALIBRATE" \
       --seed "$seed" \
       --train-seed "$SEED" \
       --study-name "$STUDY_NAME" \
@@ -403,7 +549,7 @@ if [ "$STAGE" = "bench" ]; then
   fi
 
   STORE_DIR="${STORE_DIR:-${INSTAROAD_ROOT}/benchmarks}"   # SHARED across experiments
-  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${PROTO_TAG}}"
+  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}}"
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
   TILE_METRICS="${TILE_METRICS:-apls}"
@@ -538,6 +684,9 @@ MODEL_ARGS=(--model.upsampler "$UPSAMPLER" --model.freeze_sr "$FREEZE_SR"
             --model.lr_schedule "$LR_SCHEDULE"
             --model.sr_warmup_epochs "$SR_WARMUP_EPOCHS"
             --model.l2sp_lambda "$L2SP_LAMBDA"
+            --model.adaptive_norm "$ADAPTIVE_NORM_FLAG"
+            --model.adaptive_norm_momentum "$ADAPTIVE_NORM_M"
+            --model.norm_recalibrate "$NORM_RECALIBRATE"
             --model.sr_snapshot_every "$SR_SNAPSHOT_EVERY")
 if [ -n "$WARM_START_CKPT" ]; then
   MODEL_ARGS+=(--model.warm_start_unet "$WARM_START_CKPT")

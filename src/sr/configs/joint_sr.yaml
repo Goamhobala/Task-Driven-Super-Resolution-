@@ -76,6 +76,52 @@ model:
                               # toward the PRETRAINED SR weights (Li et al.
                               # 2018). 0 = pure task-driven SR (TDSR-DET);
                               # escalate only on sr_drift_rel evidence.
+  # ---- adaptive post-SR normalisation (docs/adaptive_norm_plan.md) --------
+  # The z-score below the SR net uses FROZEN dataset stats, valid only while
+  # the SR output distribution stays put. SEN2SR's FFT HardConstraint pins each
+  # band's DC term to the bicubic input so it barely moves; SR4RS has no anchor
+  # and can wander freely under task-only fine-tuning. Both flags default OFF:
+  # every existing arm and benchmark row stays bit-for-bit comparable.
+  adaptive_norm: false        # per-batch EMA of the post-SR moments on
+                              # STOP-GRAD buffers, used in training as well as
+                              # eval — i.e. permanently on BatchNorm's
+                              # INFERENCE path, never batch-stats-in-forward
+                              # (that would backprop through the statistics).
+                              # No learnable gamma/beta: the UNet's first conv
+                              # absorbs any per-band affine itself.
+  adaptive_norm_momentum: 0.01   # new = (1-m)*old + m*batch; horizon ~1/m
+                              # steps. PINNED, never searched — it is also the
+                              # only loss-side restoring force against SR drift
+                              # (a perfect tracker makes the task loss exactly
+                              # affine-invariant). Diagnose with adapt_lag_max.
+  adaptive_norm_warmup_steps: 0  # delay the EMA (e.g. past the SR LR ramp)
+  adaptive_norm_check_every: 50  # steps between std-hard-band checks (1 host
+                              # sync each, so not every step). 0 disables the
+                              # guard entirely — tests only, never a run.
+  norm_recalibrate: "off"     # off | pre | post | auto — exact PreciseBN-style
+                              # (QUOTED: bare `off` is boolean False in YAML)
+                              # recompute of the post-SR stats over
+                              # norm_recalibrate_batches train batches.
+                              #   pre  = before fitting. The COMPLETE fix for
+                              #          frozen-SR arms (r1/r5): stationary
+                              #          output stats, adapter otherwise stale
+                              #          from step 0.
+                              #   post = at end of training; last.ckpt (and an
+                              #          UNMONITORED _final.ckpt) are then
+                              #          REWRITTEN so they carry population
+                              #          stats. A monitored _best.ckpt keeps
+                              #          its own epoch's stats by design.
+                              #   auto = pre if SR frozen, post if
+                              #          adaptive_norm, off for bicubic.
+  norm_recalibrate_batches: 200
+  sr_functional_monitor: true # PSNR/RMSE of the CURRENT SR output vs the
+                              # INITIAL net's output on one fixed batch. No
+                              # ground truth involved — a drift distance, not a
+                              # quality score, and the only monitor that can
+                              # see the SR restructuring content at fixed
+                              # mean/std. Numerically inert; auto-skipped when
+                              # the SR net has no trainable params.
+  sr_monitor_samples: 2
   pos_weight: 5.0
   threshold: 0.5
   upsampler: sen2sr           # sen2sr (Lite/CNN) | sen2sr_full (Mamba; needs

@@ -141,6 +141,30 @@ def build_objective(args, base_cfg: dict):
                         else float(model_cfg.get("sr_warmup_epochs", 1.0)))
     l2sp_lambda = (args.l2sp_lambda if args.l2sp_lambda is not None
                    else float(model_cfg.get("l2sp_lambda", 0.0)))
+    # Adaptive post-SR normalisation (docs/adaptive_norm_plan.md). PINNED, not
+    # searched: the momentum is the EMA's lag, which is itself the only
+    # restoring force against SR output drift -- letting TPE pick it would tune
+    # a stability knob on 15-epoch trial scores. Same discipline as the pinned
+    # batch size.
+    adaptive_norm = (args.adaptive_norm == "true" if args.adaptive_norm is not None
+                     else bool(model_cfg.get("adaptive_norm", False)))
+    adaptive_norm_momentum = (args.adaptive_norm_momentum
+                              if args.adaptive_norm_momentum is not None
+                              else float(model_cfg.get("adaptive_norm_momentum", 0.01)))
+    norm_recalibrate = (args.norm_recalibrate
+                        if args.norm_recalibrate is not None
+                        else str(model_cfg.get("norm_recalibrate", "off")))
+    # The remaining adapter settings have no CLI flag (they are not treatment
+    # variables), but they MUST still be read from the base config: otherwise a
+    # config that changes one is honoured in the refit and silently ignored in
+    # every trial, so the search would score a different adapter than it ships.
+    adapt_rest = {
+        k: model_cfg[k] for k in (
+            "adaptive_norm_warmup_steps", "adaptive_norm_check_every",
+            "norm_recalibrate_batches", "sr_functional_monitor",
+            "sr_monitor_samples",
+        ) if k in model_cfg
+    }
     search_pos_weight = True
     search_tl_theta = search_gap_theta = search_mix_w = False
     if loss_arm:
@@ -238,6 +262,10 @@ def build_objective(args, base_cfg: dict):
             lr_schedule=lr_schedule,
             sr_warmup_epochs=sr_warmup_epochs,
             l2sp_lambda=l2sp_lambda,
+            adaptive_norm=adaptive_norm,
+            adaptive_norm_momentum=adaptive_norm_momentum,
+            norm_recalibrate=norm_recalibrate,
+            **adapt_rest,
             loss_arm=loss_arm,
             **trial_hp,
         )
@@ -297,7 +325,10 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
                        mask_dirname: str | None = None,
                        lr_schedule: str | None = None,
                        sr_warmup_epochs: float | None = None,
-                       l2sp_lambda: float | None = None) -> Path:
+                       l2sp_lambda: float | None = None,
+                       adaptive_norm: bool | None = None,
+                       adaptive_norm_momentum: float | None = None,
+                       norm_recalibrate: str | None = None) -> Path:
     p = study.best_params
     # Record the resolved SR treatment AND loss so the refit is unambiguous
     # from the overlay alone (an R0/R1/padded/arm overlay layered over
@@ -329,6 +360,15 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
         model_overlay["sr_warmup_epochs"] = sr_warmup_epochs
     if l2sp_lambda is not None:
         model_overlay["l2sp_lambda"] = l2sp_lambda
+    # Adaptive-norm constants: pinned into the overlay so the refit runs the
+    # SAME adapter the search scored. An unpinned refit of an adaptive-norm
+    # search would silently fall back to the base config's frozen stats.
+    if adaptive_norm is not None:
+        model_overlay["adaptive_norm"] = bool(adaptive_norm)
+    if adaptive_norm_momentum is not None:
+        model_overlay["adaptive_norm_momentum"] = adaptive_norm_momentum
+    if norm_recalibrate is not None:
+        model_overlay["norm_recalibrate"] = str(norm_recalibrate)
     data_overlay = {"batch_size": p["batch_size"]}
     if mask_source:
         # Label-source leak fix: a raster-mask search must not silently refit
@@ -504,6 +544,21 @@ def parse_args(argv=None):
                     help="Override model.lr_schedule (default: base config's, "
                          "cosine). Applies to the trials AND is pinned into "
                          "the overlay for the refit.")
+    ap.add_argument("--adaptive-norm", default=None, choices=["true", "false"],
+                    help="Override model.adaptive_norm: per-batch EMA of the "
+                         "post-SR normalisation statistics (default: base "
+                         "config's, i.e. false = frozen dataset stats).")
+    ap.add_argument("--adaptive-norm-momentum", type=float, default=None,
+                    help="Override model.adaptive_norm_momentum. PINNED into "
+                         "the overlay, never searched: it is a stability knob "
+                         "(the EMA lag IS the restoring force), not a "
+                         "hyperparameter a 15-epoch trial can score.")
+    ap.add_argument("--norm-recalibrate", default=None,
+                    choices=["off", "pre", "post", "auto"],
+                    help="Override model.norm_recalibrate: exact PreciseBN-"
+                         "style recompute of the post-SR stats (pre = before "
+                         "fitting, the complete fix for frozen-SR arms; post = "
+                         "before the final ckpt is written).")
     ap.add_argument("--l2sp-lambda", type=float, default=None,
                     help="Override model.l2sp_lambda (default: base config's, "
                          "0.0 = dormant). Escalation knob -- raise above 0 "
@@ -553,6 +608,13 @@ def main(argv=None):
                         else float(model_cfg.get("sr_warmup_epochs", 1.0)))
     l2sp_lambda = (args.l2sp_lambda if args.l2sp_lambda is not None
                    else float(model_cfg.get("l2sp_lambda", 0.0)))
+    adaptive_norm = (args.adaptive_norm == "true" if args.adaptive_norm is not None
+                     else bool(model_cfg.get("adaptive_norm", False)))
+    adaptive_norm_momentum = (args.adaptive_norm_momentum
+                              if args.adaptive_norm_momentum is not None
+                              else float(model_cfg.get("adaptive_norm_momentum", 0.01)))
+    norm_recalibrate = (args.norm_recalibrate if args.norm_recalibrate is not None
+                        else str(model_cfg.get("norm_recalibrate", "off")))
 
     study_name = args.study_name
     if study_name is None:
@@ -560,6 +622,11 @@ def main(argv=None):
                       + ("_frozen" if freeze_sr else "")
                       + f"_pad{sr_pad}_{mask_source}"
                       + ("_warm" if warm_start_unet else "")
+                      # The adapter is part of the treatment, not a nuisance
+                      # setting: an adaptive-norm study must never share a
+                      # storage row with the frozen-stats study of the same arm.
+                      + ("_anorm" if adaptive_norm else "")
+                      + (f"_recal{norm_recalibrate}" if norm_recalibrate != "off" else "")
                       + (f"_{loss_arm}" if loss_arm else ""))
         print(f"[sr.tune] study name (treatment-derived): {study_name}")
 
@@ -599,7 +666,10 @@ def main(argv=None):
                                       mask_dirname=mask_dirname,
                                       lr_schedule=lr_schedule,
                                       sr_warmup_epochs=sr_warmup_epochs,
-                                      l2sp_lambda=l2sp_lambda)
+                                      l2sp_lambda=l2sp_lambda,
+                                      adaptive_norm=adaptive_norm,
+                                      adaptive_norm_momentum=adaptive_norm_momentum,
+                                      norm_recalibrate=norm_recalibrate)
     print(f"\nBest {MONITOR}={study.best_value:.4f} (trial #{study.best_trial.number})")
     print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}")
     print(f"Wrote Lightning overlay -> {overlay_path}")
