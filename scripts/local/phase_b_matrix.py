@@ -40,6 +40,7 @@ WHY EXP_TAG IS OVERRIDDEN — this one is a real trap
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -141,6 +142,12 @@ def main(argv=None) -> int:
     ap.add_argument("--mix-w-max", type=float, default=0.75)
     ap.add_argument("--allow-defaults", action="store_true",
                     help="use engine θ defaults when a parent overlay lacks them")
+    ap.add_argument("--no-bench", action="store_true",
+                    help="chain tune -> fit only, leaving the arm unscored. The θ "
+                         "sweep lives inside STAGE=bench, so this skips sweeping "
+                         "too — use it to train a batch of arms now and sweep + "
+                         "bench them all together later, which keeps every arm's "
+                         "θ* selected under one identical protocol run.")
     ap.add_argument("--run", action="store_true", help="execute instead of printing")
     args = ap.parse_args(argv)
 
@@ -156,7 +163,8 @@ def main(argv=None) -> int:
             raise SystemExit(f"unknown region {r!r} (known: {list(REGIONS)})")
 
     print(f"# runs root : {root}")
-    print(f"# stage     : {args.stage}")
+    print(f"# stage     : {args.stage}"
+          + ("  (tune -> fit only; NOT swept, NOT benched)" if args.no_bench else ""))
     print(f"# inherited : {', '.join(INHERIT)}  (searched in the child: lr, mix_w)")
     print(f"# mix_w     : [{args.mix_w_min}, {args.mix_w_max}]\n")
 
@@ -188,8 +196,8 @@ def main(argv=None) -> int:
                 f"SEED={args.seed}",
             ]
 
-            for stage in (("tune", "fit", "bench") if args.stage == "all"
-                          else (args.stage,)):
+            chain = ("tune", "fit") if args.no_bench else ("tune", "fit", "bench")
+            for stage in (chain if args.stage == "all" else (args.stage,)):
                 # Idempotency, same markers pilot_seq.sh skips on.
                 if stage == "tune":
                     if (run_dir / "best_params.yaml").is_file():
