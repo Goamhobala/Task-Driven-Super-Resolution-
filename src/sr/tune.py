@@ -97,6 +97,10 @@ def build_objective(args, base_cfg: dict):
     upscale = data_cfg.get("upscale", 4)
     devices = _resolve_devices(args.devices)
     encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
+    # Selection criterion for the objective, the pruner AND EarlyStopping
+    # (--monitor; module-constant default keeps legacy paths byte-identical).
+    monitor = getattr(args, "monitor", MONITOR)
+    monitor_mode = MONITOR_MODE  # both supported criteria maximise
     sen2sr_dir = args.sen2sr_dir or model_cfg.get("sen2sr_dir")
     upsampler = args.upsampler or model_cfg.get("upsampler", "sen2sr")
     freeze_sr = (model_cfg.get("freeze_sr", False) if args.freeze_sr is None
@@ -270,11 +274,16 @@ def build_objective(args, base_cfg: dict):
             **trial_hp,
         )
 
-        pruning_cb = PyTorchLightningPruningCallback(trial, monitor=MONITOR)
-        best_cb = BestScoreCallback()
-        callbacks = [pruning_cb, best_cb]
+        pruning_cb = PyTorchLightningPruningCallback(trial, monitor=monitor)
+        # Track BOTH criteria every trial: the monitored one scores the trial,
+        # the other lands in user attrs for the cross-criterion re-ranking
+        # audit (docs/ap_threshold_protocol_plan.md §2.2) at zero extra cost.
+        best_iou_cb = BestScoreCallback("val_iou", "max")
+        best_ap_cb = BestScoreCallback("val_ap", "max")
+        best_cb = best_ap_cb if monitor == "val_ap" else best_iou_cb
+        callbacks = [pruning_cb, best_iou_cb, best_ap_cb]
         if args.patience > 0:
-            callbacks.append(EarlyStopping(monitor=MONITOR, mode=MONITOR_MODE, patience=args.patience))
+            callbacks.append(EarlyStopping(monitor=monitor, mode=monitor_mode, patience=args.patience))
 
         trainer = pl.Trainer(
             max_epochs=args.max_epochs,
@@ -323,9 +332,15 @@ def build_objective(args, base_cfg: dict):
             torch.cuda.empty_cache()
         pruning_cb.check_pruned()
 
-        # Best val_iou across epochs (callback_metrics alone = last epoch's).
+        # Cross-criterion audit attrs (best-across-epochs, one per criterion).
+        if best_iou_cb.best is not None:
+            trial.set_user_attr("best_val_iou", best_iou_cb.best)
+        if best_ap_cb.best is not None:
+            trial.set_user_attr("best_val_ap", best_ap_cb.best)
+
+        # Best monitored value across epochs (callback_metrics = last epoch's).
         if best_cb.best is None:
-            raise RuntimeError(f"'{MONITOR}' was never logged; cannot score the trial.")
+            raise RuntimeError(f"'{monitor}' was never logged; cannot score the trial.")
         return float(best_cb.best)
 
     return objective
@@ -344,7 +359,8 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
                        l2sp_lambda: float | None = None,
                        adaptive_norm: bool | None = None,
                        adaptive_norm_momentum: float | None = None,
-                       norm_recalibrate: str | None = None) -> Path:
+                       norm_recalibrate: str | None = None,
+                       monitor: str = MONITOR) -> Path:
     p = study.best_params
     # Record the resolved SR treatment AND loss so the refit is unambiguous
     # from the overlay alone (an R0/R1/padded/arm overlay layered over
@@ -409,7 +425,7 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
     header = (
         "# Best hyperparameters from sr.tune (Optuna). Deep-merges over the base config:\n"
         f"#   python -m sr.cli fit --config src/sr/configs/joint_sr.yaml --config {overlay_path.name}\n"
-        f"# best {MONITOR}={study.best_value:.4f}  trial #{study.best_trial.number}{alpha}\n"
+        f"# best {monitor}={study.best_value:.4f}  trial #{study.best_trial.number}{alpha}\n"
     )
     with open(overlay_path, "w") as fh:
         fh.write(header)
@@ -425,7 +441,7 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
                 "loss_arm": loss_arm,
                 "alpha_lr_sr_over_lr": (p["lr_sr"] / p["lr"]) if has_lr_sr else None,
                 "n_trials": len(study.trials),
-                "monitor": MONITOR,
+                "monitor": monitor,
             },
             fh,
             indent=2,
@@ -526,6 +542,13 @@ def parse_args(argv=None):
                          "flags live outside the searched params, so mixed "
                          "trials would be incomparable and TPE would model "
                          "the union.")
+    ap.add_argument("--monitor", default=MONITOR, choices=["val_iou", "val_ap"],
+                    help="Selection metric for the objective, the pruner AND "
+                         "EarlyStopping. val_ap = threshold-free (binned AP; "
+                         "the _new-series protocol). Default val_iou keeps "
+                         "legacy paths byte-identical. Studies must not "
+                         "resume across a criterion change -- _stages_tv.sh "
+                         "folds the monitor into STUDY_NAME for exactly that.")
     ap.add_argument("--storage", default=None,
                     help="Optuna storage URL, e.g. sqlite:///runs/sr_optuna/study.db (enables resume).")
     ap.add_argument("--seed", type=int, default=None,
@@ -688,8 +711,9 @@ def main(argv=None):
                                       l2sp_lambda=l2sp_lambda,
                                       adaptive_norm=adaptive_norm,
                                       adaptive_norm_momentum=adaptive_norm_momentum,
-                                      norm_recalibrate=norm_recalibrate)
-    print(f"\nBest {MONITOR}={study.best_value:.4f} (trial #{study.best_trial.number})")
+                                      norm_recalibrate=norm_recalibrate,
+                                      monitor=args.monitor)
+    print(f"\nBest {args.monitor}={study.best_value:.4f} (trial #{study.best_trial.number})")
     print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}")
     print(f"Wrote Lightning overlay -> {overlay_path}")
 

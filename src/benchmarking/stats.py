@@ -189,6 +189,15 @@ def _micro_buffered(g: pd.DataFrame, metric: str) -> float:
     contributes nothing to precision, and a road-free chip nothing to recall —
     the same rule the NaN convention in `buffered_metrics` encodes.
     """
+    # Accept both the unsuffixed names and the radius-suffixed sweep columns
+    # (buffered_f1_r3), so a tolerance sweep aggregates the same way. Anchored
+    # regex, not partition("_r") — that splits buffered_RECALL at its own 'r'.
+    import re as _re
+    m = _re.fullmatch(r"(buffered_(?:precision|recall|f1))(_r[0-9p]+)?", metric)
+    if m is None:
+        raise ValueError(f"{metric!r} is not a buffered metric")
+    base, sfx = m.group(1), m.group(2) or ""
+
     def pooled(ratio_col: str, den: pd.Series) -> float:
         r = g[ratio_col]
         keep = r.notna() & (den > 0)
@@ -198,13 +207,13 @@ def _micro_buffered(g: pd.DataFrame, metric: str) -> float:
 
     n_pred = g["tp"] + g["fp"]
     n_gt = g["tp"] + g["fn"]
-    if metric == "buffered_precision":
-        return pooled("buffered_precision", n_pred)
-    if metric == "buffered_recall":
-        return pooled("buffered_recall", n_gt)
-    if metric == "buffered_f1":
-        prec = pooled("buffered_precision", n_pred)
-        rec = pooled("buffered_recall", n_gt)
+    if base == "buffered_precision":
+        return pooled(f"buffered_precision{sfx}", n_pred)
+    if base == "buffered_recall":
+        return pooled(f"buffered_recall{sfx}", n_gt)
+    if base == "buffered_f1":
+        prec = pooled(f"buffered_precision{sfx}", n_pred)
+        rec = pooled(f"buffered_recall{sfx}", n_gt)
         if not (prec == prec) or not (rec == rec) or (prec + rec) == 0:
             return float("nan") if (prec != prec or rec != rec) else 0.0
         return 2.0 * prec * rec / (prec + rec)

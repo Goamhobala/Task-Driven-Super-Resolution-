@@ -70,6 +70,9 @@ def create_study_shared(study_name, storage, seed):
                                    engine_kwargs={"connect_args": {"timeout": 60}})
             return optuna.create_study(
                 study_name=study_name,
+                # Fixed, not derived from the monitor: both supported
+                # criteria (val_iou, val_ap) maximise. A future minimising
+                # monitor must thread a direction through here too.
                 direction="maximize",
                 storage=store,
                 load_if_exists=storage is not None,
@@ -175,6 +178,10 @@ def build_objective(args, base_cfg: dict):
         print(f"[unet.tune] label source: <split>/{data_cfg['mask_dirname']}/ (not CDNGI masks_raster)")
     devices = _resolve_devices(args.devices)
     encoder_weights = resolve_encoder_weights(base_cfg, args.encoder_weights)
+    # Selection criterion for the objective, the pruner AND EarlyStopping
+    # (--monitor; module-constant default keeps legacy paths byte-identical).
+    monitor = getattr(args, "monitor", MONITOR)
+    monitor_mode = MONITOR_MODE  # both supported criteria maximise
 
     def objective(trial: optuna.Trial) -> float:
         # --- search space (log-uniform where scale-free) ----------------------
@@ -217,11 +224,16 @@ def build_objective(args, base_cfg: dict):
             norm_std=data_cfg["norm_std"],
         )
 
-        pruning_cb = PyTorchLightningPruningCallback(trial, monitor=MONITOR)
-        best_cb = BestScoreCallback()
-        callbacks = [pruning_cb, best_cb]
+        pruning_cb = PyTorchLightningPruningCallback(trial, monitor=monitor)
+        # Track BOTH criteria every trial: the monitored one scores the trial,
+        # the other lands in user attrs for the cross-criterion re-ranking
+        # audit (docs/ap_threshold_protocol_plan.md §2.2) at zero extra cost.
+        best_iou_cb = BestScoreCallback("val_iou", "max")
+        best_ap_cb = BestScoreCallback("val_ap", "max")
+        best_cb = best_ap_cb if monitor == "val_ap" else best_iou_cb
+        callbacks = [pruning_cb, best_iou_cb, best_ap_cb]
         if args.patience > 0:
-            callbacks.append(EarlyStopping(monitor=MONITOR, mode=MONITOR_MODE, patience=args.patience))
+            callbacks.append(EarlyStopping(monitor=monitor, mode=monitor_mode, patience=args.patience))
 
         trainer = pl.Trainer(
             max_epochs=args.max_epochs,
@@ -253,11 +265,17 @@ def build_objective(args, base_cfg: dict):
         # Optuna>=3.5 pruning callbacks defer the raised TrialPruned to here.
         pruning_cb.check_pruned()
 
-        # Score on the BEST val_iou across epochs, per the module docstring --
-        # callback_metrics holds only the last epoch's value, which with
-        # EarlyStopping is ~patience epochs past the peak.
+        # Cross-criterion audit attrs (best-across-epochs, one per criterion).
+        if best_iou_cb.best is not None:
+            trial.set_user_attr("best_val_iou", best_iou_cb.best)
+        if best_ap_cb.best is not None:
+            trial.set_user_attr("best_val_ap", best_ap_cb.best)
+
+        # Score on the BEST monitored value across epochs, per the module
+        # docstring -- callback_metrics holds only the last epoch's value,
+        # which with EarlyStopping is ~patience epochs past the peak.
         if best_cb.best is None:
-            raise RuntimeError(f"'{MONITOR}' was never logged; cannot score the trial.")
+            raise RuntimeError(f"'{monitor}' was never logged; cannot score the trial.")
         return float(best_cb.best)
 
     return objective
@@ -267,7 +285,7 @@ def build_objective(args, base_cfg: dict):
 # Output: best trial -> Lightning config overlay
 # --------------------------------------------------------------------------- #
 def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights, mask_dirname,
-                       precision=None, lr_schedule=None) -> Path:
+                       precision=None, lr_schedule=None, monitor=MONITOR) -> Path:
     p = study.best_params
     # Pin encoder_weights AND mask_dirname too, so the refit reproduces the SAME
     # init (imagenet vs random) and label source (CDNGI vs OSM) the search ran
@@ -296,7 +314,7 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights, mask
     header = (
         "# Best hyperparameters from unet.tune (Optuna). Deep-merges over the base config:\n"
         f"#   python -m unet.cli fit --config src/unet/configs/unet.yaml --config {overlay_path.name}\n"
-        f"# best {MONITOR}={study.best_value:.4f}  trial #{study.best_trial.number}\n"
+        f"# best {monitor}={study.best_value:.4f}  trial #{study.best_trial.number}\n"
     )
     with open(overlay_path, "w") as fh:
         fh.write(header)
@@ -309,7 +327,7 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights, mask
                 "best_trial": study.best_trial.number,
                 "best_params": p,
                 "n_trials": len(study.trials),
-                "monitor": MONITOR,
+                "monitor": monitor,
             },
             fh,
             indent=2,
@@ -335,6 +353,13 @@ def parse_args(argv=None):
     ap.add_argument("--n-trials", type=int, default=25)
     ap.add_argument("--timeout", type=float, default=None, help="Wall-clock budget in seconds (optional).")
     ap.add_argument("--study-name", default="unet_optuna")
+    ap.add_argument("--monitor", default=MONITOR, choices=["val_iou", "val_ap"],
+                    help="Selection metric for the objective, the pruner AND "
+                         "EarlyStopping. val_ap = threshold-free (binned AP; "
+                         "the _new-series protocol). Default val_iou keeps "
+                         "legacy paths byte-identical. Studies must not "
+                         "resume across a criterion change -- use a fresh "
+                         "--study-name.")
     ap.add_argument("--storage", default=None,
                     help="Optuna storage URL, e.g. sqlite:///runs/unet_optuna/study.db (enables resume).")
     ap.add_argument("--seed", type=int, default=None,
@@ -405,8 +430,9 @@ def main(argv=None):
     overlay_path = write_best_overlay(study, out_dir, encoder_weights, mask_dirname,
                                       precision=args.precision,
                                       lr_schedule=base_cfg.get("model", {})
-                                                          .get("lr_schedule", "cosine"))
-    print(f"\nBest {MONITOR}={study.best_value:.4f} (trial #{study.best_trial.number})")
+                                                          .get("lr_schedule", "cosine"),
+                                      monitor=args.monitor)
+    print(f"\nBest {args.monitor}={study.best_value:.4f} (trial #{study.best_trial.number})")
     print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}  mask_dirname={mask_dirname}")
     print(f"Wrote Lightning overlay -> {overlay_path}")
 

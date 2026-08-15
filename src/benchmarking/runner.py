@@ -379,11 +379,20 @@ def _rows_at_threshold(metas, probs, target, masks, threshold, ms_per_chip,
             "inference_ms": ms_per_chip,
         }
         if buffer_px is not None:
-            from benchmarking.buffered_metrics import buffered_scores
+            gd = None if gt_dists is None else gt_dists[i]
+            radii = buffer_px if isinstance(buffer_px, (list, tuple)) else [buffer_px]
+            if len(radii) == 1:
+                from benchmarking.buffered_metrics import buffered_scores
 
-            row.update(buffered_scores(
-                pred_bin[i], np.asarray(masks[i]), rho=buffer_px,
-                gt_dist=None if gt_dists is None else gt_dists[i]))
+                row.update(buffered_scores(pred_bin[i], np.asarray(masks[i]),
+                                           rho=radii[0], gt_dist=gd))
+            else:
+                # Several tolerances share one pair of distance transforms, so
+                # a rho sweep is nearly the price of a single rho.
+                from benchmarking.buffered_metrics import buffered_scores_multi
+
+                row.update(buffered_scores_multi(
+                    pred_bin[i], np.asarray(masks[i]), radii=radii, gt_dist=gd))
         rows.append(row)
         if canvases is not None:
             pred_full, gt_full = canvases
@@ -560,9 +569,17 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
     # off the same probs the pixel metrics already use, so all 37 θ come out of
     # one inference pass — which is what makes θ* selectable on it.
     if buffer_px is not None:
-        buffer_px = float(buffer_px)
-        if buffer_px < 0:
-            raise ValueError(f"buffer_px must be >= 0, got {buffer_px}")
+        # Accept a scalar or a sequence of radii. A sequence emits
+        # radius-suffixed columns (buffered_f1_r1 ...); a scalar keeps the
+        # unsuffixed names existing stores already use.
+        if isinstance(buffer_px, (list, tuple)):
+            buffer_px = [float(r) for r in buffer_px]
+        else:
+            buffer_px = [float(buffer_px)]
+        if any(r < 0 for r in buffer_px):
+            raise ValueError(f"buffer_px radii must be >= 0, got {buffer_px}")
+        if len(buffer_px) == 1:
+            buffer_px = buffer_px[0]
     if model == "sr":
         mask_source = mask_source or "graph"
         mask_dirname = mask_dirname or "mask_osm_2pt5"

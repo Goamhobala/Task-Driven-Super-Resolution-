@@ -1012,6 +1012,9 @@ class JointSRUNetLightning(UNetLightning):
             self.log("sr_drift_rel", drift, on_epoch=True, sync_dist=True)
 
     def on_validation_epoch_end(self):
+        # The parent hook logs val_theta_star / val_iou_at_theta_star —
+        # without this super() call it would be silently shadowed here.
+        super().on_validation_epoch_end()
         self._log_sr_drift()
         self._log_adapt_stats()
         self._log_functional_drift()

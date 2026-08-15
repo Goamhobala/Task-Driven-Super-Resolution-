@@ -10,7 +10,12 @@ from __future__ import annotations
 import lightning.pytorch as pl
 import segmentation_models_pytorch as smp
 import torch
-from torchmetrics.classification import BinaryF1Score, BinaryJaccardIndex
+from torchmetrics import Metric
+from torchmetrics.classification import (
+    BinaryAveragePrecision,
+    BinaryF1Score,
+    BinaryJaccardIndex,
+)
 
 
 def build_model(encoder_name="resnet34", encoder_weights="imagenet", in_channels=3, classes=1):
@@ -23,6 +28,43 @@ def build_model(encoder_name="resnet34", encoder_weights="imagenet", in_channels
         in_channels=in_channels,
         classes=classes,
     )
+
+
+class ThresholdGridStats(Metric):
+    """Global tp/fp/fn at a fixed θ grid; argmax-IoU readout.
+
+    A per-epoch audit of the operating point: logs where θ* sits and what IoU
+    it buys, so a training run shows whether θ* plateaus. The actual selection
+    sweep stays in ``benchmarking.cli sweep`` (post-refit); this metric never
+    selects anything.
+    """
+
+    full_state_update = False
+
+    def __init__(self, thresholds):
+        super().__init__()
+        # The grid is configuration, not accumulated state: a non-persistent
+        # buffer follows the module across devices but stays out of the
+        # checkpoint state_dict (old/new checkpoints stay interchangeable).
+        self.register_buffer("grid", torch.tensor(list(thresholds)),
+                             persistent=False)
+        for s in ("tp", "fp", "fn"):
+            self.add_state(s, default=torch.zeros(len(self.grid), dtype=torch.long),
+                           dist_reduce_fx="sum")
+
+    def update(self, probs, target):
+        p = probs.flatten()
+        t = target.flatten().bool()
+        for i, th in enumerate(self.grid):
+            pred = p >= th
+            self.tp[i] += (pred & t).sum()
+            self.fp[i] += (pred & ~t).sum()
+            self.fn[i] += (~pred & t).sum()
+
+    def compute(self):
+        iou = self.tp / (self.tp + self.fp + self.fn).clamp(min=1)
+        j = int(iou.argmax())
+        return {"theta_star": self.grid[j], "iou_at_theta_star": iou[j]}
 
 
 class UNetLightning(pl.LightningModule):
@@ -105,6 +147,14 @@ class UNetLightning(pl.LightningModule):
         self.val_f1 = BinaryF1Score()
         self.test_iou = BinaryJaccardIndex()
         self.test_f1 = BinaryF1Score()
+        # Threshold-free AP for val_ap model selection (binned: the un-binned
+        # estimator stores every pred/target pair — GBs at 2.5 m). Fed fp32
+        # PROBABILITIES in _eval_step; in-range inputs pass through unchanged
+        # (torchmetrics only applies its sigmoid to out-of-range preds).
+        self.val_ap = BinaryAveragePrecision(thresholds=201)
+        self.test_ap = BinaryAveragePrecision(thresholds=201)
+        # θ-grid audit (0.05..0.95, step 0.05): val only, logged every epoch.
+        self.val_thetagrid = ThresholdGridStats([i / 20 for i in range(1, 20)])
 
     def forward(self, x):
         return self.model(x)
@@ -152,27 +202,45 @@ class UNetLightning(pl.LightningModule):
         return loss
 
     # -- per-crop val/test -------------------------------------------------
-    def _eval_step(self, batch, iou_metric, f1_metric):
+    def _eval_step(self, batch, iou_metric, f1_metric, ap_metric, thetagrid=None):
         images, masks, _ = batch
         logits = self(images)
         loss = self._loss(logits, masks)
-        preds = torch.sigmoid(logits) > self.hparams.threshold
+        probs = torch.sigmoid(logits)
+        preds = probs > self.hparams.threshold
         target = (masks > 0.5).long()
         iou_metric.update(preds, target)
         f1_metric.update(preds, target)
+        # fp32 before the ranking metrics: bf16's 8 mantissa bits collapse
+        # ~20k distinct probabilities to ~1.4k tied values, and AP is a
+        # ranking statistic.
+        ap_metric.update(probs.float(), target)
+        if thetagrid is not None:
+            thetagrid.update(probs.float(), target)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        loss = self._eval_step(batch, self.val_iou, self.val_f1)
+        loss = self._eval_step(batch, self.val_iou, self.val_f1, self.val_ap,
+                               self.val_thetagrid)
         self.log("val_loss", loss, prog_bar=True, on_epoch=True,
                  batch_size=batch[0].size(0), sync_dist=True)
         self.log("val_iou", self.val_iou, prog_bar=True, on_epoch=True)
         self.log("val_f1", self.val_f1, prog_bar=True, on_epoch=True)
+        self.log("val_ap", self.val_ap, prog_bar=True, on_epoch=True)
+
+    def on_validation_epoch_end(self):
+        # compute() returns a dict, so the scalar metric-object logging path
+        # doesn't apply: log the two readouts manually, then reset.
+        stats = self.val_thetagrid.compute()
+        self.log("val_theta_star", stats["theta_star"])
+        self.log("val_iou_at_theta_star", stats["iou_at_theta_star"])
+        self.val_thetagrid.reset()
 
     def test_step(self, batch, batch_idx):
-        self._eval_step(batch, self.test_iou, self.test_f1)
+        self._eval_step(batch, self.test_iou, self.test_f1, self.test_ap)
         self.log("test_iou", self.test_iou, on_epoch=True)
         self.log("test_f1", self.test_f1, on_epoch=True)
+        self.log("test_ap", self.test_ap, on_epoch=True)
 
     def configure_optimizers(self):
         opt = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)

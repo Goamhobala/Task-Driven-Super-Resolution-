@@ -90,6 +90,65 @@ def buffered_scores(pred: np.ndarray, gt: np.ndarray,
             "buffered_f1": f1}
 
 
+def buffered_scores_multi(pred: np.ndarray, gt: np.ndarray,
+                          radii=(1, 2, 3, 4, 5),
+                          gt_dist: np.ndarray | None = None) -> dict[str, float]:
+    """Buffered P/R/F1 at SEVERAL tolerances, from one pair of distance maps.
+
+    Scoring rho = 1..5 costs barely more than scoring rho = 3 alone: the two
+    EDTs are the whole expense, and each extra radius is one comparison against
+    an array that already exists. That is what makes a tolerance SWEEP —
+    "how fast does the score rise as we forgive more registration error?" —
+    cheap enough to record on every bench rather than as a special study.
+
+    Keys are suffixed with the radius (`buffered_f1_r3`), unlike the
+    single-radius `buffered_scores`, whose unsuffixed names existing stores
+    already use. Both may be emitted side by side without collision.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    pred = np.asarray(pred).astype(bool)
+    gt = np.asarray(gt).astype(bool)
+    radii = [float(r) for r in radii]
+
+    p_any, g_any = pred.any(), gt.any()
+    out: dict[str, float] = {}
+    if not p_any and not g_any:                     # undefined, as in cldice
+        for r in radii:
+            k = _rkey(r)
+            out |= {f"buffered_precision_{k}": float("nan"),
+                    f"buffered_recall_{k}": float("nan"),
+                    f"buffered_f1_{k}": float("nan")}
+        return out
+    if not p_any or not g_any:                      # total miss / pure hallucination
+        for r in radii:
+            k = _rkey(r)
+            out |= {f"buffered_precision_{k}": 0.0,
+                    f"buffered_recall_{k}": 0.0, f"buffered_f1_{k}": 0.0}
+        return out
+
+    if gt_dist is None:
+        gt_dist = distance_transform_edt(~gt)
+    pred_dist = distance_transform_edt(~pred)
+    d_pred_to_gt = gt_dist[pred]        # distance from each predicted px to GT
+    d_gt_to_pred = pred_dist[gt]        # ... and from each GT px to prediction
+
+    for r in radii:
+        k = _rkey(r)
+        precision = float((d_pred_to_gt <= r).mean())
+        recall = float((d_gt_to_pred <= r).mean())
+        den = precision + recall
+        out[f"buffered_precision_{k}"] = precision
+        out[f"buffered_recall_{k}"] = recall
+        out[f"buffered_f1_{k}"] = 0.0 if den == 0 else 2 * precision * recall / den
+    return out
+
+
+def _rkey(r: float) -> str:
+    """`3` -> 'r3', `2.5` -> 'r2p5' — a column-name-safe radius suffix."""
+    return "r" + (f"{int(r)}" if float(r).is_integer() else f"{r}".replace(".", "p"))
+
+
 def gt_distance(gt: np.ndarray) -> np.ndarray | None:
     """EDT of a GT chip, or None when the chip has no road at all.
 

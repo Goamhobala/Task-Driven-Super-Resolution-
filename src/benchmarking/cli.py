@@ -1,5 +1,7 @@
 """Benchmarking CLI -- eval a checkpoint to the store, then compare / summarise.
     eval      score a trained checkpoint over footprint chips -> sharded store
+    sweep     score a checkpoint at every θ in a grid off ONE inference pass ->
+              sweep.json (θ* selection / sensitivity curve; store never written)
     eval-dir  eval EVERY checkpoint under a dir (model_name/seed/θ* from each
               run's train_meta.json/sweep.json) into one store, then report
     compare   paired bootstrap CI + Wilcoxon signed-rank between two models
@@ -108,6 +110,32 @@ def _main(
 # --------------------------------------------------------------------------- #
 # shared helpers
 # --------------------------------------------------------------------------- #
+def _parse_radii(spec):
+    """'3' -> 3.0;  '1,2,3,4,5' -> [1.0..5.0];  None -> None."""
+    if spec is None:
+        return None
+    vals = [float(x) for x in str(spec).replace(" ", ",").split(",") if x]
+    if not vals:
+        return None
+    return vals[0] if len(vals) == 1 else vals
+
+
+def _parse_theta_grid(spec: str) -> list[float]:
+    """'0.05:0.95:0.05' -> [0.05, 0.10, ..., 0.95] (stop-inclusive)."""
+    try:
+        lo, hi, step = (float(x) for x in spec.split(":"))
+    except ValueError as e:
+        raise typer.BadParameter(
+            f"--thresholds must be start:stop:step, got {spec!r}") from e
+    if not (0.0 < lo <= hi < 1.0) or step <= 0:
+        raise typer.BadParameter(
+            f"--thresholds needs 0 < start <= stop < 1 and step > 0, got {spec!r}")
+    n = int(round((hi - lo) / step))
+    # round() kills float-accumulation dust so the JSON keys read "0.15",
+    # not "0.15000000000000002".
+    return [round(lo + i * step, 10) for i in range(n + 1)]
+
+
 def _load_metric_table(store_dir, metric):
     """(df, unit) for ``metric``: the chips table if the column lives there,
     else the tiles table with ``tile_id`` renamed to ``chip_id`` — the stats
@@ -319,7 +347,7 @@ def run_eval(
     max_tiles: Annotated[Optional[int], typer.Option(help="Score only the first N tiles of the split (quick local smoke)")] = None,
     stratum: Annotated[Optional[str], typer.Option(help="Score only this stratum, e.g. Urban | PeriUrban | Rural (case/dash-insensitive)")] = None,
     stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
-    buffer_px: Annotated[Optional[float], typer.Option(help="Add buffered precision/recall/F1 with this pixel tolerance (3 = 7.5 m at 2.5 m GSD). Unlike --tile-metric these are per-chip and sweepable.")] = None,
+    buffer_px: Annotated[Optional[str], typer.Option(help="Buffered precision/recall/F1 tolerance(s) in px: '3', or a comma list '1,2,3,4,5' for a tolerance sweep (columns gain an _r<N> suffix). Several radii share one distance transform, so the sweep is nearly free. 3 px = 7.5 m at 2.5 m GSD.")] = None,
     wandb_meta: Annotated[Optional[Path], typer.Option(help="train_meta.json with a `wandb` block: resume that run and push the bench metrics (incl. APLS) to its summary")] = None,
 ):
     """Score a checkpoint over the split's footprint chips -> the sharded store.
@@ -338,10 +366,91 @@ def run_eval(
         exp_tag=exp_tag, label_source=label_source,
         tile_metrics=tuple(tile_metric or ()), check=check, device=device,
         threshold=threshold, max_tiles=max_tiles,
-        stratum=stratum, stratum_col=stratum_col, buffer_px=buffer_px,
+        stratum=stratum, stratum_col=stratum_col,
+        buffer_px=_parse_radii(buffer_px),
     )
     if wandb_meta is not None:
         _push_bench_to_wandb(wandb_meta, run_id, store_dir, split)
+
+
+@app.command(name="sweep")
+def run_sweep(
+    dataset_dir: Annotated[Path, typer.Option(help="ROSA dataset root (has splits/<split>.csv)")],
+    checkpoint: Annotated[Path, typer.Option(help="Trained .ckpt to sweep")],
+    model_name: Annotated[str, typer.Option(help="Config identifier, recorded as `run` in the JSON")],
+    split: Annotated[str, typer.Option(help="Split to sweep. Training-side splits stamp purpose=selection; test stamps purpose=sensitivity (reporting only — NEVER selection)")] = "val",
+    model: Annotated[str, typer.Option(help="Model family loader: unet | sr")] = "unet",
+    seed: Annotated[int, typer.Option(help="Training seed (stamped on the per-chip rows)")] = 0,
+    cell_m: Annotated[float, typer.Option(help="Footprint cell edge in metres (chip unit)")] = 2560.0,
+    chip_px: Annotated[Optional[int], typer.Option(help="Override: cell edge in native px (bypasses the transform)")] = None,
+    batch_size: Annotated[int, typer.Option(help="Chips per forward pass (unet family)")] = 8,
+    mask_source: Annotated[Optional[str], typer.Option(help="sr GT: graph (masks_graph parquet) | raster (<split>/<mask-dirname>)")] = None,
+    mask_dirname: Annotated[Optional[str], typer.Option(help="unet: remap the CSV mask dir; sr raster: HR mask dir")] = None,
+    sen2sr_dir: Annotated[Optional[Path], typer.Option(help="Override the checkpoint's baked-in SR weights dir")] = None,
+    config_yaml: Annotated[Optional[Path], typer.Option(help="Training config (e.g. best_params.yaml), recorded only")] = None,
+    check: Annotated[str, typer.Option(help="tp+fn-vs-mask invariant: first | all | off")] = "first",
+    device: Annotated[Optional[str], typer.Option(help="cuda | cpu (default: auto)")] = None,
+    max_tiles: Annotated[Optional[int], typer.Option(help="Score only the first N tiles of the split (quick local smoke)")] = None,
+    thresholds: Annotated[str, typer.Option(help="θ grid as start:stop:step, stop-inclusive")] = "0.05:0.95:0.05",
+    criterion: Annotated[str, typer.Option(help="Argmax criterion for best_threshold: iou | f1 (global pooled counts)")] = "iou",
+    buffer_px: Annotated[Optional[str], typer.Option(help="Buffered-F1 tolerance(s) in px, e.g. '1,2,3,4,5' — adds buffered_* columns to every θ entry")] = None,
+    out: Annotated[Optional[Path], typer.Option(help="Output JSON (default: <ckpt run dir>/sweep.json)")] = None,
+):
+    """Score one checkpoint at every θ in the grid off ONE inference pass -> sweep.json.
+
+    Writes NOTHING to the store (that is ``eval``'s job, once, at θ*). Per θ the
+    JSON records GLOBAL pooled-count IoU/F1 (tp/fp/fn summed over chips — the
+    same accumulation semantics as the training-time BinaryJaccardIndex), plus
+    micro-pooled buffered metrics when --buffer-px is given. ``best_threshold``
+    is the --criterion argmax; ``purpose`` derives from the split so a test
+    sweep can never be mistaken for a selection artifact.
+    """
+    from benchmarking.runner import evaluate
+    from benchmarking.stats import _micro_metric_from_counts
+
+    if criterion not in ("iou", "f1"):
+        raise typer.BadParameter(f"--criterion must be iou or f1, got {criterion!r}")
+    grid = _parse_theta_grid(thresholds)
+
+    per_theta = evaluate(
+        dataset_dir=dataset_dir, checkpoint=checkpoint, model_name=model_name,
+        seed=seed, store_dir=None, split=split, model=model, cell_m=cell_m,
+        chip_px=chip_px, batch_size=batch_size, mask_source=mask_source,
+        mask_dirname=mask_dirname, sen2sr_dir=sen2sr_dir, config_yaml_path=config_yaml,
+        tile_metrics=(), check=check, device=device, max_tiles=max_tiles,
+        sweep_thresholds=grid, buffer_px=_parse_radii(buffer_px),
+    )
+
+    curve = {}
+    for t, chips in sorted(per_theta.items()):
+        entry = {"iou": _micro_metric_from_counts(chips, "iou"),
+                 "f1": _micro_metric_from_counts(chips, "f1")}
+        for col in sorted(c for c in chips.columns if c.startswith("buffered_")):
+            entry[col] = _micro_metric_from_counts(chips, col)
+        curve[str(t)] = entry
+
+    scored = {t: v[criterion] for t, v in curve.items() if v[criterion] == v[criterion]}
+    if not scored:
+        raise typer.BadParameter(
+            f"{criterion} is NaN at every θ — empty split or degenerate GT?")
+    # Ascending-θ iteration + max => ties resolve to the LOWEST θ.
+    best_key = max(scored, key=lambda t: scored[t])
+    best_t = float(best_key)
+    if best_key in (str(grid[0]), str(grid[-1])):
+        print(f"WARN: best_threshold={best_t} sits on the grid edge — widen --thresholds.")
+
+    purpose = "sensitivity" if split == "test" else "selection"
+    if out is None:
+        ck = checkpoint.resolve()
+        run_dir = ck.parent.parent if ck.parent.name == "checkpoints" else ck.parent
+        out = run_dir / "sweep.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(
+        {"run": model_name, "split": split, "criterion": criterion,
+         "purpose": purpose, "checkpoint": str(Path(checkpoint).resolve()),
+         "best_threshold": best_t, "sweep": curve}, indent=1))
+    print(f"θ* = {best_t}  ({criterion}={scored[best_key]:.4f} global, split={split}, "
+          f"purpose={purpose})\nwrote {out}")
 
 
 @app.command(name="eval-dir")
@@ -581,9 +690,17 @@ def _run_report(store_dir, metrics, aggregation, n_boot, out,
         # present alongside the counts its denominator comes from; "tp" alone is
         # not enough. Falling back to macro is right for apls/cldice, which have
         # no per-chip denominator at all.
-        need = {"tp", "fp", "fn", met} if met.startswith("buffered_") else {"tp"}
-        agg = (aggregation if met in _MICRO_DERIVABLE and need <= set(df.columns)
-               else "macro")
+        if met.startswith("buffered_"):
+            import re as _re
+            _m = _re.fullmatch(r"(buffered_(?:precision|recall|f1))(_r[0-9p]+)?", met)
+            base = _m.group(1) if _m else met
+            need = {"tp", "fp", "fn", met,
+                    met.replace("buffered_f1", "buffered_precision"),
+                    met.replace("buffered_f1", "buffered_recall")}
+            derivable = base in _MICRO_DERIVABLE
+        else:
+            need, derivable = {"tp"}, met in _MICRO_DERIVABLE
+        agg = aggregation if derivable and need <= set(df.columns) else "macro"
         n_units = df["chip_id"].nunique() if "chip_id" in df.columns else len(df)
         typer.echo(f"\n== per-model {met} (mean +/- std across seeds, {agg}, "
                    f"per-{unit}){label}  n_{unit}s={n_units} ==")
