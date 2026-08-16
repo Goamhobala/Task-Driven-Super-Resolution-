@@ -169,6 +169,21 @@ def wilcoxon_paired(
     }
 
 
+def is_micro_derivable(metric: str) -> bool:
+    """Can `metric` be pooled from counts?
+
+    Accepts the radius-suffixed buffered columns (`buffered_f1_r3`) as well as
+    the bare names. Kept as ONE function because the same question is asked in
+    three places — cross_seed_ci's guard, _micro_metric_from_counts' dispatch,
+    and cli._run_report's per-metric fallback — and they drifted apart once
+    already, producing an empty per-model table with no error shown.
+    """
+    import re as _re
+    if metric in _MICRO_DERIVABLE:
+        return True
+    return bool(_re.fullmatch(r"buffered_(?:precision|recall|f1)_r[0-9p]+", metric))
+
+
 def _micro_buffered(g: pd.DataFrame, metric: str) -> float:
     """Pool the BUFFERED scores over the group's chips.
 
@@ -264,7 +279,7 @@ def cross_seed_ci(
     ``{"mean", "std", "ci_lo", "ci_hi", "n_seeds", "per_seed_values"}``. With a
     single seed, ``std`` and the CI are NaN (undefined, not zero).
     """
-    if aggregation == "micro" and metric not in _MICRO_DERIVABLE:
+    if aggregation == "micro" and not is_micro_derivable(metric):
         raise ValueError(
             f"micro aggregation requires a count-derivable metric "
             f"{_MICRO_DERIVABLE}; got {metric!r} — use aggregation='macro'"
