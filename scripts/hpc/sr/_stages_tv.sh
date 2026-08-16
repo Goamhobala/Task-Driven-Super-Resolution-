@@ -873,6 +873,11 @@ if [ "$STAGE" = "bench" ]; then
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
   TILE_METRICS="${TILE_METRICS:-apls}"
+  # Per-chip extras, empty = off. Set them so a seed-N bench carries the SAME
+  # columns as the seed-0 rows it will be averaged with — a ragged store makes
+  # cross_seed_ci drop whichever metric a seed happens to lack.
+  BUFFER_PX="${BUFFER_PX:-}"          # e.g. "1,2,3,4,5"
+  AP_BINS="${AP_BINS:-}"              # e.g. 101
 
   # val tiles are TRAINING tiles under this protocol — scoring on them would be
   # a train-set number sitting in the same store as honest test numbers.
@@ -928,6 +933,8 @@ if [ "$STAGE" = "bench" ]; then
     --label-source "$LABEL_SOURCE" \
     --threshold "$THETA" \
     ${METRIC_ARGS[@]+"${METRIC_ARGS[@]}"} \
+    ${BUFFER_PX:+--buffer-px "$BUFFER_PX"} \
+    ${AP_BINS:+--ap-bins "$AP_BINS"} \
     ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"} \
     "${MASK_ARGS_BENCH[@]}"
 
@@ -1040,6 +1047,17 @@ if [ ! -f "$CKPT" ]; then
     echo "ERROR: no checkpoint under ${RUN_DIR}/checkpoints/ — refit produced none. Skipping test." >&2
     exit 1
   fi
+fi
+
+# Under the refit protocol this is the ONLY held-out evaluation. Under the
+# pilot (TRAIN_SPLITS=train) it is a free preview — decisions still read the
+# val bench, and the pilot never compares these test numbers between arms.
+# SKIP_TEST=1 keeps test genuinely unseen; the Lightning twin has had this
+# guard since the pilot was ported, this engine had not (added 2026-08-16).
+if [ "${SKIP_TEST:-0}" = "1" ]; then
+  echo "=== SKIP_TEST=1: not running the test split (pilot mode) ==="
+  echo "=== FIT DONE ===  checkpoints in ${RUN_DIR}/checkpoints"
+  exit 0
 fi
 
 # The ONLY held-out evaluation in this protocol.
