@@ -7,6 +7,8 @@ TP/FP/FN, DDP-synced) is a once-per-pixel score, not a per-overlapping-tile aver
 """
 from __future__ import annotations
 
+import math
+
 import lightning.pytorch as pl
 import segmentation_models_pytorch as smp
 import torch
@@ -28,6 +30,49 @@ def build_model(encoder_name="resnet34", encoder_weights="imagenet", in_channels
         in_channels=in_channels,
         classes=classes,
     )
+
+
+class LinearProbeHead(torch.nn.Module):
+    """Per-pixel logistic regression: ``in_channels`` weights + 1 bias.
+
+    The read-out for the RL-series (docs/sr_linear_probe.md §3). It has NO
+    spatial context and NO capacity, so every bit of structure in its prediction
+    must have been put there by whatever produced its input — which is the whole
+    point: it removes the decoder's ability to compensate for an SR front-end
+    that degrades the image.
+
+    Deliberately a 1x1 ``Conv2d`` rather than a bare tensor contraction, so the
+    module is a drop-in for ``smp.Unet`` at the ``self.model`` slot and every
+    downstream consumer (``forward``, ``_eval_step``, ``load_from_checkpoint``,
+    the benchmarking runner, the viz path) keeps working untouched.
+
+    Init: weights ZERO, bias ``logit(prior)``. The probe therefore starts by
+    predicting the class prior everywhere instead of at an arbitrary point,
+    which matters when a compound loss is applied to a 5-parameter model. With
+    ``bias_prior=None`` the bias starts at 0 (p=0.5) and is expected to be set
+    later via :meth:`set_bias_prior` — ``JointSRUNetLightning.setup`` measures
+    the road base rate from the training data and does exactly that.
+    """
+
+    def __init__(self, in_channels: int, classes: int = 1,
+                 bias_prior: float | None = None):
+        super().__init__()
+        self.conv = torch.nn.Conv2d(in_channels, classes, kernel_size=1, bias=True)
+        torch.nn.init.zeros_(self.conv.weight)
+        torch.nn.init.zeros_(self.conv.bias)
+        if bias_prior is not None:
+            self.set_bias_prior(bias_prior)
+
+    @torch.no_grad()
+    def set_bias_prior(self, prior: float) -> float:
+        """Set the bias to ``logit(prior)``. Returns the logit actually used."""
+        p = min(max(float(prior), 1e-6), 1.0 - 1e-6)   # keep the logit finite
+        b = math.log(p / (1.0 - p))
+        self.conv.bias.fill_(b)
+        return b
+
+    def forward(self, x):
+        return self.conv(x)
 
 
 class ThresholdGridStats(Metric):
@@ -117,10 +162,28 @@ class UNetLightning(pl.LightningModule):
         sr_radius: int = 1,
         warmup_start: int = 30,
         warmup_ramp: int = 10,
+        # --- read-out head (docs/sr_linear_probe.md §3) ---------------------
+        # "unet" = the 24 M-param U-Net, i.e. every arm that existed before this
+        # parameter did. "linear" = a 1x1 conv (in_channels weights + 1 bias).
+        # ADDED AT THE END of the signature and defaulted to "unet" so no
+        # existing caller, config or checkpoint changes behaviour; the only
+        # visible effect on a U-Net run is an extra `head: unet` line in
+        # hparams. When "linear", build_model is never called — the point is to
+        # not construct and discard a 24 M-param network.
+        head: str = "unet",
+        # Bias init for the linear probe: logit(head_bias_prior). None = leave
+        # at 0 (p=0.5) and let the owning module measure the base rate from the
+        # data (JointSRUNetLightning.setup does).
+        head_bias_prior: float | None = None,
     ):
         super().__init__()
         self.save_hyperparameters()
-        self.model = build_model(encoder_name, encoder_weights, in_channels, classes)
+        if head == "linear":
+            self.model = LinearProbeHead(in_channels, classes, head_bias_prior)
+        elif head == "unet":
+            self.model = build_model(encoder_name, encoder_weights, in_channels, classes)
+        else:
+            raise ValueError(f"head={head!r} (unet | linear)")
         if loss_arm:
             from unet.losses import build_loss
 

@@ -100,16 +100,43 @@ SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-1.0}"
 LOSS_ARM="${LOSS_ARM:-pstar_dice}"
 PSTAR="${PSTAR:-gap_t4_ce}"
 
+# LIVE under this arm — these are actually consumed. pstar=gap_t4_ce routes to
+# make_gap_tl_ce(r=gap_r, K=gap_k, ell=tl_ell, theta=tl_theta,
+# gap_theta=gap_theta, extra_kernels=t4_kernels(tl_ell), pos_weight=λ), and
+# mix_w sets the P*/region split (losses.py _pixel_slot + the pstar_dice branch).
 GAP_R="${GAP_R:-4}"
 GAP_K="${GAP_K:-60.0}"
 TL_ELL="${TL_ELL:-5}"
+
+# INERT under this arm — carried only so the overlay matches r0_new's field for
+# field. build_loss does `base, _, skel = arm.partition("+")` and spreads the
+# warmup dict into the config ONLY in the `+cldice` / `+skelrec` branches;
+# `pstar_dice` has no `+`, so there is no skeleton slot and none of the four
+# below is ever read. tversky_alpha likewise: pstar_dice uses a plain DiceLoss,
+# not TverskyLoss. The shell passes them unconditionally, which is why they show
+# up in best_params.yaml looking meaningful.
 TVERSKY_ALPHA="${TVERSKY_ALPHA:-0.7}"
 CL_ALPHA="${CL_ALPHA:-0.3}"
 CL_ITERS="${CL_ITERS:-5}"
 SKEL_W="${SKEL_W:-1.0}"          # -> model.sr_w (SkeletonRecall weight, NOT SR)
 SKEL_RADIUS="${SKEL_RADIUS:-1}"  # -> model.sr_radius
 
-# Loss-schedule offsets as r0_new ran them (engine defaults are 30/10).
+# Skeleton-term ramp: 0 until epoch WARMUP_START, then linear to full over
+# WARMUP_RAMP epochs. INERT here for the reason above — 15/5 is copied from
+# r0_new's overlay purely so the two arms' recorded configs match.
+#
+# BUT IF A SKELETON SLOT IS EVER ADDED (LOSS_ARM=pstar_dice+skelrec / +cldice),
+# these wake up and 15/5 is the WRONG SCALING for this engine:
+#   * 30/10 is the from-scratch protocol scaled to E=100 (losses.py §4.5 —
+#     engage at 30% of the budget, full by 40%). REFIT_EPOCHS here is 100.
+#   * 15/5 comes from the LOSS PILOT, which scaled §4.5 to E=50
+#     (LightningStudio/loss/_pilot_new.sh). r0_new evidently inherited the
+#     pilot's env; at REFIT_EPOCHS=100 that engages the term at 15% instead.
+#   * Worse, TUNE_EPOCHS=15, so warmup_start=15 means the skeleton term never
+#     engages in ANY tune trial — the search would optimise a different loss
+#     from the one the refit runs. sr.tune guards exactly this, but only when
+#     `"+" in loss_arm`, so it stays silent for the pinned arm.
+# Rescale to 30/10 before adding a skeleton slot, and do it to all five arms.
 WARMUP_START="${WARMUP_START:-15}"
 WARMUP_RAMP="${WARMUP_RAMP:-5}"
 

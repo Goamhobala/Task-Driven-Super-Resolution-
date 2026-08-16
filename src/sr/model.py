@@ -293,6 +293,35 @@ class JointSRUNetLightning(UNetLightning):
         sr_radius: int = 1,
         warmup_start: int = 30,
         warmup_ramp: int = 10,
+        # --- read-out head: RL-series (docs/sr_linear_probe.md) -------------
+        # "unet" (default) = every R-arm, unchanged. "linear" = a 5-parameter
+        # 1x1 conv after the z-score adapter, which removes the decoder's
+        # ability to compensate for a bad SR front-end.
+        head: str = "unet",
+        # logit(prior) bias init. None = measured from the training masks in
+        # setup() and written into hparams, so the value that was actually used
+        # is recorded in the checkpoint rather than recomputed on restore.
+        head_bias_prior: float | None = None,
+        # Cap on the batches setup() streams for that measurement. A base rate
+        # near 0.2 is estimated to well under a percent from a few hundred
+        # batches, and this runs before EVERY fit — an unbounded pass over the
+        # 2.5 m masks is not worth the precision it would buy.
+        head_bias_batches: int = 200,
+        # LP-FT warm start for the joint arms (rl2 <- rl1, rl4 <- rl3): path to
+        # the frozen twin's FINAL ckpt, whose head weights initialise this
+        # model's probe. STRICTLY SEPARATE from warm_start_unet, which zeroes
+        # the SR warmup ramp (correct when a staged U-Net start IS the warmup,
+        # wrong here) — routing the head through that flag would silently drop
+        # sr_warmup_epochs and nothing in the run would say so.
+        warm_start_head: str | None = None,
+        # Per-parameter-GROUP gradient clipping (§6.2). Lightning's
+        # `gradient_clip_val` is a single global L2 norm over all trainable
+        # params, so "1.0" means one thing in rl1 (5 params) and another in rl2
+        # (5 + ~240 k SEN2SR params) — the nuisance variable would move with the
+        # treatment. > 0 clips the SR group ONLY, at this norm, and leaves the
+        # head unclipped; the Trainer-level clip must then be off. 0 = the old
+        # global behaviour, i.e. every R-arm.
+        clip_sr: float = 0.0,
     ):
         # reflectance_scale: divisor mapping the dataloader's raw values to the
         # 0-1 reflectance the SR nets expect. 10000.0 for DN-valued COGs;
@@ -315,7 +344,14 @@ class JointSRUNetLightning(UNetLightning):
             cl_alpha=cl_alpha, cl_iters=cl_iters, sr_w=sr_w,
             sr_radius=sr_radius, warmup_start=warmup_start,
             warmup_ramp=warmup_ramp,
+            head=head, head_bias_prior=head_bias_prior,
         )
+        if head == "linear":
+            # No encoder exists. Blank the two hparams so a linear-probe run can
+            # never be read back — from the checkpoint, the bench store or the
+            # overlay — as though it were a resnet34 encoder ablation.
+            self.hparams.encoder_name = None
+            self.hparams.encoder_weights = None
         # NOTE: no second save_hyperparameters() call — the parent's call
         # already captures this subclass's full init signature (Lightning
         # walks the __init__ frames), including upsampler/lr_sr/freeze_sr.
@@ -466,6 +502,88 @@ class JointSRUNetLightning(UNetLightning):
             self._adapt_fast_mean.copy_(self.band_mean.reshape(-1))
             self._adapt_fast_std.copy_(self.band_std.reshape(-1))
 
+        # Consumed by setup(), which must NOT overwrite a warm-started bias.
+        self._head_warm_started = bool(warm_start_head)
+        if warm_start_head:
+            if head != "linear":
+                raise ValueError(
+                    f"warm_start_head is set but head={head!r} — there is no "
+                    "linear probe to warm-start. The staged U-Net path is "
+                    "warm_start_unet."
+                )
+            if warm_start_unet:
+                raise ValueError(
+                    "warm_start_head and warm_start_unet are mutually exclusive: "
+                    "warm_start_unet auto-disables the SR warmup ramp, which the "
+                    "LP-FT path must keep (docs/sr_linear_probe.md §2)."
+                )
+            self._load_head_from(warm_start_head)
+            # Same reasoning as the staged U-Net start: the probe was fitted
+            # against the twin's statistics, so the guard band and the drift
+            # logs must measure movement from where THIS run starts.
+            self._adapt_init_mean.copy_(self.band_mean)
+            self._adapt_init_std.copy_(self.band_std)
+            self._adapt_fast_mean.copy_(self.band_mean.reshape(-1))
+            self._adapt_fast_std.copy_(self.band_std.reshape(-1))
+
+    # ------------------------------------------------ LP-FT head warm start
+    def _load_head_from(self, ckpt_path: str):
+        """Initialise the linear probe from the frozen twin's FINAL ckpt.
+
+        Mirrors :meth:`_load_unet_from` — including adopting the source's
+        post-SR normalisation buffers — but deliberately does NOT touch
+        ``self._sr_warmup_epochs``. That is the entire reason this is a separate
+        code path rather than a branch inside the U-Net one.
+        """
+        from pathlib import Path
+        p = Path(ckpt_path)
+        if not p.is_file():
+            raise FileNotFoundError(
+                f"warm_start_head={ckpt_path!r} not found — fit the frozen twin "
+                "(rl1 for rl2, rl3 for rl4) first."
+            )
+        ck = torch.load(p, map_location="cpu", weights_only=False)
+        src_hp = ck.get("hyper_parameters", {})
+        src_scale = float(src_hp.get("reflectance_scale", 10000.0))
+        if src_scale != float(self.hparams.reflectance_scale):
+            raise ValueError(
+                f"warm_start_head ckpt was trained with reflectance_scale="
+                f"{src_scale} but this model uses "
+                f"{self.hparams.reflectance_scale}."
+            )
+        if src_hp.get("head") != "linear":
+            raise ValueError(
+                f"warm_start_head ckpt has head={src_hp.get('head')!r}, expected "
+                "'linear'. A U-Net checkpoint cannot seed a linear probe — check "
+                "STAGE1_TAG points at an rl arm, not an r arm."
+            )
+        head_sd = {k[len("model."):]: v for k, v in ck["state_dict"].items()
+                   if k.startswith("model.")}
+        if not head_sd:
+            raise ValueError(f"no 'model.*' keys in {ckpt_path}.")
+        self.model.load_state_dict(head_sd, strict=True)
+        sd = ck["state_dict"]
+        if "band_mean" in sd and "band_std" in sd:
+            src_mean = sd["band_mean"].to(self.band_mean.dtype)
+            src_std = sd["band_std"].to(self.band_std.dtype)
+            if src_mean.shape != self.band_mean.shape:
+                raise ValueError(
+                    f"warm_start_head ckpt has band_mean of shape "
+                    f"{tuple(src_mean.shape)}, this model expects "
+                    f"{tuple(self.band_mean.shape)} — different band count?")
+            d = float((src_mean - self.band_mean).abs().max())
+            self.band_mean.copy_(src_mean)
+            self.band_std.copy_(src_std)
+            print(f"[joint_sr] adopted twin's post-SR norm buffers "
+                  f"(max |Δmean| = {d:.4g} vs this config's dataset stats)")
+        w = self.model.conv.weight.detach().flatten().tolist()
+        b = float(self.model.conv.bias.detach().flatten()[0])
+        print(f"[joint_sr] LP-FT: warm-started the linear probe from {p.name} "
+              f"(upsampler={src_hp.get('upsampler')!r}, "
+              f"freeze_sr={src_hp.get('freeze_sr')}, epoch={ck.get('epoch')})")
+        print(f"[joint_sr]   w={['%.4g' % v for v in w]}  b={b:.4g}  "
+              f"sr_warmup_epochs stays {self._sr_warmup_epochs} (NOT zeroed)")
+
     # ----------------------------------------------------- staged warm start
     def _load_unet_from(self, ckpt_path: str):
         """Initialise self.model (the UNet) from a stage-1 JointSR ckpt."""
@@ -611,7 +729,190 @@ class JointSRUNetLightning(UNetLightning):
                 # gradient into `hr` is still exactly rs/band_std.
                 self._adapt_update(y)
             x_seg = (y - self.band_mean) / self.band_std
+            # getattr, not attribute access: checkpoints written before `head`
+            # existed have no such hparam, and every already-benched R-arm is
+            # one of those.
+            if getattr(self.hparams, "head", "unet") == "linear":
+                # §6.3, amended: the plan assumed the head already sat inside
+                # this fp32 island for the SR arms and that only rl0 (no SR net)
+                # would fall out of it. In fact the island ENDS here for every
+                # arm — `self.model(...)` has always run under the Trainer's
+                # autocast — so a bf16 probe would have been the case across the
+                # whole series, not just the anchor.
+                #
+                # It has to be fp32 for the probe specifically: bf16 carries 8
+                # mantissa bits, and a 5-parameter linear projection produces a
+                # smooth unsaturated logit distribution with substantial mass
+                # near the boundary. At 8 bits that distribution quantises into
+                # heavy ties, and AP — the selection criterion for this whole
+                # series — is a RANKING statistic, so ties degrade it.
+                #
+                # Keyed on the head, not on the presence of an SR stage, so the
+                # precision policy is constant across all five rl arms. Costs
+                # nothing: it is a 1x1 convolution.
+                return self.model(x_seg)
         return self.model(x_seg)
+
+    # ------------------------------------------- per-group gradient clipping
+    def configure_gradient_clipping(self, optimizer, gradient_clip_val=None,
+                                    gradient_clip_algorithm=None):
+        """Clip the SR parameter group only, at ``clip_sr`` (§6.2).
+
+        ``clip_sr == 0`` (every R-arm) falls straight through to Lightning's
+        global behaviour, so nothing about the U-Net path changes.
+        """
+        clip_sr = float(getattr(self.hparams, "clip_sr", 0.0) or 0.0)
+        if clip_sr <= 0:
+            return super().configure_gradient_clipping(
+                optimizer, gradient_clip_val, gradient_clip_algorithm)
+        if gradient_clip_val:
+            # Both would apply, and the global one is precisely the treatment-
+            # dependent norm this override exists to avoid.
+            raise ValueError(
+                f"clip_sr={clip_sr} is set for per-group clipping, but the "
+                f"Trainer also passes gradient_clip_val={gradient_clip_val}. "
+                "Set trainer.gradient_clip_val to 0 — _stages_tv.sh does this "
+                "automatically for HEAD=linear."
+            )
+        if gradient_clip_algorithm not in (None, "norm"):
+            raise ValueError(
+                f"clip_sr implements NORM clipping; got "
+                f"gradient_clip_algorithm={gradient_clip_algorithm!r}.")
+        sr_params = self._sr_trainable_params()
+        if sr_params:
+            torch.nn.utils.clip_grad_norm_(sr_params, clip_sr)
+        # The head group is deliberately NOT clipped — in the frozen arms it is
+        # the only group, so clipping it there and not here (or vice versa)
+        # would make the treatment and the clipping co-vary.
+
+    # ------------------------------------------------ linear-probe bias init
+    def setup(self, stage: str | None = None):
+        """Measure the road base rate and set the probe's bias to its logit.
+
+        Runs in ``setup``, NOT ``on_fit_start``, and the ordering is the point:
+        Lightning calls ``setup`` BEFORE restoring a checkpoint, so a resumed or
+        warm-started run has this initial value overwritten by the trained one
+        rather than clobbering it. A no-op for every U-Net arm.
+        """
+        super().setup(stage)
+        if getattr(self.hparams, "head", "unet") != "linear" or stage not in (None, "fit"):
+            return
+        if getattr(self, "_head_warm_started", False):
+            # LP-FT: _load_head_from ran in __init__ and restored BOTH the twin's
+            # weights and its bias. __init__ is earlier than setup, so the
+            # "setup runs before checkpoint restore" ordering that protects a
+            # --ckpt_path resume runs the WRONG WAY here — without this guard the
+            # bias init would silently overwrite the converged bias and rl2/rl4
+            # would no longer be warm-started in the sense §2 requires.
+            b = float(self.model.conv.bias.detach().flatten()[0])
+            print(f"[joint_sr] linear probe bias = {b:.4f} (warm-started; "
+                  "base-rate init skipped)")
+            return
+        if self.hparams.head_bias_prior is not None:
+            b = self.model.set_bias_prior(self.hparams.head_bias_prior)
+            print(f"[joint_sr] linear probe bias = logit("
+                  f"{self.hparams.head_bias_prior:.6g}) = {b:.4f} (hparam)")
+            return
+        prior = self._measure_road_base_rate()
+        if prior is None:
+            raise RuntimeError(
+                "head='linear' needs a road base rate for the bias init and the "
+                "training masks could not be streamed. Pass head_bias_prior "
+                "explicitly (--model.head_bias_prior)."
+            )
+        # Record it so the checkpoint carries the value that was actually used
+        # and a restore never re-measures against a different split.
+        self.hparams.head_bias_prior = prior
+        b = self.model.set_bias_prior(prior)
+        print(f"[joint_sr] linear probe bias = logit({prior:.6g}) = {b:.4f} "
+              f"(measured from the training masks)")
+
+    def _measure_road_base_rate(self) -> float | None:
+        """Positive-pixel fraction of the training masks, cached per dataset.
+
+        Bounded by ``head_bias_batches``: this is a bias initialiser, not a
+        statistic anyone reports, and the estimate is already far more precise
+        than the initialisation needs long before the loader is exhausted.
+        """
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+
+        try:
+            dm = getattr(self.trainer, "datamodule", None)
+        except RuntimeError:          # not attached to a Trainer
+            dm = None
+        if dm is None:
+            return None
+        # _preserve_rng, like every other auxiliary loader in this file: building
+        # a DataLoader iterator draws _base_seed from the global generator, which
+        # shifts the crop stream the run then trains on. Here that would have
+        # been particularly nasty — the cache check below returns BEFORE the
+        # loop, so a cache miss would consume RNG and a cache hit would not, and
+        # the training crop sequence would depend on whether a JSON file happened
+        # to exist on disk.
+        try:
+            with _preserve_rng():
+                loader = dm.train_dataloader()
+        except Exception as exc:                       # noqa: BLE001
+            print(f"[joint_sr] could not build the train loader for the base-rate "
+                  f"measurement: {exc}")
+            return None
+
+        # Cache beside the dataset's norm stats, keyed on everything that
+        # changes the answer, so two arms of the same series reuse one pass and
+        # a different split/label source can never silently reuse it.
+        cache_path = None
+        ds_dir = getattr(dm, "dataset_dir", None)
+        if ds_dir:
+            key = json.dumps({
+                "splits": sorted(getattr(dm, "train_splits", ["train"]) or ["train"]),
+                "mask_source": getattr(dm, "mask_source", None),
+                "mask_dirname": getattr(dm, "mask_dirname", None),
+                "upscale": int(self.hparams.upscale),
+                "max_batches": int(self.hparams.head_bias_batches),
+            }, sort_keys=True)
+            digest = hashlib.sha1(key.encode()).hexdigest()[:12]
+            cache_path = Path(ds_dir) / f"road_base_rate_{digest}.json"
+            if cache_path.is_file():
+                try:
+                    cached = json.loads(cache_path.read_text())
+                    print(f"[joint_sr] road base rate {cached['base_rate']:.6g} "
+                          f"(cached: {cache_path.name}, {cached['n_batches']} batches)")
+                    return float(cached["base_rate"])
+                except Exception:                      # noqa: BLE001
+                    print(f"[joint_sr] ignoring unreadable cache {cache_path}")
+
+        pos = 0.0
+        tot = 0.0
+        n = 0
+        limit = max(1, int(self.hparams.head_bias_batches))
+        with _preserve_rng():
+            for batch in loader:
+                masks = batch[1] if isinstance(batch, (tuple, list)) else batch["mask"]
+                m = masks.detach().float()
+                pos += float(m.sum())
+                tot += float(m.numel())
+                n += 1
+                if n >= limit:
+                    break
+        if tot <= 0:
+            return None
+        rate = pos / tot
+        print(f"[joint_sr] road base rate {rate:.6g} over {n} batches "
+              f"({int(tot):,} px)")
+        if cache_path is not None:
+            try:
+                tmp = cache_path.with_suffix(f".tmp.{os.getpid()}")
+                tmp.write_text(json.dumps(
+                    {"base_rate": rate, "n_batches": n, "n_pixels": int(tot)},
+                    indent=2))
+                tmp.replace(cache_path)                 # atomic publish
+            except Exception as exc:                    # noqa: BLE001
+                print(f"[joint_sr] could not cache the base rate ({exc}); "
+                      "it will be re-measured next fit.")
+        return rate
 
     # ------------------------------------- adaptive post-SR normalisation
     def _adapt_enabled(self) -> bool:

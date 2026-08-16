@@ -109,12 +109,16 @@ TRAIN_SPLITS="${TRAIN_SPLITS:-train val}"
 PROTO_TAG=""
 MERGE_VAL=1
 case " ${TRAIN_SPLITS} " in
-  *" test "*)
-    echo "ERROR: TRAIN_SPLITS must never contain 'test' — that is the held-out" >&2
-    echo "  evaluation split. Got '${TRAIN_SPLITS}'." >&2
-    exit 2 ;;
-  *" val "*) : ;;
-  *) PROTO_TAG="_holdout"; MERGE_VAL=0 ;;
+*" test "*)
+  echo "ERROR: TRAIN_SPLITS must never contain 'test' — that is the held-out" >&2
+  echo "  evaluation split. Got '${TRAIN_SPLITS}'." >&2
+  exit 2
+  ;;
+*" val "*) : ;;
+*)
+  PROTO_TAG="_holdout"
+  MERGE_VAL=0
+  ;;
 esac
 
 # --- Recipe v2 training dynamics (defaults = the agreed recipe) --------------
@@ -126,11 +130,11 @@ if [ "$REG" = "false" ] || [ "$REG" = "0" ]; then
   LR_SCHEDULE="${LR_SCHEDULE:-none}"
   SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-0}"
 fi
-CLIP="${CLIP:-1.0}"                          # gradient clip (global L2; 0=off)
-LR_SCHEDULE="${LR_SCHEDULE:-cosine}"         # cosine | none
-SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-1.0}"  # SR-group ramp; model auto-off
-                                             # for frozen/bicubic/warm-start
-L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}"            # 0 = dormant L2-SP anchor
+CLIP="${CLIP:-1.0}"                         # gradient clip (global L2; 0=off)
+LR_SCHEDULE="${LR_SCHEDULE:-cosine}"        # cosine | none
+SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-1.0}" # SR-group ramp; model auto-off
+# for frozen/bicubic/warm-start
+L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}" # 0 = dormant L2-SP anchor
 
 # --- Read-out head: U-Net (default) or linear probe (docs/sr_linear_probe.md) -
 # HEAD=linear replaces the 24 M-param U-Net with a 1x1 conv (4 weights + 1 bias)
@@ -149,8 +153,11 @@ L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}"            # 0 = dormant L2-SP anchor
 # — change one and you must change the other.
 HEAD="${HEAD:-unet}"
 case "$HEAD" in
-  unet|linear) : ;;
-  *) echo "ERROR: HEAD must be unet|linear, got '${HEAD}'." >&2; exit 2 ;;
+unet | linear) : ;;
+*)
+  echo "ERROR: HEAD must be unet|linear, got '${HEAD}'." >&2
+  exit 2
+  ;;
 esac
 HEAD_TAG=""
 [ "$HEAD" != "unet" ] && HEAD_TAG="_${HEAD}"
@@ -197,8 +204,11 @@ ADAPTIVE_NORM="${ADAPTIVE_NORM:-1}"
 ADAPTIVE_NORM_M="${ADAPTIVE_NORM_M:-0.01}"
 NORM_RECALIBRATE="${NORM_RECALIBRATE:-post}"
 case "$NORM_RECALIBRATE" in
-  off|pre|post|auto) : ;;
-  *) echo "ERROR: NORM_RECALIBRATE must be off|pre|post|auto, got '${NORM_RECALIBRATE}'." >&2; exit 2 ;;
+off | pre | post | auto) : ;;
+*)
+  echo "ERROR: NORM_RECALIBRATE must be off|pre|post|auto, got '${NORM_RECALIBRATE}'." >&2
+  exit 2
+  ;;
 esac
 ANORM_TAG=""
 ADAPTIVE_NORM_FLAG="false"
@@ -221,27 +231,34 @@ SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-0}"
 #     --dataset-dir <DATASET_DIR> --out-dirname mask_new_2pt5
 # Submit-time MASK_SOURCE=graph reverts to on-the-fly rasterisation.
 case "$LABELS" in
-  new)
-    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_New}"
-    MASK_SOURCE="${MASK_SOURCE:-raster}"   # pre-rasterised graph labels
-    MASK_DIRNAME="${MASK_DIRNAME:-mask_new_2pt5}" ;;
-  all)
-    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_all}"
-    MASK_SOURCE="graph" ;;
-  cdngi)
-    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI}"
-    MASK_SOURCE="graph" ;;
-  overture)
-    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_Overture}"
-    MASK_SOURCE="graph" ;;
-  osm)
-    DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_New}"
-    MASK_SOURCE="raster"
-    MASK_DIRNAME="${MASK_DIRNAME:-mask_osm_2pt5}" ;;  # OSM HR rasters
-  *)
-    echo "ERROR: LABELS must be new|all|cdngi|overture|osm, got '${LABELS}'." >&2; exit 2 ;;
+new)
+  DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_New}"
+  MASK_SOURCE="${MASK_SOURCE:-raster}" # pre-rasterised graph labels
+  MASK_DIRNAME="${MASK_DIRNAME:-mask_new_2pt5}"
+  ;;
+all)
+  DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_all}"
+  MASK_SOURCE="graph"
+  ;;
+cdngi)
+  DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_CDNGI}"
+  MASK_SOURCE="graph"
+  ;;
+overture)
+  DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_Dense_Overture}"
+  MASK_SOURCE="graph"
+  ;;
+osm)
+  DATASET_DIR="${DATASET_DIR:-/scratch/${USER_NAME}/InstaRoad/ROSA_New}"
+  MASK_SOURCE="raster"
+  MASK_DIRNAME="${MASK_DIRNAME:-mask_osm_2pt5}"
+  ;; # OSM HR rasters
+*)
+  echo "ERROR: LABELS must be new|all|cdngi|overture|osm, got '${LABELS}'." >&2
+  exit 2
+  ;;
 esac
-MASK_DIRNAME="${MASK_DIRNAME:-}"   # empty for the graph (on-the-fly) sources
+MASK_DIRNAME="${MASK_DIRNAME:-}" # empty for the graph (on-the-fly) sources
 
 # --- Tune budget (train/val — UNCHANGED from _stages.sh) ---------------------
 N_TRIALS="${N_TRIALS:-60}"
@@ -251,7 +268,7 @@ PATIENCE="${PATIENCE:-3}"
 ENCODER_WEIGHTS="${ENCODER_WEIGHTS:-imagenet}"
 LR_MIN="${LR_MIN:-1e-5}"
 LR_MAX="${LR_MAX:-1e-2}"
-LR_SR_MIN="${LR_SR_MIN:-1e-7}"   # searched only when SR is learned & unfrozen
+LR_SR_MIN="${LR_SR_MIN:-1e-7}" # searched only when SR is learned & unfrozen
 # 1e-3 was 100x the design default (1e-5) and the whole upper decade is
 # known-wasted budget: on 2026-08-13 a sampled lr_sr=3.1e-4 drove the post-SR
 # std out of its band inside 1,400 steps on SEN2SR -- the arm most resistant to
@@ -263,17 +280,17 @@ LR_SR_MIN="${LR_SR_MIN:-1e-7}"   # searched only when SR is learned & unfrozen
 # destruction rate to the UNet's lr, dragging a trial that wants a fast UNet
 # toward a destructive SR lr for no physical reason. Do not "simplify" it back.
 LR_SR_MAX="${LR_SR_MAX:-1e-4}"
-POS_WEIGHT_MIN="${POS_WEIGHT_MIN:-3.352251180486363}"
-POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-3.352251180486363}"
-ENCODERS="${ENCODERS:-resnet34}"      # NOT searched: encoder constancy is the control
-BATCH_SIZES="${BATCH_SIZES:-4}"       # PINNED, not searched (2026-08-12). `length` is
-                                      # fixed per epoch, so a bs=1 trial takes 4x the
-                                      # optimiser steps of a bs=4 trial and wins the
-                                      # tune on step count alone -- batch size is a
-                                      # confound, not a hyperparameter. 4 is a
-                                      # between-arm constant for the whole SR series.
-                                      # NB never change this on a RESUME_FIT: it
-                                      # changes steps/epoch and breaks cosine T_max.
+POS_WEIGHT_MIN="${POS_WEIGHT_MIN:-4.616504933210799}"
+POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-4.616504933210799}"
+ENCODERS="${ENCODERS:-resnet34}" # NOT searched: encoder constancy is the control
+BATCH_SIZES="${BATCH_SIZES:-4}"  # PINNED, not searched (2026-08-12). `length` is
+# fixed per epoch, so a bs=1 trial takes 4x the
+# optimiser steps of a bs=4 trial and wins the
+# tune on step count alone -- batch size is a
+# confound, not a hyperparameter. 4 is a
+# between-arm constant for the whole SR series.
+# NB never change this on a RESUME_FIT: it
+# changes steps/epoch and breaks cosine T_max.
 
 # --- Model-selection criterion (2026-08-16) ----------------------------------
 # val_ap = threshold-free selection (binned AP; docs/ap_threshold_protocol_plan
@@ -296,9 +313,9 @@ MON_TAG=""
 if [ -z "${NUM_WORKERS}" ]; then
   JOB_CPUS="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-4}}"
   if [ "${STAGE}" = "tune" ]; then
-    NUM_WORKERS=$(( JOB_CPUS / SEARCH_GPUS ))
+    NUM_WORKERS=$((JOB_CPUS / SEARCH_GPUS))
   else
-    NUM_WORKERS=$(( JOB_CPUS - 1 ))
+    NUM_WORKERS=$((JOB_CPUS - 1))
   fi
   [ "${NUM_WORKERS}" -lt 1 ] && NUM_WORKERS=1
 fi
@@ -311,11 +328,14 @@ REFIT_GPUS="${REFIT_GPUS:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_joint_final}"
 
 # --- Loss (unet.losses.build_loss; empty = legacy Dice + pos-weighted BCE) ---
-LOSS_ARM="${LOSS_ARM:-gap_tl_ce}"
-PSTAR="${PSTAR:-bce}"
-GAP_R="${GAP_R:-4}";                 GAP_K="${GAP_K:-60.0}"
-TL_ELL="${TL_ELL:-5}";               TL_THETA="${TL_THETA:-0.5409065645350193}"
-GAP_THETA="${GAP_THETA:-0.38105240274638613}"        # official gap binarization
+LOSS_ARM="${LOSS_ARM:-pstar_sdice_ce}"
+PSTAR="${PSTAR:-gap_t4_ce}"
+GAP_R="${GAP_R:-4}"
+GAP_K="${GAP_K:-60.0}"
+TL_ELL="${TL_ELL:-5}"
+TL_THETA="${TL_THETA:-0.40582224484185075}"
+GAP_THETA="${GAP_THETA:-0.6096934757736867}"
+# official gap binarization
 # R-SERIES RULE: the loss is a FROZEN CONTROL across R-arms. Pin the pilot
 # winner's config at submit time: SEARCH_THETAS=false TL_THETA=<θ*>
 # GAP_THETA=<θ*> POS_WEIGHT_MIN=<λ*> POS_WEIGHT_MAX=<λ*> (min==max = a
@@ -326,42 +346,45 @@ SEARCH_THETAS="${SEARCH_THETAS:-true}"
 # for those arms only (consumption-gated in sr.tune, same rule as the θs); the
 # bce_dice anchor stays frozen at 0.5/0.5 by build_loss's design. Kept in sync
 # with the Lightning twin.
-MIX_W="${MIX_W:-0.5}"                   # fixed value when SEARCH_MIX_W=false
 SEARCH_MIX_W="${SEARCH_MIX_W:-false}"
+MIX_W="${MIX_W:-0.6075946831862098}"
 MIX_W_MIN="${MIX_W_MIN:-0.25}"
 MIX_W_MAX="${MIX_W_MAX:-0.75}"
 TVERSKY_ALPHA="${TVERSKY_ALPHA:-0.7}"
-CL_ALPHA="${CL_ALPHA:-0.3}";         CL_ITERS="${CL_ITERS:-5}"
-SKEL_W="${SKEL_W:-1.0}";             SKEL_RADIUS="${SKEL_RADIUS:-1}"
-WARMUP_START="${WARMUP_START:-30}";  WARMUP_RAMP="${WARMUP_RAMP:-10}"
+CL_ALPHA="${CL_ALPHA:-0.3}"
+CL_ITERS="${CL_ITERS:-5}"
+SKEL_W="${SKEL_W:-1.0}"
+SKEL_RADIUS="${SKEL_RADIUS:-1}"
+WARMUP_START="${WARMUP_START:-30}"
+WARMUP_RAMP="${WARMUP_RAMP:-10}"
 
 LOSS_TAG=""
-LOSS_ARGS_TUNE=()   # sr.tune flags (argparse)
-LOSS_ARGS_FIT=()    # sr.cli fit/test flags (LightningCLI --model.*)
+LOSS_ARGS_TUNE=() # sr.tune flags (argparse)
+LOSS_ARGS_FIT=()  # sr.cli fit/test flags (LightningCLI --model.*)
 if [ -n "$LOSS_ARM" ]; then
   # '+' is not filesystem/wandb-friendly -> bce_dice+cldice => bce_dice-cldice
   LOSS_TAG="_$(echo "$LOSS_ARM" | tr '+' '-')"
   LOSS_ARGS_TUNE=(--loss-arm "$LOSS_ARM" --pstar "$PSTAR"
-                  --gap-r "$GAP_R" --gap-k "$GAP_K"
-                  --tl-ell "$TL_ELL" --tl-theta "$TL_THETA"
-                  --gap-theta "$GAP_THETA" --search-thetas "$SEARCH_THETAS"
-                  --mix-w "$MIX_W" --search-mix-w "$SEARCH_MIX_W"
-                  --mix-w-min "$MIX_W_MIN" --mix-w-max "$MIX_W_MAX"
-                  --tversky-alpha "$TVERSKY_ALPHA"
-                  --cl-alpha "$CL_ALPHA" --cl-iters "$CL_ITERS"
-                  --skel-w "$SKEL_W" --skel-radius "$SKEL_RADIUS"
-                  --warmup-start "$WARMUP_START" --warmup-ramp "$WARMUP_RAMP")
+    --gap-r "$GAP_R" --gap-k "$GAP_K"
+    --tl-ell "$TL_ELL" --tl-theta "$TL_THETA"
+    --gap-theta "$GAP_THETA" --search-thetas "$SEARCH_THETAS"
+    --mix-w "$MIX_W" --search-mix-w "$SEARCH_MIX_W"
+    --mix-w-min "$MIX_W_MIN" --mix-w-max "$MIX_W_MAX"
+    --tversky-alpha "$TVERSKY_ALPHA"
+    --cl-alpha "$CL_ALPHA" --cl-iters "$CL_ITERS"
+    --skel-w "$SKEL_W" --skel-radius "$SKEL_RADIUS"
+    --warmup-start "$WARMUP_START" --warmup-ramp "$WARMUP_RAMP")
   # NB tl_theta/gap_theta/pos_weight are NOT in the fit belt: the tune pins
   # them (searched or fixed) into best_params.yaml, and an explicit --model.*
   # here would override the pinned values with the env defaults. The overlay
   # is authoritative for those dims. (Ported from the LS twin, 2026-08-04.)
   LOSS_ARGS_FIT=(--model.loss_arm "$LOSS_ARM" --model.pstar "$PSTAR"
-                 --model.gap_r "$GAP_R" --model.gap_k "$GAP_K"
-                 --model.tl_ell "$TL_ELL"
-                 --model.tversky_alpha "$TVERSKY_ALPHA"
-                 --model.cl_alpha "$CL_ALPHA" --model.cl_iters "$CL_ITERS"
-                 --model.sr_w "$SKEL_W" --model.sr_radius "$SKEL_RADIUS"
-                 --model.warmup_start "$WARMUP_START" --model.warmup_ramp "$WARMUP_RAMP")
+    --model.gap_r "$GAP_R" --model.gap_k "$GAP_K"
+    --model.tl_ell "$TL_ELL"
+    --model.tversky_alpha "$TVERSKY_ALPHA"
+    --model.cl_alpha "$CL_ALPHA" --model.cl_iters "$CL_ITERS"
+    --model.sr_w "$SKEL_W" --model.sr_radius "$SKEL_RADIUS"
+    --model.warmup_start "$WARMUP_START" --model.warmup_ramp "$WARMUP_RAMP")
 fi
 # =============================================================================
 
@@ -419,7 +442,7 @@ mkdir -p "$RUN_DIR"
 NORM_CONFIG_DATASET="${DATASET_DIR}/norm_stats.yaml"
 NORM_CONFIG_TV="${DATASET_DIR}/norm_stats_tv.yaml"
 NORM_CONFIG_REPO="$REPO_DIR/src/unet/configs/norm_stats.yaml"
-NORM_TV_WAIT="${NORM_TV_WAIT:-1800}"   # s to wait on another job's generation
+NORM_TV_WAIT="${NORM_TV_WAIT:-1800}" # s to wait on another job's generation
 USE_TV_STATS=0
 if [ "${NORM_TV:-0}" = "1" ] && [ "$STAGE" = "fit" ] && [ "$MERGE_VAL" = "1" ]; then
   USE_TV_STATS=1
@@ -429,19 +452,22 @@ elif [ "${NORM_TV:-0}" = "1" ]; then
   echo "  holdout, and bench restores the stats from the checkpoint."
 fi
 
-generate_tv_stats () {   # $1 = destination path; echoes nothing, returns 0/1
+generate_tv_stats() { # $1 = destination path; echoes nothing, returns 0/1
   local dest="$1" tmp="$1.tmp.$$" t0 rc
   t0=$(date +%s)
   echo "  generating $(basename "$dest") over train+val ..."
   PYTHONPATH="$REPO_DIR/src" "$VENV_DIR/bin/python" -m sentinel2data.cli norm-stats \
-      --dataset-dir "$DATASET_DIR" --splits train --splits val --out "$tmp"
+    --dataset-dir "$DATASET_DIR" --splits train --splits val --out "$tmp"
   rc=$?
   if [ $rc -ne 0 ] || [ ! -s "$tmp" ]; then
     rm -f "$tmp"
     return 1
   fi
-  mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
-  echo "  wrote ${dest} in $(( $(date +%s) - t0 ))s"
+  mv -f "$tmp" "$dest" || {
+    rm -f "$tmp"
+    return 1
+  }
+  echo "  wrote ${dest} in $(($(date +%s) - t0))s"
   return 0
 }
 
@@ -479,7 +505,8 @@ if [ "$USE_TV_STATS" = "1" ] && [ -z "${NORM_CONFIG:-}" ] && [ ! -f "$NORM_CONFI
     echo "  another job holds ${NORM_TV_LOCK}; waiting up to ${NORM_TV_WAIT}s ..."
     _waited=0
     while [ ! -f "$NORM_CONFIG_TV" ] && [ "$_waited" -lt "$NORM_TV_WAIT" ]; do
-      sleep 10; _waited=$(( _waited + 10 ))
+      sleep 10
+      _waited=$((_waited + 10))
     done
     if [ ! -f "$NORM_CONFIG_TV" ]; then
       # The holder died (or is slower than the wait). Take the lock over rather
@@ -489,7 +516,8 @@ if [ "$USE_TV_STATS" = "1" ] && [ -z "${NORM_CONFIG:-}" ] && [ ! -f "$NORM_CONFI
       rmdir "$NORM_TV_LOCK" 2>/dev/null || true
       generate_tv_stats "$NORM_CONFIG_TV" || {
         echo "ERROR: train+val norm-stats generation failed. See above." >&2
-        exit 2; }
+        exit 2
+      }
     else
       echo "  ${NORM_CONFIG_TV} appeared after ${_waited}s."
     fi
@@ -565,21 +593,23 @@ if [ ! -f "${TRAINVAL_CONFIG}" ]; then
   exit 1
 fi
 case "${UPSAMPLER}" in
-  sen2sr|sen2sr_full)
-    if [ ! -f "${SEN2SR_DIR}/model.safetensor" ]; then
-      echo "ERROR: SEN2SR weights not at ${SEN2SR_DIR} (upsampler=${UPSAMPLER})." >&2
-      echo "  Lite: prefetch with sr.sen2sr_loader.download_sen2sr on a login node;" >&2
-      echo "  full: download the SEN2SR (Mamba) mlstac dir there yourself." >&2
-      exit 1
-    fi ;;
-  sr4rs)
-    if [ ! -f "${SEN2SR_DIR}/gen_weights.safetensors" ]; then
-      echo "ERROR: SR4RS extracted weights not at ${SEN2SR_DIR}/gen_weights.safetensors." >&2
-      echo "  Run scripts/sr4rs/extract_sr4rs.py locally (TF venv), verify with" >&2
-      echo "  'python -m sr.sr4rs_torch --model-dir ...', then upload the three" >&2
-      echo "  gen_* files into ${SEN2SR_DIR}." >&2
-      exit 1
-    fi ;;
+sen2sr | sen2sr_full)
+  if [ ! -f "${SEN2SR_DIR}/model.safetensor" ]; then
+    echo "ERROR: SEN2SR weights not at ${SEN2SR_DIR} (upsampler=${UPSAMPLER})." >&2
+    echo "  Lite: prefetch with sr.sen2sr_loader.download_sen2sr on a login node;" >&2
+    echo "  full: download the SEN2SR (Mamba) mlstac dir there yourself." >&2
+    exit 1
+  fi
+  ;;
+sr4rs)
+  if [ ! -f "${SEN2SR_DIR}/gen_weights.safetensors" ]; then
+    echo "ERROR: SR4RS extracted weights not at ${SEN2SR_DIR}/gen_weights.safetensors." >&2
+    echo "  Run scripts/sr4rs/extract_sr4rs.py locally (TF venv), verify with" >&2
+    echo "  'python -m sr.sr4rs_torch --model-dir ...', then upload the three" >&2
+    echo "  gen_* files into ${SEN2SR_DIR}." >&2
+    exit 1
+  fi
+  ;;
 esac
 if [ -n "${WARM_START_CKPT}" ] && [ ! -f "${WARM_START_CKPT}" ]; then
   echo "ERROR: WARM_START_CKPT=${WARM_START_CKPT} not found — run the stage-1" >&2
@@ -634,7 +664,8 @@ echo "python=$(which python)"
 # -param U-Net under an `rl*` tag. That row would then sit in the append-only
 # store looking like a linear probe. Refuse to start instead.
 if [ "$HEAD" = "linear" ]; then
-  _missing=$(python - <<'PY'
+  _missing=$(
+    python - <<'PY'
 import inspect
 missing = []
 try:
@@ -670,7 +701,7 @@ except Exception as exc:
     missing.append(f"sr.tune introspection failed: {exc}")
 print("\n".join(missing))
 PY
-)
+  )
   if [ -n "${_missing}" ]; then
     echo "ERROR: HEAD=linear, but the linear-probe support is not in this checkout." >&2
     echo "  Missing:" >&2
@@ -707,7 +738,7 @@ if [ "$STAGE" = "tune" ]; then
   SAMPLER_OFFSET="${SAMPLER_OFFSET:-0}"
   STUDY_NAME="sr_${EXP_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}_seed${SEED}"
 
-  run_tuner () {   # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
+  run_tuner() { # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
     local gpu="$1" ntrials="$2" seed="$3" pin=""
     [ -n "$gpu" ] && pin="CUDA_VISIBLE_DEVICES=$gpu"
     env $pin python -m sr.tune \
@@ -764,19 +795,22 @@ if [ "$STAGE" = "tune" ]; then
   echo "=== OPTUNA SEARCH on train/val (n_trials=$N_TRIALS across ${SEARCH_GPUS} GPU(s), ${TUNE_EPOCHS} epochs/trial) ==="
   echo "    stop early (keeps study + writes overlay):  touch ${RUN_DIR}/STOP"
   if [ "$SEARCH_GPUS" -le 1 ]; then
-    run_tuner "" "$N_TRIALS" "$(( SEED * 1000 + SAMPLER_OFFSET ))"
+    run_tuner "" "$N_TRIALS" "$((SEED * 1000 + SAMPLER_OFFSET))"
   else
-    PER_WORKER=$(( (N_TRIALS + SEARCH_GPUS - 1) / SEARCH_GPUS ))
+    PER_WORKER=$(((N_TRIALS + SEARCH_GPUS - 1) / SEARCH_GPUS))
     echo "  fanning out ${SEARCH_GPUS} workers x ${PER_WORKER} trials each"
     pids=()
-    for (( g=0; g<SEARCH_GPUS; g++ )); do
-      run_tuner "$g" "$PER_WORKER" "$(( SEED * 1000 + SAMPLER_OFFSET + g ))" &
+    for ((g = 0; g < SEARCH_GPUS; g++)); do
+      run_tuner "$g" "$PER_WORKER" "$((SEED * 1000 + SAMPLER_OFFSET + g))" &
       pids+=($!)
-      sleep 3   # stagger so worker 0 creates the study before the others attach
+      sleep 3 # stagger so worker 0 creates the study before the others attach
     done
     fail=0
     for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
-    [ "$fail" -eq 0 ] || { echo "ERROR: an Optuna search worker failed (see log above)." >&2; exit 1; }
+    [ "$fail" -eq 0 ] || {
+      echo "ERROR: an Optuna search worker failed (see log above)." >&2
+      exit 1
+    }
   fi
   echo "=== SEARCH DONE ===  best_params.yaml + study.db in $RUN_DIR"
   echo "Next (refit on train+val, then test):"
@@ -800,7 +834,7 @@ if [ "$STAGE" = "bench" ]; then
     fi
   fi
 
-  STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}"   # SHARED across experiments
+  STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}" # SHARED across experiments
   MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}}"
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
@@ -820,7 +854,7 @@ if [ "$STAGE" = "bench" ]; then
   [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_BENCH+=(--mask-dirname "$MASK_DIRNAME")
   METRIC_ARGS=()
   if [ -n "${TILE_METRICS}" ]; then
-    IFS=',' read -r -a _TMS <<< "${TILE_METRICS}"
+    IFS=',' read -r -a _TMS <<<"${TILE_METRICS}"
     for _tm in "${_TMS[@]}"; do METRIC_ARGS+=(--tile-metric "${_tm}"); done
   fi
 
@@ -880,7 +914,8 @@ if [ ! -f "$BEST_CONFIG" ]; then
   echo "ERROR: ${BEST_CONFIG} not found — run STAGE=tune first." >&2
   exit 1
 fi
-echo "--- best hyperparameters (chosen on val, before the merge) ---"; cat "$BEST_CONFIG"
+echo "--- best hyperparameters (chosen on val, before the merge) ---"
+cat "$BEST_CONFIG"
 
 # Refit from inside RUN_DIR so the base config's relative `checkpoints/` lands here.
 cd "$RUN_DIR"
@@ -899,14 +934,14 @@ fi
 # The SR treatment (and loss arm) is passed explicitly (belt) even though the
 # best_params overlay records it too (braces) — drift is impossible.
 MODEL_ARGS=(--model.upsampler "$UPSAMPLER" --model.freeze_sr "$FREEZE_SR"
-            --model.sr_pad "$SR_PAD" --model.sen2sr_dir "$SEN2SR_DIR"
-            --model.lr_schedule "$LR_SCHEDULE"
-            --model.sr_warmup_epochs "$SR_WARMUP_EPOCHS"
-            --model.l2sp_lambda "$L2SP_LAMBDA"
-            --model.adaptive_norm "$ADAPTIVE_NORM_FLAG"
-            --model.adaptive_norm_momentum "$ADAPTIVE_NORM_M"
-            --model.norm_recalibrate "$NORM_RECALIBRATE"
-            --model.sr_snapshot_every "$SR_SNAPSHOT_EVERY")
+  --model.sr_pad "$SR_PAD" --model.sen2sr_dir "$SEN2SR_DIR"
+  --model.lr_schedule "$LR_SCHEDULE"
+  --model.sr_warmup_epochs "$SR_WARMUP_EPOCHS"
+  --model.l2sp_lambda "$L2SP_LAMBDA"
+  --model.adaptive_norm "$ADAPTIVE_NORM_FLAG"
+  --model.adaptive_norm_momentum "$ADAPTIVE_NORM_M"
+  --model.norm_recalibrate "$NORM_RECALIBRATE"
+  --model.sr_snapshot_every "$SR_SNAPSHOT_EVERY")
 if [ -n "$WARM_START_CKPT" ]; then
   MODEL_ARGS+=(--model.warm_start_unet "$WARM_START_CKPT")
 fi
@@ -928,7 +963,10 @@ fi
 # overlay's default rather than needing a second config file.
 # shellcheck disable=SC2206
 TRAIN_SPLITS_ARR=(${TRAIN_SPLITS})
-SPLIT_ARGS=(--data.train_splits "[$(IFS=,; echo "${TRAIN_SPLITS_ARR[*]}")]")
+SPLIT_ARGS=(--data.train_splits "[$(
+  IFS=,
+  echo "${TRAIN_SPLITS_ARR[*]}"
+)]")
 
 echo "=== REFIT on '${TRAIN_SPLITS}' (best config, FIXED ${REFIT_EPOCHS} epochs, no early stopping, ${REFIT_GPUS} GPU) ==="
 python -m sr.cli fit \
@@ -953,7 +991,7 @@ python -m sr.cli fit \
 
 # Log the test metrics to the SAME wandb run the refit just created.
 if LATEST_RUN=$(readlink -f "$RUN_DIR/wandb/latest-run" 2>/dev/null) && [ -n "$LATEST_RUN" ]; then
-  export WANDB_RUN_ID="${LATEST_RUN##*-}"   # .../run-<timestamp>-<id> -> <id>
+  export WANDB_RUN_ID="${LATEST_RUN##*-}" # .../run-<timestamp>-<id> -> <id>
   export WANDB_RESUME=must
   echo "resuming wandb run ${WANDB_RUN_ID} for the test split"
 else

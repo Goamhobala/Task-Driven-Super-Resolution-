@@ -109,6 +109,19 @@ def build_objective(args, base_cfg: dict):
     warm_start_unet = (args.warm_start_unet
                        if args.warm_start_unet is not None
                        else model_cfg.get("warm_start_unet"))
+    # --- read-out head (docs/sr_linear_probe.md) -----------------------------
+    head = args.head or model_cfg.get("head", "unet")
+    warm_start_head = (args.warm_start_head if args.warm_start_head is not None
+                       else model_cfg.get("warm_start_head"))
+    clip_sr = (args.clip_sr if args.clip_sr is not None
+               else float(model_cfg.get("clip_sr", 0.0)))
+    # A linear probe has no encoder. Leaving the categorical in the space would
+    # make TPE model a dimension that cannot affect the objective, and would put
+    # an `encoder_name` in the overlay that no run ever used.
+    search_encoder = head != "linear"
+    if head == "linear":
+        print("[sr.tune] head='linear': encoder_name is NOT searched "
+              f"(no encoder exists); clip_sr={clip_sr} clips the SR group only.")
     # Bicubic (R0) has no learnable SR params and frozen SEN2SR (R1) never
     # updates, so lr_sr is a dead search dimension in both -- skip it entirely
     # rather than let TPE waste trials on it.
@@ -207,7 +220,8 @@ def build_objective(args, base_cfg: dict):
                                           args.pos_weight_max, log=True)
                       if search_pos_weight
                       else model_cfg.get("pos_weight", 5.0))  # ignored by the arm
-        encoder_name = trial.suggest_categorical("encoder_name", args.encoders)
+        encoder_name = (trial.suggest_categorical("encoder_name", args.encoders)
+                        if search_encoder else None)
         batch_size = trial.suggest_categorical("batch_size", args.batch_sizes)
         trial_hp = dict(loss_hp)
         if search_tl_theta:
@@ -269,6 +283,9 @@ def build_objective(args, base_cfg: dict):
             adaptive_norm=adaptive_norm,
             adaptive_norm_momentum=adaptive_norm_momentum,
             norm_recalibrate=norm_recalibrate,
+            head=head,
+            warm_start_head=warm_start_head,
+            clip_sr=clip_sr,
             **adapt_rest,
             loss_arm=loss_arm,
             **trial_hp,
@@ -291,7 +308,12 @@ def build_objective(args, base_cfg: dict):
             devices=devices,
             strategy="auto",  # one GPU per process; see unet.tune._resolve_devices
             precision=args.precision,
-            gradient_clip_val=args.clip if args.clip > 0 else None,
+            # Per-group clipping is done by the module's
+            # configure_gradient_clipping override, which REFUSES to run
+            # alongside a Trainer-level value (both would apply, and the global
+            # one is the treatment-dependent norm we are avoiding).
+            gradient_clip_val=(None if clip_sr > 0
+                               else (args.clip if args.clip > 0 else None)),
             logger=False,
             enable_checkpointing=False,
             enable_progress_bar=False,
@@ -360,19 +382,31 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
                        adaptive_norm: bool | None = None,
                        adaptive_norm_momentum: float | None = None,
                        norm_recalibrate: str | None = None,
+                       head: str = "unet",
+                       warm_start_head: str | None = None,
+                       clip_sr: float | None = None,
                        monitor: str = MONITOR) -> Path:
     p = study.best_params
     # Record the resolved SR treatment AND loss so the refit is unambiguous
     # from the overlay alone (an R0/R1/padded/arm overlay layered over
     # joint_sr.yaml fully reproduces the searched configuration).
     model_overlay = {
-        "encoder_name": p["encoder_name"],
-        "encoder_weights": encoder_weights,
+        # None for a linear probe: encoder_name is not in the search space, and
+        # writing a resnet34 into the overlay would let the refit be read back
+        # as an encoder ablation of a network that was never built.
+        "encoder_name": p.get("encoder_name"),
+        "encoder_weights": encoder_weights if head != "linear" else None,
         "upsampler": upsampler,
         "freeze_sr": freeze_sr,
         "sr_pad": sr_pad,
         "lr": p["lr"],
     }
+    if head != "unet":
+        model_overlay["head"] = head
+    if warm_start_head:
+        model_overlay["warm_start_head"] = str(warm_start_head)
+    if clip_sr:
+        model_overlay["clip_sr"] = float(clip_sr)
     if warm_start_unet:
         model_overlay["warm_start_unet"] = str(warm_start_unet)
     if loss_arm:
@@ -470,6 +504,22 @@ def parse_args(argv=None):
                          "pin pos_weight/batch/encoder to the stage-1 best and "
                          "search lr over a fine-tuning band anchored to it, "
                          "plus lr_sr). Overrides model.warm_start_unet.")
+    ap.add_argument("--head", default=None, choices=["unet", "linear"],
+                    help="Read-out head. 'unet' (default) = the 24M-param "
+                         "decoder, i.e. every R-arm. 'linear' = the RL-series "
+                         "1x1-conv probe: encoder_name leaves the search space "
+                         "and the head runs in fp32. Overrides model.head.")
+    ap.add_argument("--warm-start-head", default=None, metavar="CKPT",
+                    help="LP-FT: frozen-twin ckpt whose LINEAR PROBE weights "
+                         "initialise every trial's head (rl2<-rl1, rl4<-rl3). "
+                         "Strictly separate from --warm-start-unet, which "
+                         "auto-disables the SR warmup ramp; this must not.")
+    ap.add_argument("--clip-sr", type=float, default=None, metavar="NORM",
+                    help="Per-GROUP gradient clipping: L2-clip the SR group at "
+                         "NORM and leave the head unclipped, instead of "
+                         "Lightning's single global norm over both (which means "
+                         "different things in a frozen vs a joint arm). >0 also "
+                         "disables the Trainer-level clip. 0 = global (default).")
     ap.add_argument("--mask-source", default=None, choices=["graph", "raster"],
                     help="Override data.mask_source (graph = CDNGI, raster = OSM HR masks).")
     ap.add_argument("--mask-dirname", default=None,
@@ -640,6 +690,11 @@ def main(argv=None):
     loss_arm = args.loss_arm if args.loss_arm is not None else model_cfg.get("loss_arm")
     warm_start_unet = (args.warm_start_unet if args.warm_start_unet is not None
                        else model_cfg.get("warm_start_unet"))
+    head = args.head or model_cfg.get("head", "unet")
+    warm_start_head = (args.warm_start_head if args.warm_start_head is not None
+                       else model_cfg.get("warm_start_head"))
+    clip_sr = (args.clip_sr if args.clip_sr is not None
+               else float(model_cfg.get("clip_sr", 0.0)))
     mask_source = args.mask_source or base_cfg.get("data", {}).get("mask_source", "graph")
     mask_dirname = args.mask_dirname or base_cfg.get("data", {}).get("mask_dirname")
     lr_schedule = args.lr_schedule or model_cfg.get("lr_schedule", "cosine")
@@ -661,6 +716,11 @@ def main(argv=None):
                       + ("_frozen" if freeze_sr else "")
                       + f"_pad{sr_pad}_{mask_source}"
                       + ("_warm" if warm_start_unet else "")
+                      # The read-out is the treatment for the whole RL-series,
+                      # so a linear-probe study must never share a storage row
+                      # with the U-Net study of the same SR arm.
+                      + ("" if head == "unet" else f"_{head}")
+                      + ("_warmhead" if warm_start_head else "")
                       # The adapter is part of the treatment, not a nuisance
                       # setting: an adaptive-norm study must never share a
                       # storage row with the frozen-stats study of the same arm.
@@ -712,6 +772,9 @@ def main(argv=None):
                                       adaptive_norm=adaptive_norm,
                                       adaptive_norm_momentum=adaptive_norm_momentum,
                                       norm_recalibrate=norm_recalibrate,
+                                      head=head,
+                                      warm_start_head=warm_start_head,
+                                      clip_sr=clip_sr,
                                       monitor=args.monitor)
     print(f"\nBest {args.monitor}={study.best_value:.4f} (trial #{study.best_trial.number})")
     print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}")
