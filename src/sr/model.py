@@ -39,9 +39,12 @@ import torch
 from sr.sen2sr_loader import (
     SEN2SR_SCALE,
     BicubicUpsampler,
+    TrainableSEN2SR,
+    build_hard_constraint,
     load_trainable_sen2sr,
     load_trainable_sen2sr_full,
     pad_low_pass_mask,
+    resolve_sr_hc,
 )
 from unet.model import UNetLightning
 
@@ -157,6 +160,24 @@ class JointSRUNetLightning(UNetLightning):
         freeze_sr: bool = False,
         upscale: int = 4,
         sr_pad: int = 0,
+        # --- FFT hard constraint x generator (docs/hc_2x2_plan.md) ----------
+        # The constraint is a pure function of (lr, sr, mask) — it touches no
+        # generator internals — so it can be taken off SEN2SR or put on SR4RS,
+        # which is what separates "the constraint helps" from "that generator
+        # is better". The treatment is the whole BUNDLE: positivity clamp +
+        # frequency splice (see TrainableSEN2SR), with the sr_pad border
+        # mitigation assigned by the arm script, not here.
+        #   native  each upsampler's shipped default (sen2sr on, sr4rs and
+        #           bicubic off). Checkpoints written before this hparam
+        #           existed have no key, resolve to `native`, and therefore
+        #           reconstruct byte-identically.
+        #   on/off  forced. `bicubic + on` raises (a near-identity cell).
+        sr_hc: str = "native",
+        # Where to read the low-pass mask when the constraint is mounted on a
+        # generator that does not ship one (sr4rs). The SEN2SR arms take theirs
+        # from sen2sr_dir as they always have. Reuse the shipped file
+        # byte-for-byte — it IS the deployed cutoff.
+        hc_mask_path: str | None = None,
         reflectance_scale: float = 10000.0,
         # --- recipe v2 training dynamics ------------------------------------
         # lr_schedule: "cosine" = per-step cosine of BOTH LR groups to 0 over
@@ -373,6 +394,12 @@ class JointSRUNetLightning(UNetLightning):
             raise ValueError("adaptive_norm_momentum must be in (0, 1], got "
                              f"{adaptive_norm_momentum}")
 
+        # Resolve the constraint BEFORE any weights load: a bad combination
+        # should not cost a full SEN2SR/SR4RS load to discover. `_sr_hc_on` is
+        # the single resolved answer every branch below (and the checkpoint
+        # guard) reads, so `native` can never mean two things in one process.
+        self._sr_hc_on = resolve_sr_hc(upsampler, sr_hc)
+
         if upsampler in ("sen2sr", "sen2sr_full"):
             if sen2sr_dir is None:
                 raise ValueError(f"upsampler={upsampler!r} needs sen2sr_dir "
@@ -387,19 +414,30 @@ class JointSRUNetLightning(UNetLightning):
                 raise ValueError(f"SEN2SR is a fixed x{SEN2SR_SCALE} model; got upscale={upscale}")
             # Lite = CNNSR via the train_mode fix; full = MambaSR via mlstac's
             # own trainable_model (no collapse quirk; needs mamba_ssm).
-            self.sr = (load_trainable_sen2sr(sen2sr_dir) if upsampler == "sen2sr"
-                       else load_trainable_sen2sr_full(sen2sr_dir))
-            # The shipped FFT low-pass mask fixes the HR size -> LR patches are
-            # pinned to mask_size / scale (512 / 4 = 128). Checked in forward.
-            # (Computed BEFORE any pad-resize: it constrains the MODEL-facing
-            # input; sr_pad grows the mask so the padded input still fits.)
-            self._required_lr = self.sr.hard_constraint.low_pass_mask.shape[-1] // SEN2SR_SCALE
-            if sr_pad > 0:
-                # Border-artifact mitigation: the FFT constraint assumes a
-                # periodic patch, so edge discontinuities ring at the borders.
-                # Reflect-padding the input and cropping the output moves the
-                # ring into discarded context (see forward).
-                pad_low_pass_mask(self.sr, sr_pad)
+            loader = (load_trainable_sen2sr if upsampler == "sen2sr"
+                      else load_trainable_sen2sr_full)
+            self.sr = loader(sen2sr_dir, hard_constraint=self._sr_hc_on)
+            if self._sr_hc_on:
+                # The shipped FFT low-pass mask fixes the HR size -> LR patches
+                # are pinned to mask_size / scale (512 / 4 = 128). Checked in
+                # forward. (Computed BEFORE any pad-resize: it constrains the
+                # MODEL-facing input; sr_pad grows the mask so the padded input
+                # still fits.)
+                self._required_lr = (self.sr.hard_constraint.low_pass_mask
+                                     .shape[-1] // SEN2SR_SCALE)
+                if sr_pad > 0:
+                    # Border-artifact mitigation: the FFT constraint assumes a
+                    # periodic patch, so edge discontinuities ring at the
+                    # borders. Reflect-padding the input and cropping the
+                    # output moves the ring into discarded context (see
+                    # forward).
+                    pad_low_pass_mask(self.sr, sr_pad)
+            else:
+                # r2b: no mask, so nothing pins the input size — CNNSR/MambaSR
+                # are fully convolutional. crop_size stays 128 via the data
+                # config, so the input path is unchanged; sr_pad (if ever set)
+                # is still honoured by the generic pad/crop in _sr_forward.
+                self._required_lr = None
         elif upsampler == "sr4rs":
             if sen2sr_dir is None:
                 raise ValueError("upsampler='sr4rs' needs sen2sr_dir pointing at "
@@ -415,6 +453,25 @@ class JointSRUNetLightning(UNetLightning):
             # effects), via the generic pad/crop in forward.
             self.sr = load_trainable_sr4rs(sen2sr_dir)
             self._required_lr = None
+            if self._sr_hc_on:
+                # r4a: mount SEN2SR's constraint on the GAN generator. The
+                # operator is architecture-agnostic, and data.crop_size is 128
+                # for every arm, so the shipped 512x512 mask applies unchanged
+                # — no resize, no re-derivation. Mirror of the sen2sr branch
+                # from here on, including the pad-grown mask.
+                if not hc_mask_path:
+                    raise ValueError(
+                        "sr_hc='on' with upsampler='sr4rs' needs hc_mask_path "
+                        "pointing at SEN2SR-Lite's hard_constraint.safetensor "
+                        "(sen2sr_dir here is the SR4RS_RGBN dir, which ships "
+                        "no mask)."
+                    )
+                self.sr = TrainableSEN2SR(
+                    self.sr, build_hard_constraint(hc_mask_path), clamp_min=0.0)
+                self._required_lr = (self.sr.hard_constraint.low_pass_mask
+                                     .shape[-1] // upscale)
+                if sr_pad > 0:
+                    pad_low_pass_mask(self.sr, sr_pad, scale=upscale)
         elif upsampler == "bicubic":
             if freeze_sr:
                 raise ValueError("freeze_sr is meaningless with the parameter-free bicubic upsampler")
@@ -649,6 +706,26 @@ class JointSRUNetLightning(UNetLightning):
                 f"reflectance_scale mismatch: checkpoint trained with {ck}, "
                 f"instance configured {self.hparams.reflectance_scale}. Align "
                 "the test/viz config with the checkpoint's training scale."
+            )
+        # Same hole, same fix, for the hard-constraint treatment: the strict
+        # state-dict load would also catch a mismatch (the hard_constraint.*
+        # keys appear or vanish), but with an error that reads as corruption
+        # rather than as a wrong config. Compare RESOLVED values — 'native'
+        # means different things for sen2sr and sr4rs, and old checkpoints
+        # carry no key at all.
+        ck_hp = checkpoint.get("hyper_parameters", {})
+        ck_hc = resolve_sr_hc(ck_hp.get("upsampler", self.hparams.upsampler),
+                              ck_hp.get("sr_hc", "native"))
+        if ck_hc != self._sr_hc_on:
+            raise ValueError(
+                f"sr_hc mismatch: checkpoint trained with the FFT hard "
+                f"constraint {'ON' if ck_hc else 'OFF'} "
+                f"(upsampler={ck_hp.get('upsampler')!r}, "
+                f"sr_hc={ck_hp.get('sr_hc', 'native')!r}), instance resolves to "
+                f"{'ON' if self._sr_hc_on else 'OFF'} "
+                f"(upsampler={self.hparams.upsampler!r}, "
+                f"sr_hc={getattr(self.hparams, 'sr_hc', 'native')!r}). Align the "
+                "test/viz config with the checkpoint's arm."
             )
         # §4.3 provenance: continuing training from an adaptive-norm ckpt under
         # adaptive_norm=false would silently FREEZE the statistics part-way
@@ -1351,6 +1428,10 @@ class JointSRUNetLightning(UNetLightning):
                 "epoch": self.current_epoch,
                 "global_step": self.global_step,
                 "upsampler": self.hparams.upsampler,
+                # RESOLVED, not the tri-state: the replay path (sr.viz_sr) has
+                # to rebuild a module whose state_dict keys match these, and
+                # 'native' alone would not tell it which.
+                "sr_hc": "on" if self._sr_hc_on else "off",
                 "lr_sr": self.hparams.lr_sr,
                 "sr_drift_rel": float(drift) if drift is not None else None,
                 # Reload: build the SR net via the matching load_trainable_*

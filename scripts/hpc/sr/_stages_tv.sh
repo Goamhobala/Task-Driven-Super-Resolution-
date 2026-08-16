@@ -47,6 +47,13 @@
 #                derives it from the stage-1 arm's FINAL ckpt.
 #   LOSS_ARM     any unet.losses.build_loss arm (+ its hps).
 #   Recipe v2:   CLIP LR_SCHEDULE SR_WARMUP_EPOCHS L2SP_LAMBDA REG
+#   SR_HC        native (default) | on | off — the FFT hard constraint as a
+#                TREATMENT, crossed with the generator (the HC 2x2,
+#                docs/hc_2x2_plan.md). native = each upsampler's shipped
+#                behaviour, i.e. every pre-existing arm, and appends no flags at
+#                all. HC_MASK_PATH supplies the shipped mask when the generator
+#                does not ship one (sr4rs). Tagged (HC_TAG) into run dir, study
+#                and bench model_name.
 #   SR_SNAPSHOT_EVERY   fit-stage SR-weights-only snapshots every N epochs.
 #   Adaptive post-SR normalisation (docs/adaptive_norm_plan.md, default OFF):
 #     ADAPTIVE_NORM=1 / ADAPTIVE_NORM_M / NORM_RECALIBRATE=off|pre|post|auto.
@@ -89,6 +96,59 @@ VENV_DIR="${VENV_DIR:-/scratch/${USER_NAME}/InstaRoad/.venv}"
 : "${UPSAMPLER:?experiment script must set UPSAMPLER (sen2sr|sen2sr_full|sr4rs|bicubic)}"
 : "${FREEZE_SR:?experiment script must set FREEZE_SR (true|false)}"
 : "${SR_PAD:?experiment script must set SR_PAD (0 = off)}"
+
+# --- FFT hard constraint x generator (docs/hc_2x2_plan.md) -------------------
+# The constraint is architecture-agnostic (a pure function of lr, sr and the
+# shipped mask), so it can be taken OFF SEN2SR (r2b) or put ON SR4RS (r4a).
+#   native  each upsampler's shipped default — sen2sr applies it, sr4rs and
+#           bicubic do not. EVERY EXISTING ARM. No flag is appended to any
+#           command line in this mode, so their invocations stay byte-identical.
+#   on|off  forced. The treatment is the whole bundle: positivity clamp +
+#           frequency splice. The pad component travels with it too, but as an
+#           ARM-SCRIPT setting (SR_PAD), not from here — the r4b-at-pad-8
+#           control has to stay expressible.
+# HC_TAG goes into the run dir, the Optuna study AND the bench model_name, like
+# REG_TAG/ANORM_TAG. That is what makes the r2b redefinition safe: r2b_new used
+# to mean "SEN2SR+HC, pad 0" and now means "SEN2SR, no HC", so any legacy
+# sr_r2b_new_* rows can never collide with the new sr_r2b_new_nohc_* ones in the
+# append-only store.
+SR_HC="${SR_HC:-native}"
+HC_MASK_PATH="${HC_MASK_PATH:-}"
+case "$SR_HC" in
+native) HC_TAG="" ;;
+on) HC_TAG="_hc" ;;
+off) HC_TAG="_nohc" ;;
+*)
+  echo "ERROR: SR_HC must be native|on|off, got '${SR_HC}'." >&2
+  exit 2
+  ;;
+esac
+if [ "$SR_HC" = "on" ] && [ "$UPSAMPLER" = "bicubic" ]; then
+  echo "ERROR: SR_HC=on with UPSAMPLER=bicubic. The constraint splices the" >&2
+  echo "  bicubic upsampling of the input into the SR output, so on a bicubic" >&2
+  echo "  'generator' the cell is a near-identity, not a treatment." >&2
+  exit 2
+fi
+if [ "$SR_HC" = "on" ] && [ "$UPSAMPLER" = "sr4rs" ] && [ -z "$HC_MASK_PATH" ]; then
+  echo "ERROR: SR_HC=on with UPSAMPLER=sr4rs needs HC_MASK_PATH — SEN2SR-Lite's" >&2
+  echo "  hard_constraint.safetensor. SEN2SR_DIR points at SR4RS_RGBN here, which" >&2
+  echo "  ships no mask. Reuse the shipped file byte-for-byte: its cutoff is the" >&2
+  echo "  value the SEN2SR paper optimised (Table 4), and re-deriving one would" >&2
+  echo "  make the two rows of the 2x2 different operators." >&2
+  exit 2
+fi
+# Appended to the tune/fit command lines ONLY when the constraint is forced, so
+# every native arm's invocation is unchanged (the same discipline as HEAD_TAG).
+HC_ARGS_TUNE=()
+HC_ARGS_FIT=()
+if [ "$SR_HC" != "native" ]; then
+  HC_ARGS_TUNE=(--sr-hc "$SR_HC")
+  HC_ARGS_FIT=(--model.sr_hc "$SR_HC")
+  if [ -n "$HC_MASK_PATH" ]; then
+    HC_ARGS_TUNE+=(--hc-mask-path "$HC_MASK_PATH")
+    HC_ARGS_FIT+=(--model.hc_mask_path "$HC_MASK_PATH")
+  fi
+fi
 
 STAGE="${STAGE:-tune}"
 SEED="${SEED:-0}"
@@ -443,7 +503,7 @@ WANDB_CONFIG="$REPO_DIR/src/unet/configs/wandb.yaml"
 # (Resolved BEFORE the norm stats so the train+val generation below has a
 # guaranteed-writable fallback location.)
 RUNS_ROOT="${RUNS_ROOT:-/scratch/${USER_NAME}/InstaRoad/runs}"
-RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}"
+RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}"
 mkdir -p "$RUN_DIR"
 
 # §4.7 stats provenance under the train+val refit: norm_stats.yaml is computed
@@ -580,6 +640,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Logging to ${LOG_FILE}"
 echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}  head=${HEAD}"
 echo "labels=${LABELS} (mask_source=${MASK_SOURCE}${MASK_DIRNAME:+, mask_dirname=${MASK_DIRNAME}})  upsampler=${UPSAMPLER}  freeze_sr=${FREEZE_SR}  sr_pad=${SR_PAD}  loss_arm=${LOSS_ARM:-legacy}"
+echo "hard constraint: sr_hc=${SR_HC}${HC_TAG:+  tag=${HC_TAG}}${HC_MASK_PATH:+  mask=${HC_MASK_PATH}}"
 echo "recipe: reg=${REG}${REG_TAG:+ [${REG_TAG}]}  clip=${CLIP} (trainer=${CLIP_TRAINER}, sr_group=${CLIP_SR})  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}  sr_snapshot_every=${SR_SNAPSHOT_EVERY}"
 echo "head=${HEAD}  monitor=${MONITOR}  warm_start_head=${WARM_START_HEAD:-none}"
 echo "adapter: adaptive_norm=${ADAPTIVE_NORM_FLAG} (m=${ADAPTIVE_NORM_M})  norm_recalibrate=${NORM_RECALIBRATE}${ANORM_TAG:+  tag=${ANORM_TAG}}"
@@ -645,6 +706,13 @@ sr4rs)
   fi
   ;;
 esac
+if [ -n "${HC_MASK_PATH}" ] && [ ! -f "${HC_MASK_PATH}" ]; then
+  echo "ERROR: HC_MASK_PATH=${HC_MASK_PATH} not found on $(hostname)." >&2
+  echo "  It ships inside the SEN2SR-Lite model dir; prefetch that dir with" >&2
+  echo "  sr.sen2sr_loader.download_sen2sr on a login node (the r2 arms already" >&2
+  echo "  need it), or point HC_MASK_PATH at wherever it landed." >&2
+  exit 1
+fi
 if [ -n "${WARM_START_CKPT}" ] && [ ! -f "${WARM_START_CKPT}" ]; then
   echo "ERROR: WARM_START_CKPT=${WARM_START_CKPT} not found — run the stage-1" >&2
   echo "  (frozen-SR) arm's STAGE=fit first; its final ckpt seeds this arm's UNet." >&2
@@ -770,7 +838,7 @@ fi
 if [ "$STAGE" = "tune" ]; then
   STORAGE="${STORAGE:-sqlite:///${RUN_DIR}/study.db}"
   SAMPLER_OFFSET="${SAMPLER_OFFSET:-0}"
-  STUDY_NAME="sr_${EXP_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}_seed${SEED}"
+  STUDY_NAME="sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}_seed${SEED}"
 
   run_tuner() { # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
     local gpu="$1" ntrials="$2" seed="$3" pin=""
@@ -785,6 +853,7 @@ if [ "$STAGE" = "tune" ]; then
       --upsampler "$UPSAMPLER" \
       --freeze-sr "$FREEZE_SR" \
       --sr-pad "$SR_PAD" \
+      ${HC_ARGS_TUNE[@]+"${HC_ARGS_TUNE[@]}"} \
       ${WARM_START_CKPT:+--warm-start-unet "$WARM_START_CKPT"} \
       ${HEAD_TAG:+--head "$HEAD"} \
       ${HEAD_TAG:+--clip-sr "$CLIP_SR"} \
@@ -869,7 +938,7 @@ if [ "$STAGE" = "bench" ]; then
   fi
 
   STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}" # SHARED across experiments
-  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}}"
+  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}}"
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
   TILE_METRICS="${TILE_METRICS:-apls}"
@@ -983,6 +1052,11 @@ MODEL_ARGS=(--model.upsampler "$UPSAMPLER" --model.freeze_sr "$FREEZE_SR"
   --model.adaptive_norm_momentum "$ADAPTIVE_NORM_M"
   --model.norm_recalibrate "$NORM_RECALIBRATE"
   --model.sr_snapshot_every "$SR_SNAPSHOT_EVERY")
+# Appended only when the constraint is forced (see the SR_HC block): the native
+# arms' fit/test command lines stay byte-identical.
+if [ "$SR_HC" != "native" ]; then
+  MODEL_ARGS+=("${HC_ARGS_FIT[@]}")
+fi
 if [ -n "$WARM_START_CKPT" ]; then
   MODEL_ARGS+=(--model.warm_start_unet "$WARM_START_CKPT")
 fi
@@ -1083,7 +1157,7 @@ python -m sr.cli test \
 # point (docs/ap_threshold_protocol_plan.md §1.2). The bench stage refuses to
 # run without a θ (BENCH_THRESHOLD or this sweep.json).
 SWEEP_SPLIT="${SWEEP_SPLIT:-val}"
-MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}}"
+MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}}"
 MASK_ARGS_SWEEP=(--mask-source "$MASK_SOURCE")
 [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_SWEEP+=(--mask-dirname "$MASK_DIRNAME")
 

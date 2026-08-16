@@ -106,6 +106,12 @@ def build_objective(args, base_cfg: dict):
     freeze_sr = (model_cfg.get("freeze_sr", False) if args.freeze_sr is None
                  else args.freeze_sr == "true")
     sr_pad = model_cfg.get("sr_pad", 0) if args.sr_pad is None else args.sr_pad
+    # FFT hard constraint x generator (docs/hc_2x2_plan.md). Never searched --
+    # it IS the treatment -- and pinned into the overlay so the refit cannot
+    # run under a different constraint than the search scored.
+    sr_hc = args.sr_hc or model_cfg.get("sr_hc", "native")
+    hc_mask_path = (args.hc_mask_path if args.hc_mask_path is not None
+                    else model_cfg.get("hc_mask_path"))
     warm_start_unet = (args.warm_start_unet
                        if args.warm_start_unet is not None
                        else model_cfg.get("warm_start_unet"))
@@ -275,6 +281,8 @@ def build_objective(args, base_cfg: dict):
             freeze_sr=freeze_sr,
             upscale=upscale,
             sr_pad=sr_pad,
+            sr_hc=sr_hc,
+            hc_mask_path=hc_mask_path,
             reflectance_scale=model_cfg.get("reflectance_scale", 10000.0),
             warm_start_unet=warm_start_unet,
             lr_schedule=lr_schedule,
@@ -385,6 +393,8 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
                        head: str = "unet",
                        warm_start_head: str | None = None,
                        clip_sr: float | None = None,
+                       sr_hc: str = "native",
+                       hc_mask_path: str | None = None,
                        monitor: str = MONITOR) -> Path:
     p = study.best_params
     # Record the resolved SR treatment AND loss so the refit is unambiguous
@@ -401,6 +411,13 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
         "sr_pad": sr_pad,
         "lr": p["lr"],
     }
+    # Written ONLY when forced, so every native-constraint arm's overlay stays
+    # byte-identical to what it was before the flag existed (and an old overlay
+    # replayed today still resolves to the behaviour it was searched under).
+    if sr_hc != "native":
+        model_overlay["sr_hc"] = sr_hc
+        if hc_mask_path:
+            model_overlay["hc_mask_path"] = str(hc_mask_path)
     if head != "unet":
         model_overlay["head"] = head
     if warm_start_head:
@@ -498,6 +515,19 @@ def parse_args(argv=None):
                     help="Override model.freeze_sr (true -> R1 frozen SR preprocessing).")
     ap.add_argument("--sr-pad", type=int, default=None,
                     help="Override model.sr_pad (reflect-pad in native px; 8 = border-artifact fix).")
+    ap.add_argument("--sr-hc", default=None, choices=["native", "on", "off"],
+                    help="Override model.sr_hc — the FFT hard constraint as a "
+                         "treatment, crossed with the generator (the HC 2x2, "
+                         "docs/hc_2x2_plan.md). 'native' (default) = each "
+                         "upsampler's shipped behaviour (sen2sr on, sr4rs and "
+                         "bicubic off); 'on'/'off' force the whole bundle "
+                         "(positivity clamp + frequency splice) on or off. "
+                         "Never searched: it is the treatment.")
+    ap.add_argument("--hc-mask-path", default=None, metavar="SAFETENSOR",
+                    help="Override model.hc_mask_path: SEN2SR-Lite's shipped "
+                         "hard_constraint.safetensor. REQUIRED for --sr-hc on "
+                         "with --upsampler sr4rs (whose model dir ships no "
+                         "mask); the SEN2SR arms read theirs from --sen2sr-dir.")
     ap.add_argument("--warm-start-unet", default=None, metavar="CKPT",
                     help="Stage-1 (frozen-SR) JointSR ckpt whose UNet weights "
                          "initialise every trial's UNet (staged R6/R7 protocol; "
@@ -687,6 +717,9 @@ def main(argv=None):
     freeze_sr = (model_cfg.get("freeze_sr", False) if args.freeze_sr is None
                  else args.freeze_sr == "true")
     sr_pad = model_cfg.get("sr_pad", 0) if args.sr_pad is None else args.sr_pad
+    sr_hc = args.sr_hc or model_cfg.get("sr_hc", "native")
+    hc_mask_path = (args.hc_mask_path if args.hc_mask_path is not None
+                    else model_cfg.get("hc_mask_path"))
     loss_arm = args.loss_arm if args.loss_arm is not None else model_cfg.get("loss_arm")
     warm_start_unet = (args.warm_start_unet if args.warm_start_unet is not None
                        else model_cfg.get("warm_start_unet"))
@@ -715,6 +748,10 @@ def main(argv=None):
         study_name = ("sr_optuna_" + upsampler
                       + ("_frozen" if freeze_sr else "")
                       + f"_pad{sr_pad}_{mask_source}"
+                      # The hard constraint is the treatment of the HC 2x2, so
+                      # an HC-forced study must never share a storage row with
+                      # the same generator's native-constraint study.
+                      + ("" if sr_hc == "native" else f"_hc{sr_hc}")
                       + ("_warm" if warm_start_unet else "")
                       # The read-out is the treatment for the whole RL-series,
                       # so a linear-probe study must never share a storage row
@@ -775,6 +812,8 @@ def main(argv=None):
                                       head=head,
                                       warm_start_head=warm_start_head,
                                       clip_sr=clip_sr,
+                                      sr_hc=sr_hc,
+                                      hc_mask_path=hc_mask_path,
                                       monitor=args.monitor)
     print(f"\nBest {args.monitor}={study.best_value:.4f} (trial #{study.best_trial.number})")
     print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}")

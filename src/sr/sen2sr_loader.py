@@ -21,6 +21,11 @@ What we do instead (verified equivalent to the compiled model, max|Δ| ~2e-6):
   * wrap both in a module whose forward replicates upstream exactly:
     `hard_constraint(x, clamp(sr_model(x), min=0))`.
 
+The constraint is also detachable and re-mountable (docs/hc_2x2_plan.md): the
+same operator can be taken OFF SEN2SR (r2b) or put ON SR4RS (r4a) to separate
+the hard constraint from the generator architecture. See `resolve_sr_hc` for
+the tri-state flag and `TrainableSEN2SR` for why the clamp travels with it.
+
 Known properties to respect downstream:
 
   * Input: surface reflectance (DN / 10000), float32, channel order
@@ -64,6 +69,36 @@ _CNNSR_ARGS = dict(in_channels=4, out_channels=4, feature_channels=24,
                    upscale=4, bias=True, num_blocks=6)
 SEN2SR_SCALE = 4
 
+# Tri-state for the `sr_hc` treatment flag (docs/hc_2x2_plan.md §5.1).
+SR_HC_MODES = ("native", "on", "off")
+
+
+def resolve_sr_hc(upsampler: str, sr_hc: str | None = "native") -> bool:
+    """Resolve the tri-state `sr_hc` flag to on/off for a given upsampler.
+
+    ``native`` = the per-generator default each upsampler has always shipped
+    with (SEN2SR applies the FFT hard constraint, SR4RS and bicubic do not), so
+    any checkpoint written before this flag existed resolves to exactly the
+    behaviour it was trained under. ``on``/``off`` force the constraint on or
+    off, which is what crosses it with the generator in the HC 2x2.
+
+    ``bicubic + on`` is rejected rather than run: HardConstraint(bicubic(x),
+    bicubic(x)) splices a spectrum with itself, so the cell would be a
+    near-identity dressed up as a treatment.
+    """
+    mode = sr_hc or "native"
+    if mode not in SR_HC_MODES:
+        raise ValueError(f"sr_hc={sr_hc!r} (choose from {SR_HC_MODES})")
+    if mode == "native":
+        return upsampler in ("sen2sr", "sen2sr_full")
+    if mode == "on" and upsampler == "bicubic":
+        raise ValueError(
+            "sr_hc='on' is meaningless for upsampler='bicubic': the hard "
+            "constraint splices the bicubic upsampling of the input into the "
+            "SR output, which for a bicubic 'generator' is a near-identity."
+        )
+    return mode == "on"
+
 
 def download_sen2sr(model_dir) -> Path:
     """Fetch the SEN2SR-Lite RGBN ×4 weights via mlstac (idempotent)."""
@@ -77,27 +112,92 @@ def download_sen2sr(model_dir) -> Path:
 
 
 class TrainableSEN2SR(nn.Module):
-    """SEN2SR-Lite with the differentiable branch active and a movable mask.
+    """A generator plus, optionally, the frozen FFT hard-constraint bundle.
 
-    Forward contract (identical to the upstream `srmodel` wrapper):
+    Forward contract (with the constraint mounted, identical to the upstream
+    `srmodel` wrapper):
         reflectance (B, 4, H, W) -> reflectance (B, 4, 4H, 4W)
+
+    The clamp and the frequency splice are ONE treatment, not two knobs
+    (docs/hc_2x2_plan.md §4, "Scheme B"): upstream ships them fused, and the
+    paper defines the hard-constraint layer by both of its conditions —
+    positivity (the clamp) and spectral consistency (the splice). So
+    `hard_constraint=None` comes with `clamp_min=None` and yields the RAW
+    generator output, which is what makes the HC-off column compare raw
+    generator to raw generator. `clamp_min` stays a separate argument only so
+    the bundle's components are legible; do not build the half-way combination
+    without a reason stated in the arm's script.
     """
 
-    def __init__(self, sr_model: nn.Module, hard_constraint: nn.Module):
+    def __init__(self, sr_model: nn.Module, hard_constraint: nn.Module | None = None,
+                 clamp_min: float | None = 0.0):
         super().__init__()
         self.sr_model = sr_model
+        # nn.Module.__setattr__ registers a Module here and falls through to a
+        # plain attribute for None, so `self.hard_constraint` is always safe to
+        # read and the state_dict simply has no `hard_constraint.*` keys when
+        # the constraint is off (a wrong-config restore then fails loudly on the
+        # strict load, which is the intent).
         self.hard_constraint = hard_constraint
+        self.clamp_min = clamp_min
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        sr = torch.clamp(self.sr_model(x), min=0.0)
+        sr = self.sr_model(x)
+        if self.clamp_min is not None:
+            sr = torch.clamp(sr, min=self.clamp_min)
+        if self.hard_constraint is None:
+            return sr
         return self.hard_constraint(x, sr)
 
 
-def load_trainable_sen2sr(model_dir) -> TrainableSEN2SR:
-    """Load SEN2SR-Lite RGBN ×4 from `model_dir` as a trainable nn.Module."""
+def hard_constraint_from_mask(mask: torch.Tensor) -> nn.Module:
+    """Frozen `HardConstraint` around an already-loaded low-pass mask.
+
+    Upstream keeps `low_pass_mask` as a plain tensor attribute; re-register it
+    as a buffer so `.to(device)` / Lightning device placement move it too.
+    """
+    from sen2sr.models.tricks import HardConstraint
+
+    hc = HardConstraint(low_pass_mask=mask, bands="all")
+    for p in hc.parameters():
+        p.requires_grad = False
+    del hc.low_pass_mask
+    hc.register_buffer("low_pass_mask", mask)
+    return hc
+
+
+def build_hard_constraint(mask_path) -> nn.Module:
+    """Load a `hard_constraint.safetensor` as a frozen `HardConstraint`.
+
+    Factored out of `load_trainable_sen2sr` so a different generator (SR4RS,
+    r4a) can mount the IDENTICAL operator: the shipped SEN2SR-Lite mask is a
+    single 512x512 sigma=35 Gaussian shared across bands, and `HardConstraint`
+    itself is a pure function of (lr, sr, mask) that touches no generator
+    internals. Reuse the file byte-for-byte rather than re-deriving a mask —
+    the deployed cutoff is the value Table 4 of Aybar et al. optimised.
+    """
+    import safetensors.torch
+
+    mask_path = Path(mask_path)
+    if not mask_path.exists():
+        raise FileNotFoundError(
+            f"{mask_path} missing — the FFT hard constraint needs the shipped "
+            "mask (it ships inside the SEN2SR-Lite model dir as "
+            "hard_constraint.safetensor)."
+        )
+    return hard_constraint_from_mask(
+        safetensors.torch.load_file(mask_path)["weights"])
+
+
+def load_trainable_sen2sr(model_dir, hard_constraint: bool = True) -> TrainableSEN2SR:
+    """Load SEN2SR-Lite RGBN ×4 from `model_dir` as a trainable nn.Module.
+
+    `hard_constraint=False` returns the BARE CNNSR generator (no clamp, no FFT
+    splice) — the r2b cell of the HC 2x2. Note SEN2SR-Lite was trained with the
+    bundle in the loop, so its raw output was never a deployed product.
+    """
     import safetensors.torch
     from sen2sr.models.opensr_baseline.cnn import CNNSR
-    from sen2sr.models.tricks import HardConstraint
 
     model_dir = Path(model_dir)
     weights = safetensors.torch.load_file(model_dir / "model.safetensor")
@@ -115,16 +215,13 @@ def load_trainable_sen2sr(model_dir) -> TrainableSEN2SR:
         for p in blk.parameters():
             p.requires_grad = False
 
-    mask = safetensors.torch.load_file(model_dir / "hard_constraint.safetensor")["weights"]
-    hard_constraint = HardConstraint(low_pass_mask=mask, bands="all")
-    for p in hard_constraint.parameters():
-        p.requires_grad = False
-    # Upstream keeps low_pass_mask as a plain tensor attribute; re-register it
-    # as a buffer so `.to(device)` / Lightning device placement move it too.
-    del hard_constraint.low_pass_mask
-    hard_constraint.register_buffer("low_pass_mask", mask)
-
-    return TrainableSEN2SR(sr_model, hard_constraint)
+    if not hard_constraint:
+        return TrainableSEN2SR(sr_model, None, clamp_min=None)
+    return TrainableSEN2SR(
+        sr_model,
+        build_hard_constraint(model_dir / "hard_constraint.safetensor"),
+        clamp_min=0.0,
+    )
 
 
 def _enable_mamba_grad_checkpointing(sr_model: nn.Module) -> int:
@@ -175,7 +272,7 @@ def _enable_mamba_grad_checkpointing(sr_model: nn.Module) -> int:
     return n
 
 
-def load_trainable_sen2sr_full(model_dir) -> TrainableSEN2SR:
+def load_trainable_sen2sr_full(model_dir, hard_constraint: bool = True) -> TrainableSEN2SR:
     """Load the FULL (Mamba) SEN2SR RGBN x4 from `model_dir` as trainable.
 
     Unlike the Lite/CNN path, `MambaSR` has no train_mode/eval_conv collapse
@@ -206,8 +303,6 @@ def load_trainable_sen2sr_full(model_dir) -> TrainableSEN2SR:
         uv pip install mamba-ssm   # on a node with nvcc / matching torch
     """
     import mlstac
-    import safetensors.torch
-    from sen2sr.models.tricks import HardConstraint
 
     model_dir = Path(model_dir)
     wrapper = mlstac.load(str(model_dir)).trainable_model(device="cpu")
@@ -229,20 +324,13 @@ def load_trainable_sen2sr_full(model_dir) -> TrainableSEN2SR:
         print("[sen2sr_loader] WARN: no BasicLayer found to checkpoint — "
               "non-Mamba card? joint training may OOM.")
 
-    hc_path = model_dir / "hard_constraint.safetensor"
-    if not hc_path.exists():
-        raise FileNotFoundError(
-            f"{hc_path} missing — the SEN2SR method requires the FFT hard "
-            "constraint; check the model dir was downloaded completely."
-        )
-    mask = safetensors.torch.load_file(hc_path)["weights"]
-    hard_constraint = HardConstraint(low_pass_mask=mask, bands="all")
-    for p in hard_constraint.parameters():
-        p.requires_grad = False
-    del hard_constraint.low_pass_mask
-    hard_constraint.register_buffer("low_pass_mask", mask)
-
-    return TrainableSEN2SR(sr_model, hard_constraint)
+    if not hard_constraint:
+        return TrainableSEN2SR(sr_model, None, clamp_min=None)
+    return TrainableSEN2SR(
+        sr_model,
+        build_hard_constraint(model_dir / "hard_constraint.safetensor"),
+        clamp_min=0.0,
+    )
 
 
 def pad_low_pass_mask(model: TrainableSEN2SR, pad: int, scale: int = SEN2SR_SCALE):
@@ -256,7 +344,14 @@ def pad_low_pass_mask(model: TrainableSEN2SR, pad: int, scale: int = SEN2SR_SCAL
     """
     if pad <= 0:
         return model
-    m = model.hard_constraint.low_pass_mask
+    hc = getattr(model, "hard_constraint", None)
+    if hc is None:
+        raise ValueError(
+            "pad_low_pass_mask called on a model with no hard constraint — "
+            "there is no mask to grow. The generic reflect-pad/crop in "
+            "JointSRUNetLightning._sr_forward covers sr_pad on its own."
+        )
+    m = hc.low_pass_mask
     h, w = m.shape[-2:]
     new_hw = (h + 2 * pad * scale, w + 2 * pad * scale)
     flat = m.reshape(1, -1, h, w).float()          # (1, C*, H, W) for interpolate
