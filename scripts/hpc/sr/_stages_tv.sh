@@ -307,9 +307,42 @@ MON_TAG=""
 # Loader workers per training process: split the job's CPU allocation across
 # the stage's processes (search fans out SEARCH_GPUS tuners; fit/test run one).
 # Workers spend most time blocked on the prefetch queue, so no cores are
-# reserved for the mains. With pre-rasterised masks (mask_new_2pt5) 1-2
-# workers already keep the GPU fed; set NUM_WORKERS explicitly only if GPU
-# utilisation sawtooths again.
+# reserved for the mains.
+#
+# THE OLD NOTE HERE ("with pre-rasterised masks, 1-2 workers already keep the
+# GPU fed") WAS CALIBRATED ON THE U-NET ARMS AND EXPIRED WITH HEAD=linear.
+# Those arms ran forward+backward through 24 M parameters per batch; an rl arm
+# runs an SR forward under no_grad (freeze_sr) and backprops through FIVE
+# parameters. GPU work per batch collapsed; bytes read per batch did not. The
+# frozen rl arms are I/O-bound, so this number is now load-bearing — budget CPUs
+# generously (--cpus-per-task 8+) rather than relying on the default 4.
+#
+# SEARCH_GPUS is CAPPED TO THE VISIBLE GPU COUNT INSIDE THE TUNE STAGE, which
+# used to run AFTER this block: a job that asked for 2 GPUs and got 1 divided
+# its CPUs by 2 anyway and ran half the workers it could afford. Resolve the cap
+# here instead, before anything reads it.
+if [ "${STAGE}" = "tune" ]; then
+  # Deliberately NOT a one-liner. `grep -c` prints "0" AND exits 1 when it
+  # matches nothing, so under `set -o pipefail` a
+  #   $(command -v nvidia-smi && nvidia-smi ... | grep -c ... || echo 0)
+  # fires BOTH the grep's "0" and the fallback's "0" and yields a two-line
+  # value, which then makes `[ "$x" -gt 0 ]` emit "integer expression expected"
+  # and quietly evaluate false — i.e. the cap silently stops working in exactly
+  # the no-GPU case it exists to handle. (`set -e` does not catch it: the
+  # assignment takes the status of the LAST command in the substitution, and a
+  # failing `if` condition is exempt.)
+  _VIS_GPUS=0
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    _VIS_GPUS=$(nvidia-smi --list-gpus 2>/dev/null | grep -c '^GPU ' || true)
+    _VIS_GPUS="${_VIS_GPUS//[!0-9]/}"        # strip anything not a digit
+    [ -z "${_VIS_GPUS}" ] && _VIS_GPUS=0
+  fi
+  if [ "${_VIS_GPUS}" -gt 0 ] && [ "${SEARCH_GPUS}" -gt "${_VIS_GPUS}" ]; then
+    echo "NOTE: SEARCH_GPUS=${SEARCH_GPUS} but ${_VIS_GPUS} GPU(s) visible — capping now"
+    echo "  (before NUM_WORKERS is derived from it)."
+    SEARCH_GPUS="${_VIS_GPUS}"
+  fi
+fi
 if [ -z "${NUM_WORKERS}" ]; then
   JOB_CPUS="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-4}}"
   if [ "${STAGE}" = "tune" ]; then
@@ -319,6 +352,7 @@ if [ -z "${NUM_WORKERS}" ]; then
   fi
   [ "${NUM_WORKERS}" -lt 1 ] && NUM_WORKERS=1
 fi
+echo "loader: num_workers=${NUM_WORKERS} (job_cpus=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-4}}, search_gpus=${SEARCH_GPUS})"
 
 # --- Fit budget (train+val, FIXED — no early stopping) -----------------------
 # Pre-registered and identical across arms. Nothing truncates it now, so budget
@@ -328,7 +362,7 @@ REFIT_GPUS="${REFIT_GPUS:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_joint_final}"
 
 # --- Loss (unet.losses.build_loss; empty = legacy Dice + pos-weighted BCE) ---
-LOSS_ARM="${LOSS_ARM:-pstar_sdice_ce}"
+LOSS_ARM="${LOSS_ARM:-pstar_sdice}"
 PSTAR="${PSTAR:-gap_t4_ce}"
 GAP_R="${GAP_R:-4}"
 GAP_K="${GAP_K:-60.0}"

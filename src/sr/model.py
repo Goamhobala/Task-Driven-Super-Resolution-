@@ -790,9 +790,15 @@ class JointSRUNetLightning(UNetLightning):
         """Measure the road base rate and set the probe's bias to its logit.
 
         Runs in ``setup``, NOT ``on_fit_start``, and the ordering is the point:
-        Lightning calls ``setup`` BEFORE restoring a checkpoint, so a resumed or
-        warm-started run has this initial value overwritten by the trained one
-        rather than clobbering it. A no-op for every U-Net arm.
+        Lightning calls ``setup`` BEFORE restoring a checkpoint, so a ``--ckpt_path``
+        resume has this initial value overwritten by the trained one rather than
+        clobbering it.
+
+        That ordering does NOT cover ``warm_start_head``, which loads in
+        ``__init__`` — earlier than ``setup``, so the argument runs the other
+        way and an explicit guard is needed. See the second check below.
+
+        A no-op for every U-Net arm.
         """
         super().setup(stage)
         if getattr(self.hparams, "head", "unet") != "linear" or stage not in (None, "fit"):

@@ -45,8 +45,41 @@ LR_SR_MAX="${LR_SR_MAX:-1e-4}"
 # 30 trials for EVERY arm, frozen and joint alike — not scaled to the number of
 # searched dimensions (§6.4). Giving the 2-D joint arms more trials would assign
 # search quality by treatment, which is the same defect as searching batch size,
-# one level up. The frozen arms are over-served; they are also the cheap ones.
+# one level up. The frozen arms are over-served, and that is accepted.
+#
+# CORRECTION (2026-08-16): §6.4 also claimed "the frozen arms are the cheap
+# ones". THAT IS FALSE for rl3/rl4. The linear probe is 5 parameters, but the
+# arm still runs an 11.3 M-param SR4RS forward at 512 px on every batch — rl3
+# costs roughly what r5 costs. Replacing the decoder saves the U-Net's
+# forward+backward, not the SR front-end, which is what dominates. The trial
+# budget is deliberately NOT cut in response (it is a between-arm constant and
+# the argument for holding it has not changed); the epoch budgets below and the
+# loader provisioning in _stages_tv.sh are where the cost was taken out.
 N_TRIALS="${N_TRIALS:-30}"
+
+# --- Epoch budgets (2026-08-16) ------------------------------------------
+# Both LOWER than the R-series (15 tune / 100 refit), both constant across all
+# five arms, so no rl contrast is affected. Aligned with the loss pilot's E=50
+# regime, which is also what makes WARMUP_START/RAMP below correctly scaled for
+# the first time (see the note there).
+#
+# TUNE: a 5-parameter near-convex probe is converged long before epoch 8 — the
+# extra 7 epochs of the R-series budget bought resolution on a flat objective.
+# (Observed on rl3: val_ap 0.0408 / 0.0422 / 0.0409 across lr 0.023-0.059, a
+# 3.4% spread that is inside seed noise.)
+TUNE_EPOCHS="${TUNE_EPOCHS:-8}"
+
+# REFIT: free for the FROZEN arms (rl0/rl1/rl3) — the probe converges almost
+# immediately. NOT free for the JOINT arms, and this is the one place the cut
+# has a cost worth stating: in rl2/rl4 the thing actually training is the
+# generator, and its adaptation IS the measured quantity. Halving the budget
+# does not invalidate rl2-rl1 or rl4-rl3 (the budget is constant across arms),
+# but it changes what they mean — "how much of a segmenter the generator becomes
+# in 50 epochs", not "in 100". If the drift/snapshot curves show rl2 or rl4 had
+# not plateaued by epoch 50, the joint gain is UNDERSTATED and that must be said
+# in the write-up rather than discovered by a reader.
+# Cosine T_max = max_epochs, so the schedule still completes at lr 0.
+REFIT_EPOCHS="${REFIT_EPOCHS:-50}"
 
 # PINNED, never searched (§6.1). `length` is fixed per epoch, so a bs=2 trial
 # takes twice the optimiser steps of a bs=4 trial inside the same epoch budget
@@ -54,9 +87,6 @@ N_TRIALS="${N_TRIALS:-30}"
 # the largest that fits the heaviest arms (rl3/rl4: SR4RS runs 256-ch convs,
 # incl. a 9x9, at 512 px; 8 OOMs on 44 GB).
 BATCH_SIZES="${BATCH_SIZES:-4}"
-
-# Between-arm constant of the protocol. Do not change for one arm.
-REFIT_EPOCHS="${REFIT_EPOCHS:-100}"
 
 # Kept at the r-series value so the joint arms' recipe stays comparable; costs
 # nothing on the frozen arms, where model.py auto-disables it.
@@ -125,18 +155,19 @@ SKEL_RADIUS="${SKEL_RADIUS:-1}"  # -> model.sr_radius
 # WARMUP_RAMP epochs. INERT here for the reason above — 15/5 is copied from
 # r0_new's overlay purely so the two arms' recorded configs match.
 #
-# BUT IF A SKELETON SLOT IS EVER ADDED (LOSS_ARM=pstar_dice+skelrec / +cldice),
-# these wake up and 15/5 is the WRONG SCALING for this engine:
-#   * 30/10 is the from-scratch protocol scaled to E=100 (losses.py §4.5 —
-#     engage at 30% of the budget, full by 40%). REFIT_EPOCHS here is 100.
-#   * 15/5 comes from the LOSS PILOT, which scaled §4.5 to E=50
-#     (LightningStudio/loss/_pilot_new.sh). r0_new evidently inherited the
-#     pilot's env; at REFIT_EPOCHS=100 that engages the term at 15% instead.
-#   * Worse, TUNE_EPOCHS=15, so warmup_start=15 means the skeleton term never
-#     engages in ANY tune trial — the search would optimise a different loss
-#     from the one the refit runs. sr.tune guards exactly this, but only when
-#     `"+" in loss_arm`, so it stays silent for the pinned arm.
-# Rescale to 30/10 before adding a skeleton slot, and do it to all five arms.
+# RESOLVED by REFIT_EPOCHS=50 above. 15/5 is the LOSS PILOT's §4.5 scaling for
+# E=50 (LightningStudio/loss/_pilot_new.sh): engage the skeleton term at 30% of
+# the budget, full by 40%. r0_new inherited that env while running E=100, where
+# it would have engaged at 15% instead — wrong, but silently so, because the
+# parameter is dead under a `+`-less arm. At E=50 the inherited values are
+# CORRECTLY scaled, so if a skeleton slot is ever added
+# (LOSS_ARM=pstar_dice+skelrec / +cldice) these wake up already right.
+#
+# One caveat survives: TUNE_EPOCHS=8 < warmup_start=15, so a skeleton slot would
+# never engage inside a tune trial and the search would optimise a different
+# loss from the refit. sr.tune warns about exactly this, but only when
+# `"+" in loss_arm` — silent for the pinned arm. Scale the tune-stage warmup
+# too if a skeleton slot is ever added.
 WARMUP_START="${WARMUP_START:-15}"
 WARMUP_RAMP="${WARMUP_RAMP:-5}"
 
