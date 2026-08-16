@@ -45,6 +45,19 @@ export BUFFER_PX="${BUFFER_PX:-1,2,3,4,5}"
 export AP_BINS="${AP_BINS:-101}"
 export SELECT_ON="${SELECT_ON:-iou_mean}"   # theta* criterion, as for seed 0
 
+# --- match seed 0's ARCHITECTURE, not today's engine defaults ---------------
+# The engine now defaults ADAPTIVE_NORM=1 / NORM_RECALIBRATE=post, but every
+# seed-0 pilot run predates that: not one of their run dirs carries the
+# `_anorm_recalpost` tag those settings produce. Left at the defaults a refit
+# would train a DIFFERENT model from the seed it is supposed to be a re-draw
+# of, and the "seed variance" would silently include an architecture change.
+#
+# Pinning them off also empties ANORM_TAG, which is what makes RUN_DIR agree
+# with the path the per-arm script plants best_params.yaml into — the mismatch
+# that surfaced as "best_params.yaml not found" on the first submit.
+export ADAPTIVE_NORM="${ADAPTIVE_NORM:-0}"
+export NORM_RECALIBRATE="${NORM_RECALIBRATE:-off}"
+
 # --- compute shape: one L40S, eight cores ------------------------------------
 export REFIT_GPUS="${REFIT_GPUS:-1}"
 export SEARCH_GPUS="${SEARCH_GPUS:-1}"
