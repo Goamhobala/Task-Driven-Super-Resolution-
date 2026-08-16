@@ -132,6 +132,54 @@ SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-1.0}"  # SR-group ramp; model auto-off
                                              # for frozen/bicubic/warm-start
 L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}"            # 0 = dormant L2-SP anchor
 
+# --- Read-out head: U-Net (default) or linear probe (docs/sr_linear_probe.md) -
+# HEAD=linear replaces the 24 M-param U-Net with a 1x1 conv (4 weights + 1 bias)
+# applied after the existing z-score adapter — the rl-series. It removes the
+# decoder's ability to compensate for a bad SR front-end, so every bit of
+# structure in the prediction must have been put there by the upsampler.
+#
+# DEFAULT IS `unet`, and every derived string below is EMPTY in that case, so
+# each r*-arm's run dir, study name and bench model_name are byte-identical to
+# what they were before this block existed. Verify that before trusting any
+# comparison against a row already in the (append-only) store.
+#
+# HEAD_TAG goes into RUN_DIR as well as STUDY_NAME/MODEL_NAME (unlike MON_TAG,
+# which is deliberately kept out of RUN_DIR). That is safe only because
+# _warm_head_tv.sh reconstructs the same tag when it resolves a stage-1 run dir
+# — change one and you must change the other.
+HEAD="${HEAD:-unet}"
+case "$HEAD" in
+  unet|linear) : ;;
+  *) echo "ERROR: HEAD must be unet|linear, got '${HEAD}'." >&2; exit 2 ;;
+esac
+HEAD_TAG=""
+[ "$HEAD" != "unet" ] && HEAD_TAG="_${HEAD}"
+
+# Gradient clipping split (docs/sr_linear_probe.md §6.2). Lightning's
+# `gradient_clip_val` is a SINGLE GLOBAL L2 norm over all trainable parameters.
+# For the U-Net arms that is fine — one 24 M-param group. For the linear probe
+# it is not: in rl1 the group is 5 parameters, in rl2 it is those 5 plus ~240 k
+# SEN2SR parameters, so the same setting means something different in each arm
+# and the nuisance variable moves with the treatment. Under HEAD=linear the
+# Trainer-level clip is therefore switched OFF and the value is handed to the
+# module as `clip_sr`, which clips the SR parameter group only and leaves the
+# head unclipped (configure_gradient_clipping override). CLIP stays the single
+# source of the 1.0 — the arms do not carry their own copy.
+CLIP_TRAINER="$CLIP"
+CLIP_SR="0"
+if [ "$HEAD" = "linear" ]; then
+  CLIP_TRAINER="0"
+  CLIP_SR="$CLIP"
+fi
+
+# Head warm start (LP-FT). Set by _warm_head_tv.sh for rl2/rl4 — the joint arm
+# takes its frozen twin's FINAL head so the probe is fully converged on the
+# frozen-SR input distribution before any gradient reaches the generator.
+# DELIBERATELY NOT `warm_start_unet`: model.py zeroes the SR warmup ramp when
+# warm_start_unet is set (correct for a staged U-Net start, wrong here), so
+# routing the head through that flag would silently drop sr_warmup_epochs.
+WARM_START_HEAD="${WARM_START_HEAD:-}"
+
 # --- Adaptive post-SR normalisation (docs/adaptive_norm_plan.md) -------------
 # The post-SR z-score uses FROZEN dataset stats; SR4RS's output is unanchored
 # and can drift out from under them under task-only fine-tuning. Both default
@@ -226,6 +274,18 @@ BATCH_SIZES="${BATCH_SIZES:-4}"       # PINNED, not searched (2026-08-12). `leng
                                       # between-arm constant for the whole SR series.
                                       # NB never change this on a RESUME_FIT: it
                                       # changes steps/epoch and breaks cosine T_max.
+
+# --- Model-selection criterion (2026-08-16) ----------------------------------
+# val_ap = threshold-free selection (binned AP; docs/ap_threshold_protocol_plan
+# .md §1.1) for BOTH series. The Python default stays val_iou, so the loss
+# pilot and every legacy path are byte-untouched — this shell default is what
+# flips the _new-series protocol. MON_TAG goes into STUDY_NAME (an AP-era
+# re-tune must never resume a val_iou-era study) and MODEL_NAME (the store is
+# append-only; θ*-era rows must not be confusable with old θ=0.5 rows) — NOT
+# into RUN_DIR, whose tag string _warm_tv.sh reconstructs for warm starts.
+MONITOR="${MONITOR:-val_ap}"
+MON_TAG=""
+[ "$MONITOR" != "val_iou" ] && MON_TAG="_${MONITOR#val_}"
 
 # Loader workers per training process: split the job's CPU allocation across
 # the stage's processes (search fans out SEARCH_GPUS tuners; fit/test run one).
@@ -326,7 +386,7 @@ WANDB_CONFIG="$REPO_DIR/src/unet/configs/wandb.yaml"
 # (Resolved BEFORE the norm stats so the train+val generation below has a
 # guaranteed-writable fallback location.)
 RUNS_ROOT="${RUNS_ROOT:-/scratch/${USER_NAME}/InstaRoad/runs}"
-RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}"
+RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}"
 mkdir -p "$RUN_DIR"
 
 # §4.7 stats provenance under the train+val refit: norm_stats.yaml is computed
@@ -456,9 +516,10 @@ FINAL_CKPT_NAME="unet_s2rosa_jointsr_final"
 LOG_FILE="${RUN_DIR}/${STAGE}_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Logging to ${LOG_FILE}"
-echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}"
+echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}  head=${HEAD}"
 echo "labels=${LABELS} (mask_source=${MASK_SOURCE}${MASK_DIRNAME:+, mask_dirname=${MASK_DIRNAME}})  upsampler=${UPSAMPLER}  freeze_sr=${FREEZE_SR}  sr_pad=${SR_PAD}  loss_arm=${LOSS_ARM:-legacy}"
-echo "recipe: reg=${REG}${REG_TAG:+ [${REG_TAG}]}  clip=${CLIP}  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}  sr_snapshot_every=${SR_SNAPSHOT_EVERY}"
+echo "recipe: reg=${REG}${REG_TAG:+ [${REG_TAG}]}  clip=${CLIP} (trainer=${CLIP_TRAINER}, sr_group=${CLIP_SR})  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}  sr_snapshot_every=${SR_SNAPSHOT_EVERY}"
+echo "head=${HEAD}  monitor=${MONITOR}  warm_start_head=${WARM_START_HEAD:-none}"
 echo "adapter: adaptive_norm=${ADAPTIVE_NORM_FLAG} (m=${ADAPTIVE_NORM_M})  norm_recalibrate=${NORM_RECALIBRATE}${ANORM_TAG:+  tag=${ANORM_TAG}}"
 echo "protocol: tune on train/val -> refit on '${TRAIN_SPLITS}' (merge_val=${MERGE_VAL}) -> report on test"
 echo "DATASET_DIR=${DATASET_DIR}  warm_start=${WARM_START_CKPT:-none}"
@@ -525,6 +586,22 @@ if [ -n "${WARM_START_CKPT}" ] && [ ! -f "${WARM_START_CKPT}" ]; then
   echo "  (frozen-SR) arm's STAGE=fit first; its final ckpt seeds this arm's UNet." >&2
   exit 1
 fi
+if [ -n "${WARM_START_HEAD}" ] && [ ! -f "${WARM_START_HEAD}" ]; then
+  echo "ERROR: WARM_START_HEAD=${WARM_START_HEAD} not found — run the frozen twin" >&2
+  echo "  arm's STAGE=fit first; its final ckpt seeds this arm's linear probe." >&2
+  exit 1
+fi
+if [ -n "${WARM_START_HEAD}" ] && [ -n "${WARM_START_CKPT}" ]; then
+  echo "ERROR: WARM_START_HEAD and WARM_START_CKPT are both set. The two warm-start" >&2
+  echo "  paths are mutually exclusive: warm_start_unet auto-disables the SR warmup" >&2
+  echo "  ramp, which the head path must keep (docs/sr_linear_probe.md §2)." >&2
+  exit 2
+fi
+if [ -n "${WARM_START_HEAD}" ] && [ "$HEAD" != "linear" ]; then
+  echo "ERROR: WARM_START_HEAD is set but HEAD=${HEAD}. There is no linear probe to" >&2
+  echo "  warm-start. Did you mean WARM_START_CKPT (the staged U-Net path)?" >&2
+  exit 2
+fi
 if [ "${MASK_SOURCE}" = "raster" ]; then
   # -print -quit: no pipe to `head`, so `find` can't die of SIGPIPE and trip
   # `set -o pipefail`.
@@ -549,6 +626,73 @@ export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 echo "python=$(which python)"
 
+# --- HEAD=linear capability preflight ----------------------------------------
+# The rl-series depends on model/tune changes that are NOT part of the U-Net
+# path (docs/sr_linear_probe.md §4). If they are absent, every flag this engine
+# passes for HEAD=linear is either rejected by argparse or — worse, for the
+# LightningCLI path — could be ignored, and the arm would quietly train a 24 M
+# -param U-Net under an `rl*` tag. That row would then sit in the append-only
+# store looking like a linear probe. Refuse to start instead.
+if [ "$HEAD" = "linear" ]; then
+  _missing=$(python - <<'PY'
+import inspect
+missing = []
+try:
+    from sr.model import JointSRUNetLightning
+    params = inspect.signature(JointSRUNetLightning.__init__).parameters
+    for name in ("head", "warm_start_head", "clip_sr"):
+        if name not in params:
+            missing.append(f"JointSRUNetLightning.__init__({name}=...)")
+    # hasattr is useless here: LightningModule defines configure_gradient_clipping
+    # as a no-op base method, so it is ALWAYS present and an unimplemented
+    # per-group clip would sail through. Compare identities instead.
+    import lightning.pytorch as pl
+    if (JointSRUNetLightning.configure_gradient_clipping
+            is pl.LightningModule.configure_gradient_clipping):
+        missing.append("JointSRUNetLightning.configure_gradient_clipping override "
+                       "(base method is inherited unchanged — per-group clipping "
+                       "is NOT implemented)")
+except Exception as exc:                      # import error = missing anyway
+    missing.append(f"sr.model import failed: {exc}")
+try:
+    from sr.tune import parse_args
+    # parse_args() builds the parser inline, so introspect it the only way that
+    # does not require inventing an argv: let argparse render its own help.
+    import contextlib, io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.suppress(SystemExit):
+        parse_args(["--help"])
+    helptext = buf.getvalue()
+    for flag in ("--head", "--warm-start-head", "--clip-sr"):
+        if flag not in helptext:
+            missing.append(f"sr.tune {flag}")
+except Exception as exc:
+    missing.append(f"sr.tune introspection failed: {exc}")
+print("\n".join(missing))
+PY
+)
+  if [ -n "${_missing}" ]; then
+    echo "ERROR: HEAD=linear, but the linear-probe support is not in this checkout." >&2
+    echo "  Missing:" >&2
+    echo "${_missing}" | sed 's/^/    - /' >&2
+    echo "" >&2
+    echo "  Implement docs/sr_linear_probe.md §4 before running any rl arm:" >&2
+    echo "    src/sr/model.py  head hparam ('unet'|'linear'); LinearProbeHead (1x1" >&2
+    echo "                     conv, bias init = logit(road base rate), weights 0);" >&2
+    echo "                     skip build_model when linear; warm_start_head" >&2
+    echo "                     (SEPARATE from warm_start_unet — §2); clip_sr with a" >&2
+    echo "                     configure_gradient_clipping override (§6.2); key the" >&2
+    echo "                     fp32 autocast island on head=='linear', NOT on the" >&2
+    echo "                     presence of an SR net (§6.3 — this is the rl0 bug)." >&2
+    echo "    src/sr/tune.py   --head / --warm-start-head / --clip-sr; drop the" >&2
+    echo "                     encoder_name categorical when linear." >&2
+    echo "" >&2
+    echo "  Then run Gates A and A2 (§10) locally before spending cluster time." >&2
+    exit 2
+  fi
+  echo "preflight: linear-probe support present."
+fi
+
 if [ "${UPSAMPLER}" = "sen2sr_full" ] && ! python -c "import mamba_ssm" 2>/dev/null; then
   echo "ERROR: upsampler=sen2sr_full but mamba_ssm is not importable in ${VENV_DIR}." >&2
   echo "  Install on a GPU node with matching torch/CUDA:  uv pip install mamba-ssm" >&2
@@ -561,7 +705,7 @@ fi
 if [ "$STAGE" = "tune" ]; then
   STORAGE="${STORAGE:-sqlite:///${RUN_DIR}/study.db}"
   SAMPLER_OFFSET="${SAMPLER_OFFSET:-0}"
-  STUDY_NAME="sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}"
+  STUDY_NAME="sr_${EXP_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}_seed${SEED}"
 
   run_tuner () {   # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
     local gpu="$1" ntrials="$2" seed="$3" pin=""
@@ -577,6 +721,9 @@ if [ "$STAGE" = "tune" ]; then
       --freeze-sr "$FREEZE_SR" \
       --sr-pad "$SR_PAD" \
       ${WARM_START_CKPT:+--warm-start-unet "$WARM_START_CKPT"} \
+      ${HEAD_TAG:+--head "$HEAD"} \
+      ${HEAD_TAG:+--clip-sr "$CLIP_SR"} \
+      ${WARM_START_HEAD:+--warm-start-head "$WARM_START_HEAD"} \
       --out "$RUN_DIR" \
       --num-workers "$NUM_WORKERS" \
       --devices 1 \
@@ -584,7 +731,7 @@ if [ "$STAGE" = "tune" ]; then
       --max-epochs "$TUNE_EPOCHS" \
       --patience "$PATIENCE" \
       --precision "$PRECISION" \
-      --clip "$CLIP" \
+      --clip "$CLIP_TRAINER" \
       --lr-schedule "$LR_SCHEDULE" \
       --sr-warmup-epochs "$SR_WARMUP_EPOCHS" \
       --l2sp-lambda "$L2SP_LAMBDA" \
@@ -595,6 +742,7 @@ if [ "$STAGE" = "tune" ]; then
       --train-seed "$SEED" \
       --study-name "$STUDY_NAME" \
       --storage "$STORAGE" \
+      --monitor "$MONITOR" \
       --encoder-weights "$ENCODER_WEIGHTS" \
       --lr-min "$LR_MIN" --lr-max "$LR_MAX" \
       --lr-sr-min "$LR_SR_MIN" --lr-sr-max "$LR_SR_MAX" \
@@ -653,7 +801,7 @@ if [ "$STAGE" = "bench" ]; then
   fi
 
   STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}"   # SHARED across experiments
-  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}}"
+  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}}"
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
   TILE_METRICS="${TILE_METRICS:-apls}"
@@ -676,7 +824,29 @@ if [ "$STAGE" = "bench" ]; then
     for _tm in "${_TMS[@]}"; do METRIC_ARGS+=(--tile-metric "${_tm}"); done
   fi
 
-  echo "=== BENCH (ckpt=$(basename "$CKPT"), model_name=${MODEL_NAME}, seed=${SEED}, split=${BENCH_SPLIT}, gt=${MASK_SOURCE}, tile_metrics=${TILE_METRICS:-none}) ==="
+  # --- θ resolution: BENCH_THRESHOLD env > sweep.json > hard error -----------
+  # The runner's silent fallback (checkpoint hparam, 0.5 — the SR configs
+  # never set one) is exactly how the store filled with θ=0.5 rows nobody
+  # chose. This stage now refuses to score without an explicit operating point.
+  if [ -n "${BENCH_THRESHOLD:-}" ]; then
+    THETA="$BENCH_THRESHOLD"
+    THETA_SRC="BENCH_THRESHOLD (env override)"
+  elif [ -f "${RUN_DIR}/sweep.json" ]; then
+    THETA=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['best_threshold'])" "${RUN_DIR}/sweep.json")
+    THETA_SRC="${RUN_DIR}/sweep.json"
+  else
+    echo "ERROR: no operating point for the bench row — refusing the silent θ=0.5 default." >&2
+    echo "  STAGE=fit now ends with the post-refit θ* sweep that writes ${RUN_DIR}/sweep.json;" >&2
+    echo "  for an older run, produce it with:" >&2
+    echo "    python -m benchmarking.cli sweep --dataset-dir ${DATASET_DIR} --checkpoint ${CKPT} \\" >&2
+    echo "      --model sr --model-name ${MODEL_NAME} --split val --sen2sr-dir ${SEN2SR_DIR} \\" >&2
+    echo "      --mask-source ${MASK_SOURCE}${MASK_DIRNAME:+ --mask-dirname ${MASK_DIRNAME}} --out ${RUN_DIR}/sweep.json" >&2
+    echo "  or set BENCH_THRESHOLD explicitly." >&2
+    exit 2
+  fi
+  echo "bench θ = ${THETA}  [${THETA_SRC}]"
+
+  echo "=== BENCH (ckpt=$(basename "$CKPT"), model_name=${MODEL_NAME}, seed=${SEED}, split=${BENCH_SPLIT}, θ=${THETA}, gt=${MASK_SOURCE}, tile_metrics=${TILE_METRICS:-none}) ==="
   python -m benchmarking.cli eval \
     --dataset-dir "$DATASET_DIR" \
     --checkpoint "$CKPT" \
@@ -688,6 +858,7 @@ if [ "$STAGE" = "bench" ]; then
     --sen2sr-dir "$SEN2SR_DIR" \
     --exp-tag "$EXP_TAG" \
     --label-source "$LABEL_SOURCE" \
+    --threshold "$THETA" \
     ${METRIC_ARGS[@]+"${METRIC_ARGS[@]}"} \
     ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"} \
     "${MASK_ARGS_BENCH[@]}"
@@ -739,6 +910,14 @@ MODEL_ARGS=(--model.upsampler "$UPSAMPLER" --model.freeze_sr "$FREEZE_SR"
 if [ -n "$WARM_START_CKPT" ]; then
   MODEL_ARGS+=(--model.warm_start_unet "$WARM_START_CKPT")
 fi
+# Head args are appended ONLY for the linear probe, so the U-Net arms' command
+# line is byte-identical to what it was before HEAD existed.
+if [ -n "$HEAD_TAG" ]; then
+  MODEL_ARGS+=(--model.head "$HEAD" --model.clip_sr "$CLIP_SR")
+  if [ -n "$WARM_START_HEAD" ]; then
+    MODEL_ARGS+=(--model.warm_start_head "$WARM_START_HEAD")
+  fi
+fi
 if [ -n "$LOSS_ARM" ]; then
   MODEL_ARGS+=("${LOSS_ARGS_FIT[@]}")
 fi
@@ -767,7 +946,7 @@ python -m sr.cli fit \
   --trainer.max_epochs "$REFIT_EPOCHS" \
   --trainer.devices "$REFIT_GPUS" \
   --trainer.precision "$PRECISION" \
-  --trainer.gradient_clip_val "$CLIP" \
+  --trainer.gradient_clip_val "$CLIP_TRAINER" \
   --trainer.logger.init_args.project "$WANDB_PROJECT" \
   --seed_everything "$SEED" \
   ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
@@ -806,6 +985,49 @@ python -m sr.cli test \
   --trainer.devices 1 \
   --trainer.logger.init_args.project "$WANDB_PROJECT" \
   --ckpt_path "$CKPT"
+
+# --- Post-refit θ* sweep (selection) -----------------------------------------
+# θ* is selected AFTER the refit, on the val split — refit TRAINING data under
+# this protocol (TRAIN_SPLITS='train val'), deliberately: a θ chosen on seen
+# data cannot inflate test numbers, only cost a mildly suboptimal operating
+# point (docs/ap_threshold_protocol_plan.md §1.2). The bench stage refuses to
+# run without a θ (BENCH_THRESHOLD or this sweep.json).
+SWEEP_SPLIT="${SWEEP_SPLIT:-val}"
+MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}}"
+MASK_ARGS_SWEEP=(--mask-source "$MASK_SOURCE")
+[ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_SWEEP+=(--mask-dirname "$MASK_DIRNAME")
+
+echo "=== θ* SWEEP (split=${SWEEP_SPLIT} — seen data, selection-only) ==="
+python -m benchmarking.cli sweep \
+  --dataset-dir "$DATASET_DIR" \
+  --checkpoint "$CKPT" \
+  --model sr \
+  --model-name "$MODEL_NAME" \
+  --seed "$SEED" \
+  --split "$SWEEP_SPLIT" \
+  --sen2sr-dir "$SEN2SR_DIR" \
+  --out "${RUN_DIR}/sweep.json" \
+  "${MASK_ARGS_SWEEP[@]}"
+THETA=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['best_threshold'])" "${RUN_DIR}/sweep.json")
+echo "θ* = ${THETA}  -> ${RUN_DIR}/sweep.json"
+
+# --- Test θ-sensitivity sweep (reporting ONLY, never selection) --------------
+# The full IoU/F1(θ) curve on test plus the buffered-F1 tolerance sweep for the
+# write-up: θ-flatness around θ*, the IoU@0.5 companion number, tolerances
+# 1-5 px. purpose="sensitivity" is stamped in the JSON so it cannot later be
+# mistaken for a selection artifact.
+echo "=== TEST θ SENSITIVITY SWEEP (buffer_px=1,2,3,4,5) ==="
+python -m benchmarking.cli sweep \
+  --dataset-dir "$DATASET_DIR" \
+  --checkpoint "$CKPT" \
+  --model sr \
+  --model-name "$MODEL_NAME" \
+  --seed "$SEED" \
+  --split test \
+  --sen2sr-dir "$SEN2SR_DIR" \
+  --buffer-px 1,2,3,4,5 \
+  --out "${RUN_DIR}/test_sweep.json" \
+  "${MASK_ARGS_SWEEP[@]}"
 
 echo "=== DONE ===  outputs in $RUN_DIR"
 echo "Bench: bash scripts/hpc/submit.sh sr/${EXP_TAG}.sh STAGE=bench SEED=${SEED}${LOSS_ARM:+ LOSS_ARM=${LOSS_ARM}}"

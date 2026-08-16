@@ -347,6 +347,7 @@ def run_eval(
     max_tiles: Annotated[Optional[int], typer.Option(help="Score only the first N tiles of the split (quick local smoke)")] = None,
     stratum: Annotated[Optional[str], typer.Option(help="Score only this stratum, e.g. Urban | PeriUrban | Rural (case/dash-insensitive)")] = None,
     stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
+    ap_bins: Annotated[Optional[int], typer.Option(help="Add per-chip Average Precision (AUPRC) scored from the probability map over this many thresholds spanning [0,1] (101 = 0.01 resolution). Unlike an AP derived from a theta sweep, coverage is complete by construction. Step-wise sum, per Davis & Goadrich.")] = None,
     buffer_px: Annotated[Optional[str], typer.Option(help="Buffered precision/recall/F1 tolerance(s) in px: '3', or a comma list '1,2,3,4,5' for a tolerance sweep (columns gain an _r<N> suffix). Several radii share one distance transform, so the sweep is nearly free. 3 px = 7.5 m at 2.5 m GSD.")] = None,
     wandb_meta: Annotated[Optional[Path], typer.Option(help="train_meta.json with a `wandb` block: resume that run and push the bench metrics (incl. APLS) to its summary")] = None,
 ):
@@ -367,7 +368,7 @@ def run_eval(
         tile_metrics=tuple(tile_metric or ()), check=check, device=device,
         threshold=threshold, max_tiles=max_tiles,
         stratum=stratum, stratum_col=stratum_col,
-        buffer_px=_parse_radii(buffer_px),
+        buffer_px=_parse_radii(buffer_px), ap_bins=ap_bins,
     )
     if wandb_meta is not None:
         _push_bench_to_wandb(wandb_meta, run_id, store_dir, split)
