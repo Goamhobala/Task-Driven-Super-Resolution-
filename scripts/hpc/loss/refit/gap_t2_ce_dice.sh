@@ -93,6 +93,28 @@ trainer:
   precision: bf16-mixed
 YAML
 
+# Already in the store? The store is append-only with uuid run_ids and the
+# bench stage has no duplicate check, so re-benching a (model, seed, split) adds
+# a SECOND shard and every mean silently averages those chips twice.
+in_store () {  # split -> 0 if already present
+  python - "$STORE_DIR" "$MODEL_NAME" "$1" "$2" <<'PYEOF' 2>/dev/null
+import sys
+from pathlib import Path
+store, name, seed, split = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+try:
+    from benchmarking.store import load_runs
+    runs = load_runs(Path(store))
+except Exception:
+    sys.exit(1)
+if runs is None or getattr(runs, "empty", True) or "model_name" not in runs.columns:
+    sys.exit(1)
+hit = runs[(runs["model_name"] == name) & (runs["seed"] == seed)]
+if "dataset_split" in runs.columns:
+    hit = hit[hit["dataset_split"] == split]
+sys.exit(0 if len(hit) else 1)
+PYEOF
+}
+
 for SEED in $SEEDS; do
   RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}_${LOSS_ARM}_holdout_seed${SEED}"
   mkdir -p "$RUN_DIR"
@@ -100,24 +122,41 @@ for SEED in $SEEDS; do
   # been tuned — so the overlay is planted rather than looked up.
   printf '%s\n' "$BEST_PARAMS" > "$RUN_DIR/best_params.yaml"
 
-  echo "########## sr_r0_new_gap_t2_ce_dice_holdout  SEED=${SEED}  FIT ##########"
-  env EXP_TAG="$EXP_TAG" LOSS_ARM="$LOSS_ARM" SEED="$SEED" STAGE=fit \
-      bash "$REPO_DIR/scripts/hpc/loss/refit/_refit_arm.sh"
+  # Resume-friendly: a finished fit leaves the final ckpt AND sweep.json (the
+  # bench needs the latter). Both must exist to skip, or a run interrupted
+  # between them would never get its operating point.
+  if [ -f "$RUN_DIR/checkpoints/unet_s2rosa_jointsr_final.ckpt" ] \
+     && [ -f "$RUN_DIR/sweep.json" ] && [ "${FORCE_FIT:-0}" != "1" ]; then
+    echo "########## sr_r0_new_gap_t2_ce_dice_holdout  SEED=${SEED}  FIT already done — skipping ##########"
+  else
+    echo "########## sr_r0_new_gap_t2_ce_dice_holdout  SEED=${SEED}  FIT ##########"
+    env EXP_TAG="$EXP_TAG" LOSS_ARM="$LOSS_ARM" SEED="$SEED" STAGE=fit \
+        bash "$REPO_DIR/scripts/hpc/loss/refit/_refit_arm.sh"
+  fi
 
-  echo "########## sr_r0_new_gap_t2_ce_dice_holdout  SEED=${SEED}  BENCH val (selects theta*) ##########"
-  env EXP_TAG="$EXP_TAG" LOSS_ARM="$LOSS_ARM" SEED="$SEED" STAGE=bench \
-      BENCH_SPLIT=val \
-      bash "$REPO_DIR/scripts/hpc/loss/refit/_refit_arm.sh"
+  STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}"
+  if in_store "$SEED" val; then
+    echo "########## sr_r0_new_gap_t2_ce_dice_holdout  SEED=${SEED}  BENCH val already in store — skipping ##########"
+  else
+    echo "########## sr_r0_new_gap_t2_ce_dice_holdout  SEED=${SEED}  BENCH val (selects theta*) ##########"
+    env EXP_TAG="$EXP_TAG" LOSS_ARM="$LOSS_ARM" SEED="$SEED" STAGE=bench \
+        BENCH_SPLIT=val STORE_DIR="$STORE_DIR" \
+        bash "$REPO_DIR/scripts/hpc/loss/refit/_refit_arm.sh"
+  fi
 
   # Test at the SAME theta*: the bench stage reuses the sweep.json the val pass
   # just wrote (the sweep is always on val), so the operating point is still
   # chosen on val and test is only ever read. val -> loss selection for the R
   # series; test -> the reported number. RUN_TEST=0 to skip.
   if [ "${RUN_TEST:-1}" = "1" ]; then
-    echo "########## sr_r0_new_gap_t2_ce_dice_holdout  SEED=${SEED}  BENCH test (at val's theta*) ##########"
-    env EXP_TAG="$EXP_TAG" LOSS_ARM="$LOSS_ARM" SEED="$SEED" STAGE=bench \
-        BENCH_SPLIT=test \
-        bash "$REPO_DIR/scripts/hpc/loss/refit/_refit_arm.sh"
+    if in_store "$SEED" test; then
+      echo "########## sr_r0_new_gap_t2_ce_dice_holdout  SEED=${SEED}  BENCH test already in store — skipping ##########"
+    else
+      echo "########## sr_r0_new_gap_t2_ce_dice_holdout  SEED=${SEED}  BENCH test (at val's theta*) ##########"
+      env EXP_TAG="$EXP_TAG" LOSS_ARM="$LOSS_ARM" SEED="$SEED" STAGE=bench \
+          BENCH_SPLIT=test STORE_DIR="$STORE_DIR" \
+          bash "$REPO_DIR/scripts/hpc/loss/refit/_refit_arm.sh"
+    fi
   fi
 
   if [ "${KEEP_LAST:-0}" != "1" ]; then

@@ -1128,11 +1128,13 @@ fi
 # val bench, and the pilot never compares these test numbers between arms.
 # SKIP_TEST=1 keeps test genuinely unseen; the Lightning twin has had this
 # guard since the pilot was ported, this engine had not (added 2026-08-16).
+# SKIP_TEST gates only the steps that READ test. The val theta* sweep below is
+# NOT gated: the bench stage refuses to run without sweep.json, so skipping it
+# turns a pilot fit into a run that can never be benched. (An earlier version of
+# this guard exited here and did exactly that.)
 if [ "${SKIP_TEST:-0}" = "1" ]; then
   echo "=== SKIP_TEST=1: not running the test split (pilot mode) ==="
-  echo "=== FIT DONE ===  checkpoints in ${RUN_DIR}/checkpoints"
-  exit 0
-fi
+else
 
 # The ONLY held-out evaluation in this protocol.
 echo "=== TEST (held-out split, ckpt=$(basename "$CKPT")) ==="
@@ -1149,6 +1151,8 @@ python -m sr.cli test \
   --trainer.devices 1 \
   --trainer.logger.init_args.project "$WANDB_PROJECT" \
   --ckpt_path "$CKPT"
+
+fi   # end SKIP_TEST gate around the held-out test
 
 # --- Post-refit θ* sweep (selection) -----------------------------------------
 # θ* is selected AFTER the refit, on the val split — refit TRAINING data under
@@ -1180,6 +1184,12 @@ echo "θ* = ${THETA}  -> ${RUN_DIR}/sweep.json"
 # write-up: θ-flatness around θ*, the IoU@0.5 companion number, tolerances
 # 1-5 px. purpose="sensitivity" is stamped in the JSON so it cannot later be
 # mistaken for a selection artifact.
+if [ "${SKIP_TEST:-0}" = "1" ]; then
+  echo "=== SKIP_TEST=1: skipping the test sensitivity sweep too ==="
+  echo "=== FIT DONE ===  sweep.json written; bench with STAGE=bench ==="
+  exit 0
+fi
+
 echo "=== TEST θ SENSITIVITY SWEEP (buffer_px=1,2,3,4,5) ==="
 python -m benchmarking.cli sweep \
   --dataset-dir "$DATASET_DIR" \
