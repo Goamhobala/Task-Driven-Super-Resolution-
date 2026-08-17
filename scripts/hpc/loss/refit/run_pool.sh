@@ -27,11 +27,26 @@ REFIT_DIR="$REPO_DIR/scripts/hpc/loss/refit"
 : "${ARMS:?run_pool.sh needs ARMS (space-separated script stems)}"
 NGPU="${NGPU:-1}"
 
+# --- share the CPU allocation across the lanes ------------------------------
+# With `--ntasks=2 --cpus-per-task=8` (the way to get 16 cores under an 8/task
+# cap) SLURM_CPUS_PER_TASK is 8, not 16 — so a per-lane NUM_WORKERS taken from
+# it would launch 2x7 workers against whatever the batch step actually holds.
+# SLURM_CPUS_ON_NODE reports the WHOLE allocation, which is what has to be
+# divided. One core per lane is left for the training process itself.
+TOTAL_CPUS="${SLURM_CPUS_ON_NODE:-$(( ${SLURM_CPUS_PER_TASK:-8} * ${SLURM_NTASKS:-1} ))}"
+PER_LANE=$(( TOTAL_CPUS / NGPU ))
+[ "$PER_LANE" -lt 1 ] && PER_LANE=1
+LANE_WORKERS=$(( PER_LANE - 1 ))
+[ "$LANE_WORKERS" -lt 1 ] && LANE_WORKERS=1
+
 read -r -a ARM_ARR <<< "$ARMS"
 echo "=============================================================="
 echo "refit pool   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "  arms : ${#ARM_ARR[@]}   (${ARMS})"
 echo "  gpus : ${NGPU}          seeds: ${SEEDS:-1 2}"
+echo "  cpus : ${TOTAL_CPUS} total -> ${PER_LANE}/lane, num_workers=${LANE_WORKERS}"
+echo "         (SLURM_CPUS_ON_NODE=${SLURM_CPUS_ON_NODE:-unset} "\
+     "CPUS_PER_TASK=${SLURM_CPUS_PER_TASK:-unset} NTASKS=${SLURM_NTASKS:-unset})"
 echo "=============================================================="
 
 # Deal the arms round-robin across lanes so each lane gets a mix rather than a
@@ -40,6 +55,7 @@ echo "=============================================================="
 for g in $(seq 0 $((NGPU - 1))); do
   (
     export CUDA_VISIBLE_DEVICES="$g"
+    export NUM_WORKERS="$LANE_WORKERS"   # split, not per-lane full allocation
     lane=0
     for i in "${!ARM_ARR[@]}"; do
       [ $((i % NGPU)) -eq "$g" ] || continue
