@@ -22,7 +22,7 @@
 set -euo pipefail
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 
-export ARMS="gap_t2_ce_dice gap_t2_ce_sdice gap_tl_ce gap_tl_dice gapt4_pstar_sdice t2_ce wbce"
+export ARMS="gap_ce gap_t2_ce_lcdice gap_t4_ce gap_tl_ce_sdice gapt4_pstar_lcdice sdice tl_ce"
 export NGPU=1
 export SEEDS="${SEEDS:-1 2}"
 

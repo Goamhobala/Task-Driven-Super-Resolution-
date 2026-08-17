@@ -1,5 +1,5 @@
 #!/bin/bash
-# SEED REFIT — sr_r0_new_dice_holdout
+# SEED REFIT — sr_r0_new_wbce_dice_holdout
 #
 # Re-runs this arm's pilot fit at SEED=1 2 so the reported number can be a
 # cross-seed mean +/- std rather than a single draw. Nothing else changes: same
@@ -8,9 +8,9 @@
 # rows group with the existing seed-0 row automatically under `report`.
 #
 #   cd scripts/hpc
-#   sbatch --job-name=refit-dice --time=12:00:00 \
+#   sbatch --job-name=refit-wbce_dice --time=12:00:00 \
 #          --gres=gpu:1 --cpus-per-task=8 \
-#          train.sbatch --SCRIPT=loss/refit/dice.sh
+#          train.sbatch --SCRIPT=loss/refit/wbce_dice.sh
 #
 # --SCRIPT resolves under $REPO_DIR/scripts/hpc/ whatever the cwd, so running
 # from scripts/hpc keeps the command short. The headers in train.sbatch default
@@ -19,7 +19,7 @@
 # that dies at the wall clock loses the second seed entirely.
 #
 # Hyperparameters are seed 0's tune, copied verbatim from
-#   sr_r0_new_dice_holdout_seed0
+#   sr_r0_new_wbce_dice_holdout_seed0
 # and baked in, so the cluster needs nothing from runslightning/ and the exact
 # config a refit used is readable in the file that ran it.
 #
@@ -40,13 +40,13 @@ REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 USER_NAME="${USER:-$(whoami)}"
 RUNS_ROOT="${RUNS_ROOT:-/scratch/${USER_NAME}/InstaRoad/runs}"
 
-EXP_TAG="r0_new"
-LOSS_ARM="dice"
-export MODEL_NAME="sr_r0_new_dice_holdout"   # match seed 0 so the store groups the seeds
+EXP_TAG="r0_new_wbce"
+LOSS_ARM="pstar_dice"
+export MODEL_NAME="sr_r0_new_wbce_dice_holdout"   # match seed 0 so the store groups the seeds
 SEEDS="${SEEDS:-1 2}"
 
 # --- fit-belt pins (see header) ---------------------------------------------
-export PSTAR="bce"
+export PSTAR="wbce"
 export GAP_R="4"
 export GAP_K="60.0"
 export TL_ELL="5"
@@ -65,9 +65,9 @@ model:
   upsampler: bicubic
   freeze_sr: false
   sr_pad: 0
-  lr: 0.000279085881772079
-  loss_arm: dice
-  pstar: bce
+  lr: 0.0003450899698116774
+  loss_arm: pstar_dice
+  pstar: wbce
   gap_r: 4
   gap_k: 60.0
   tl_ell: 5
@@ -80,13 +80,11 @@ model:
   sr_radius: 1
   warmup_start: 15
   warmup_ramp: 5
-  mix_w: 0.5
+  mix_w: 0.5684444010935159
+  pos_weight: 4.536132575942871
   lr_schedule: cosine
   sr_warmup_epochs: 1.0
   l2sp_lambda: 0.0
-  adaptive_norm: false
-  adaptive_norm_momentum: 0.01
-  norm_recalibrate: 'off'
 data:
   batch_size: 8
   mask_source: raster
@@ -129,18 +127,18 @@ for SEED in $SEEDS; do
   # between them would never get its operating point.
   if [ -f "$RUN_DIR/checkpoints/unet_s2rosa_jointsr_final.ckpt" ] \
      && [ -f "$RUN_DIR/sweep.json" ] && [ "${FORCE_FIT:-0}" != "1" ]; then
-    echo "########## sr_r0_new_dice_holdout  SEED=${SEED}  FIT already done — skipping ##########"
+    echo "########## sr_r0_new_wbce_dice_holdout  SEED=${SEED}  FIT already done — skipping ##########"
   else
-    echo "########## sr_r0_new_dice_holdout  SEED=${SEED}  FIT ##########"
+    echo "########## sr_r0_new_wbce_dice_holdout  SEED=${SEED}  FIT ##########"
     env EXP_TAG="$EXP_TAG" LOSS_ARM="$LOSS_ARM" SEED="$SEED" STAGE=fit \
         bash "$REPO_DIR/scripts/hpc/loss/refit/_refit_arm.sh"
   fi
 
   STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}"
   if in_store "$SEED" val; then
-    echo "########## sr_r0_new_dice_holdout  SEED=${SEED}  BENCH val already in store — skipping ##########"
+    echo "########## sr_r0_new_wbce_dice_holdout  SEED=${SEED}  BENCH val already in store — skipping ##########"
   else
-    echo "########## sr_r0_new_dice_holdout  SEED=${SEED}  BENCH val (selects theta*) ##########"
+    echo "########## sr_r0_new_wbce_dice_holdout  SEED=${SEED}  BENCH val (selects theta*) ##########"
     env EXP_TAG="$EXP_TAG" LOSS_ARM="$LOSS_ARM" SEED="$SEED" STAGE=bench \
         BENCH_SPLIT=val STORE_DIR="$STORE_DIR" \
         bash "$REPO_DIR/scripts/hpc/loss/refit/_refit_arm.sh"
@@ -152,9 +150,9 @@ for SEED in $SEEDS; do
   # series; test -> the reported number. RUN_TEST=0 to skip.
   if [ "${RUN_TEST:-1}" = "1" ]; then
     if in_store "$SEED" test; then
-      echo "########## sr_r0_new_dice_holdout  SEED=${SEED}  BENCH test already in store — skipping ##########"
+      echo "########## sr_r0_new_wbce_dice_holdout  SEED=${SEED}  BENCH test already in store — skipping ##########"
     else
-      echo "########## sr_r0_new_dice_holdout  SEED=${SEED}  BENCH test (at val's theta*) ##########"
+      echo "########## sr_r0_new_wbce_dice_holdout  SEED=${SEED}  BENCH test (at val's theta*) ##########"
       env EXP_TAG="$EXP_TAG" LOSS_ARM="$LOSS_ARM" SEED="$SEED" STAGE=bench \
           BENCH_SPLIT=test STORE_DIR="$STORE_DIR" \
           bash "$REPO_DIR/scripts/hpc/loss/refit/_refit_arm.sh"
@@ -166,4 +164,4 @@ for SEED in $SEEDS; do
   fi
 done
 
-echo "=== sr_r0_new_dice_holdout: seeds ${SEEDS} done ==="
+echo "=== sr_r0_new_wbce_dice_holdout: seeds ${SEEDS} done ==="

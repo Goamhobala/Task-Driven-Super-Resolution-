@@ -1,5 +1,5 @@
 #!/bin/bash
-# Refit pool a — 7 arm(s) on 1 GPU(s), all in ONE SLURM job.
+# Refit pool a — 8 arm(s) on 1 GPU(s), all in ONE SLURM job.
 #
 #   cd scripts/hpc
 #   sbatch --job-name=refit-pool-a --time=24:00:00 --qos=l40sfree \
@@ -22,7 +22,7 @@
 set -euo pipefail
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 
-export ARMS="gap_ce gap_t2_ce_lcdice gap_t4_ce gap_tl_ce_sdice gapt4_pstar_lcdice sdice tl_ce"
+export ARMS="dice gap_t2_ce gap_t2t4_ce gap_tl_ce_lcdice gapt4_pstar_dice lcdice t4_ce wbce"
 export NGPU=1
 export SEEDS="${SEEDS:-1 2}"
 
