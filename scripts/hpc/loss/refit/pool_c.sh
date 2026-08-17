@@ -1,10 +1,10 @@
 #!/bin/bash
-# Refit pool b — 7 arm(s) on 1 GPU(s), all in ONE SLURM job.
+# Refit pool c — 6 arm(s) on 1 GPU(s), all in ONE SLURM job.
 #
 #   cd scripts/hpc
-#   sbatch --job-name=refit-pool-b --time=24:00:00 --qos=l40sfree \
+#   sbatch --job-name=refit-pool-c --time=24:00:00 --qos=l40sfree \
 #          --gres=gpu:1 --cpus-per-task=8 \
-#          train.sbatch --SCRIPT=loss/refit/pool_b.sh
+#          train.sbatch --SCRIPT=loss/refit/pool_c.sh
 #
 # --ntasks=1 --cpus-per-task=8 requests 8 cores while staying inside an
 # 8-core-per-task cap. The batch script still runs ONCE (train.sbatch execs it
@@ -22,7 +22,7 @@
 set -euo pipefail
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 
-export ARMS="gap_t2_ce_dice gap_t2_ce_sdice gap_tl_ce gap_tl_dice gapt4_pstar_sdice t2_ce wbce"
+export ARMS="gap_t2_ce gap_t2t4_ce gap_tl_ce_lcdice gapt4_pstar_dice lcdice t4_ce"
 export NGPU=1
 export SEEDS="${SEEDS:-1 2}"
 
