@@ -617,7 +617,7 @@ def variance(
 def report(
     store_dir: Annotated[Path, typer.Option(help="Sharded store dir")],
     metric: Annotated[List[str], typer.Option(help="Metric(s), repeatable; chip or tile level")] = None,
-    aggregation: Annotated[str, typer.Option(help="micro or macro cross-seed aggregation")] = "micro",
+    aggregation: Annotated[str, typer.Option(help="micro | macro | both. 'both' emits each metric's micro AND macro summary in one report (pairwise stats appear once — they pair seed-averaged per-chip values, which are neither).")] = "micro",
     n_boot: Annotated[int, typer.Option(help="Bootstrap resamples for pairwise")] = 2000,
     out: Annotated[Optional[Path], typer.Option(help="Write the report to .md or .csv as well")] = None,
     stratum: Annotated[Optional[str], typer.Option(help="Report only this stratum, e.g. Urban | PeriUrban | Rural. Slices the existing store — no re-inference.")] = None,
@@ -699,22 +699,36 @@ def _run_report(store_dir, metrics, aggregation, n_boot, out,
                     met.replace("buffered_f1", "buffered_recall")}
         else:
             need = {"tp"}
-        agg = (aggregation if is_micro_derivable(met) and need <= set(df.columns)
-               else "macro")
+        can_micro = is_micro_derivable(met) and need <= set(df.columns)
+        # `both` emits the micro AND macro summary for every metric that admits
+        # one. They answer different questions — micro pools counts and is
+        # dominated by road-dense chips, macro weights every chip equally — and
+        # can rank arms differently, so seeing them apart risks quoting one
+        # while thinking of the other. Metrics with no per-chip denominator
+        # (apls/cldice/ap) have only a macro form and appear once.
+        if aggregation == "both":
+            aggs = ["micro", "macro"] if can_micro else ["macro"]
+        else:
+            aggs = [aggregation if can_micro else "macro"]
         n_units = df["chip_id"].nunique() if "chip_id" in df.columns else len(df)
-        typer.echo(f"\n== per-model {met} (mean +/- std across seeds, {agg}, "
-                   f"per-{unit}){label}  n_{unit}s={n_units} ==")
-        summary_rows = []
-        for m in models:
-            try:
-                o = cross_seed_ci(df, {"model_name": m}, metric=met, aggregation=agg)
-                typer.echo(f"  {m:24} {o['mean']:.4f} +/- {o['std']:.4f}  (n_seeds={o['n_seeds']})")
-                summary_rows.append([m, f"{o['mean']:.4f}", f"{o['std']:.4f}", o["n_seeds"]])
-                csv_rows.append({"metric": met, "model": m, "mean": o["mean"],
-                                 "std": o["std"], "n_seeds": o["n_seeds"],
-                                 "stratum": resolved or "all"})
-            except ValueError as e:
-                typer.echo(f"  {m:24} <{e}>")
+
+        summaries = []
+        for agg in aggs:
+            typer.echo(f"\n== per-model {met} (mean +/- std across seeds, {agg}, "
+                       f"per-{unit}){label}  n_{unit}s={n_units} ==")
+            summary_rows = []
+            for m in models:
+                try:
+                    o = cross_seed_ci(df, {"model_name": m}, metric=met, aggregation=agg)
+                    typer.echo(f"  {m:24} {o['mean']:.4f} +/- {o['std']:.4f}  (n_seeds={o['n_seeds']})")
+                    summary_rows.append([m, f"{o['mean']:.4f}", f"{o['std']:.4f}", o["n_seeds"]])
+                    csv_rows.append({"metric": met, "model": m, "aggregation": agg,
+                                     "mean": o["mean"], "std": o["std"],
+                                     "n_seeds": o["n_seeds"],
+                                     "stratum": resolved or "all"})
+                except ValueError as e:
+                    typer.echo(f"  {m:24} <{e}>")
+            summaries.append((agg, summary_rows))
 
         pair_rows = []
         if len(models) > 1:
@@ -734,8 +748,13 @@ def _run_report(store_dir, metrics, aggregation, n_boot, out,
                                   f"[{boot['ci_lo']:+.4f}, {boot['ci_hi']:+.4f}]",
                                   f"{wil['p_value']:.3g}", sig.strip() or ""])
 
-        md_parts.append(f"## {met} ({agg}, per-{unit}){label}\n\n"
-                        + _md_table(["model", "mean", "std", "n_seeds"], summary_rows))
+        for agg, summary_rows in summaries:
+            md_parts.append(f"## {met} ({agg}, per-{unit}){label}\n\n"
+                            + _md_table(["model", "mean", "std", "n_seeds"], summary_rows))
+        # ONE pairwise block per metric regardless of aggregation: it pairs
+        # SEED-AVERAGED PER-CHIP values, which are neither micro nor macro, so
+        # repeating it under both headings would duplicate the bootstrap (the
+        # expensive part) to print identical numbers twice.
         if pair_rows:
             md_parts.append(_md_table(["model A", "model B", "diff", "95% CI", "p", "sig"],
                                       pair_rows))

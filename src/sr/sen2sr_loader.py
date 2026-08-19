@@ -339,7 +339,7 @@ def pad_low_pass_mask(model: TrainableSEN2SR, pad: int, scale: int = SEN2SR_SCAL
     ``2*pad*scale``).
 
     Valid because `HardConstraint` applies the mask in fftSHIFTED space (DC at
-    the centre): bilinear resampling of the centred radial low-pass mask keeps
+    the centre): bicubic resampling of the centred radial low-pass mask keeps
     the cutoff at the same fraction of Nyquist. In-place; returns the model.
     """
     if pad <= 0:
@@ -355,7 +355,7 @@ def pad_low_pass_mask(model: TrainableSEN2SR, pad: int, scale: int = SEN2SR_SCAL
     h, w = m.shape[-2:]
     new_hw = (h + 2 * pad * scale, w + 2 * pad * scale)
     flat = m.reshape(1, -1, h, w).float()          # (1, C*, H, W) for interpolate
-    resized = nn.functional.interpolate(flat, size=new_hw, mode="bilinear",
+    resized = nn.functional.interpolate(flat, size=new_hw, mode="bicubic",
                                         align_corners=False)
     resized = resized.reshape(*m.shape[:-2], *new_hw).to(m.dtype)
     del model.hard_constraint.low_pass_mask
