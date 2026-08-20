@@ -291,6 +291,13 @@ def build_objective(args, base_cfg: dict):
             adaptive_norm=adaptive_norm,
             adaptive_norm_momentum=adaptive_norm_momentum,
             norm_recalibrate=norm_recalibrate,
+            # Tuning is the ONE place aborting is the right trade: a short
+            # trial that leaves the band is a verdict on that corner of the
+            # search space, and pruning it buys budget for corners that might
+            # win. Fits default to "warn" and must stay that way -- a band exit
+            # there is the experiment's result, not a reason to bin a
+            # multi-day run.
+            std_band_action="raise",
             head=head,
             warm_start_head=warm_start_head,
             clip_sr=clip_sr,

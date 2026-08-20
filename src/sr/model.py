@@ -254,6 +254,27 @@ class JointSRUNetLightning(UNetLightning):
         # so it is not done every step; at the default momentum (horizon 100
         # steps) 50 cannot miss an excursion by more than half a horizon.
         adaptive_norm_check_every: int = 50,
+        # What to DO when the band is exceeded. "warn" (default) logs, sets
+        # the `adapt_band_exit` metric to 1, and KEEPS TRAINING. "raise" throws
+        # AdaptiveNormBandExit.
+        #
+        # Default is warn, and that default is load-bearing. Measuring what the
+        # task loss does to the SR generator IS the R2/R4 experiment; a band
+        # exit is therefore a RESULT, not a fault, and an instrument that
+        # aborts the experiment when it observes the phenomenon it was built to
+        # observe is worse than no instrument. Hard evidence (r4b_new refit,
+        # 2026-08-19): killed at epoch 13 of 100 after a day of queueing, at
+        # lr_sr=7.4e-07 (13x BELOW the design default), on a band that crossed
+        # 0.5 by 0.004, on a trend that had DECELERATED 8.7x between step 5850
+        # and step 37150 — i.e. converging, not running away — with the
+        # adapter tracking it correctly the whole time. Nothing about that run
+        # was unrecoverable or meaningless, which is the only bar that justifies
+        # aborting.
+        #
+        # "raise" exists for `sr.tune`, where a short trial hitting the band
+        # really is a verdict on that corner of the search space and pruning
+        # saves budget. Opt in there, never here.
+        std_band_action: str = "warn",
         # Std band limits, as multiples of the run's starting std. ASYMMETRIC
         # by design — see the module constants for why collapse and growth are
         # not equally dangerous. Exposed as hparams so an arm with a known
@@ -390,6 +411,8 @@ class JointSRUNetLightning(UNetLightning):
         if norm_recalibrate not in NORM_RECALIBRATE_MODES:
             raise ValueError(f"norm_recalibrate={norm_recalibrate!r} "
                              f"(choose from {NORM_RECALIBRATE_MODES})")
+        if std_band_action not in ("warn", "raise"):
+            raise ValueError(f"std_band_action={std_band_action!r} (warn | raise)")
         if not (0.0 < float(adaptive_norm_momentum) <= 1.0):
             raise ValueError("adaptive_norm_momentum must be in (0, 1], got "
                              f"{adaptive_norm_momentum}")
@@ -535,6 +558,8 @@ class JointSRUNetLightning(UNetLightning):
         self.register_buffer("_adapt_skips", torch.zeros((), dtype=torch.float32),
                              persistent=False)
         self._adapt_warned = False
+        self._adapt_band_warned = False
+        self._adapt_band_exited = False
         self._adapt_drift_warned = False
         self._adapt_floor_warned = False
         self._recal_done = False
@@ -746,6 +771,30 @@ class JointSRUNetLightning(UNetLightning):
                     "true to resume, or start a new run.")
             print(f"[joint_sr] NOTE: {msg}; the restored buffers carry the "
                   "adapted values, which is correct for test/viz.")
+
+    def on_load_checkpoint_end_rebase(self):
+        """Re-seed the band reference to the RESTORED statistics.
+
+        `_adapt_init_*` are non-persistent, so on a RESUME_FIT they would
+        otherwise still hold the config's dataset stats while `band_std` holds
+        the value the previous segment adapted to — and the first band check
+        after the resume would re-trip on drift the resumed segment did not
+        cause. Each fit segment is measured from where IT started; cumulative
+        drift across segments lives in the run history, not in this buffer.
+        """
+        if not bool(getattr(self.hparams, "adaptive_norm", False)):
+            return
+        if torch.allclose(self._adapt_init_std, self.band_std):
+            return
+        print(f"[joint_sr] resume: re-basing the std band reference from "
+              f"{[round(float(v), 6) for v in self._adapt_init_std.reshape(-1)]} "
+              f"to the restored "
+              f"{[round(float(v), 6) for v in self.band_std.reshape(-1)]} "
+              "(each fit segment is measured from its own start).")
+        self._adapt_init_mean.copy_(self.band_mean)
+        self._adapt_init_std.copy_(self.band_std)
+        self._adapt_fast_mean.copy_(self.band_mean.reshape(-1))
+        self._adapt_fast_std.copy_(self.band_std.reshape(-1))
 
     def on_train_batch_start(self, batch, batch_idx):
         """One-time unit tripwire (the §15 lesson: print your units)."""
@@ -1093,6 +1142,29 @@ class JointSRUNetLightning(UNetLightning):
         collapsed = [i for i, v in enumerate(r) if v < lo_r]
         grew = [i for i, v in enumerate(r) if v > hi_r]
         if collapsed or grew:
+            self._adapt_band_exited = True
+            if str(getattr(self.hparams, "std_band_action", "warn")) != "raise":
+                # RECORD AND CONTINUE. See the std_band_action docstring: a
+                # band exit is an observation about the SR front-end, not a
+                # fault, and aborting a multi-day fit over one is the wrong
+                # trade. The metric is logged every epoch so the exit is
+                # visible in wandb and recoverable from the run's history.
+                if not self._adapt_band_warned:
+                    self._adapt_band_warned = True
+                    which = f"collapsed {collapsed}" if collapsed else f"grew {grew}"
+                    print(
+                        f"[joint_sr] BAND EXIT (non-fatal, training continues): "
+                        f"band(s) {which} outside [{lo_r}x, {hi_r}x] of the "
+                        f"starting std at step {self.global_step}.\n"
+                        f"    std/init_std : {['%.3f' % v for v in r]}\n"
+                        f"    band_std     : {[round(float(v), 6) for v in self.band_std.reshape(-1)]}\n"
+                        f"    band_mean    : {[round(float(v), 6) for v in self.band_mean.reshape(-1)]}\n"
+                        "    This is a RESULT about the SR front-end under the "
+                        "task loss, logged as adapt_band_exit=1. Read it with "
+                        "sr_psnr_vs_init: moments alone cannot say whether the "
+                        "SR is still an SR. Set std_band_action=raise only "
+                        "where aborting is cheaper than finishing (tuning).")
+                return
             if collapsed:
                 what = (f"band(s) {collapsed} COLLAPSED below {lo_r}x the "
                         "starting std. The adapter's gradient gain into the "
@@ -1154,6 +1226,10 @@ class JointSRUNetLightning(UNetLightning):
         self.log("adapt_lag_std_max", lag_std, on_epoch=True, sync_dist=False)
         self.log("adapt_skipped_batches", self._adapt_skips, on_epoch=True,
                  sync_dist=False)
+        # 1 once the band has been left at any point in this run. The whole
+        # point of not aborting is that this has to be READABLE afterwards.
+        self.log("adapt_band_exit", float(self._adapt_band_exited),
+                 on_epoch=True, sync_dist=False)
         if not self._adapt_drift_warned and float(drift) > _MEAN_DRIFT_WARN:
             self._adapt_drift_warned = True
             print(f"[joint_sr] WARN adaptive_norm: max per-band mean drift "
@@ -1444,6 +1520,12 @@ class JointSRUNetLightning(UNetLightning):
         )
 
     # ------------------------------------------------------- fit lifecycle
+    def load_state_dict(self, *args, **kwargs):
+        out = super().load_state_dict(*args, **kwargs)
+        # Runs AFTER the buffers are populated, unlike on_load_checkpoint.
+        self.on_load_checkpoint_end_rebase()
+        return out
+
     def on_fit_start(self):
         """Pre-fit recalibration (§2.1 Phase 0.1) then arm the drift monitor.
 
