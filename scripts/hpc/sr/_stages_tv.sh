@@ -435,7 +435,7 @@ GAP_THETA="${GAP_THETA:-0.6096934757736867}"
 # GAP_THETA=<θ*> POS_WEIGHT_MIN=<λ*> POS_WEIGHT_MAX=<λ*> (min==max = a
 # constant). Leaving SEARCH_THETAS=true re-searches loss hps per R-arm and
 # confounds the SR comparison.
-SEARCH_THETAS="${SEARCH_THETAS:-true}"
+SEARCH_THETAS="${SEARCH_THETAS:-false}"
 # mix_w — the P*<->region ratio of the pstar_* compounds (2026-08-05). Searched
 # for those arms only (consumption-gated in sr.tune, same rule as the θs); the
 # bce_dice anchor stays frozen at 0.5/0.5 by build_loss's design. Kept in sync
