@@ -44,6 +44,15 @@ trainer:
         mode: max
         save_top_k: 1
         save_last: true
+    # Mid-budget probes: full checkpoints after epochs 50 and 75, so the
+    # training curve can be inspected (or a mid-run model benched) instead of
+    # only its two endpoints. Plain callback, NOT a second ModelCheckpoint —
+    # see src/sr/callbacks.py for why that distinction matters to the post-fit
+    # norm recalibration in JointSRUNetLightning.on_train_end.
+    - class_path: sr.callbacks.EpochSnapshotCheckpoint
+      init_args:
+        epochs: [50, 75]
+        dirpath: checkpoints
     # Stop once val_iou plateaus so the refit doesn't burn the whole SLURM
     # wall-clock (which was killing the job before the test stage ran).
     # max_epochs is now an UPPER bound; raise patience if val_iou is still noisy.

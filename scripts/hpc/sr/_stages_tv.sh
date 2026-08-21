@@ -321,10 +321,10 @@ esac
 MASK_DIRNAME="${MASK_DIRNAME:-}" # empty for the graph (on-the-fly) sources
 
 # --- Tune budget (train/val — UNCHANGED from _stages.sh) ---------------------
-N_TRIALS="${N_TRIALS:-60}"
+N_TRIALS="${N_TRIALS:-30}"
 SEARCH_GPUS="${SEARCH_GPUS:-2}"
-TUNE_EPOCHS="${TUNE_EPOCHS:-15}"
-PATIENCE="${PATIENCE:-3}"
+TUNE_EPOCHS="${TUNE_EPOCHS:-10}"
+PATIENCE="${PATIENCE:-5}"
 ENCODER_WEIGHTS="${ENCODER_WEIGHTS:-imagenet}"
 LR_MIN="${LR_MIN:-1e-5}"
 LR_MAX="${LR_MAX:-1e-2}"
