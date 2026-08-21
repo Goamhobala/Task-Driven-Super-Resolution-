@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --account=l40sfree
 #SBATCH --partition=l40s
+#SBATCH --qos=l40sfree
 #SBATCH --job-name="unet-job"
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
