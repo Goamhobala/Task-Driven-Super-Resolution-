@@ -340,8 +340,8 @@ LR_SR_MIN="${LR_SR_MIN:-1e-7}" # searched only when SR is learned & unfrozen
 # destruction rate to the UNet's lr, dragging a trial that wants a fast UNet
 # toward a destructive SR lr for no physical reason. Do not "simplify" it back.
 LR_SR_MAX="${LR_SR_MAX:-1e-4}"
-POS_WEIGHT_MIN="${POS_WEIGHT_MIN:-4.616504933210799}"
-POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-4.616504933210799}"
+POS_WEIGHT_MIN="${POS_WEIGHT_MIN:-4.77222}"
+POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-4.77222}"
 ENCODERS="${ENCODERS:-resnet34}" # NOT searched: encoder constancy is the control
 BATCH_SIZES="${BATCH_SIZES:-4}"  # PINNED, not searched (2026-08-12). `length` is
 # fixed per epoch, so a bs=1 trial takes 4x the
@@ -422,13 +422,13 @@ REFIT_GPUS="${REFIT_GPUS:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_joint_final}"
 
 # --- Loss (unet.losses.build_loss; empty = legacy Dice + pos-weighted BCE) ---
-LOSS_ARM="${LOSS_ARM:-pstar_sdice}"
-PSTAR="${PSTAR:-gap_t4_ce}"
+LOSS_ARM="${LOSS_ARM:-gap_ce}"
+PSTAR="${PSTAR:-gap_ce}"
 GAP_R="${GAP_R:-4}"
 GAP_K="${GAP_K:-60.0}"
 TL_ELL="${TL_ELL:-5}"
-TL_THETA="${TL_THETA:-0.40582224484185075}"
-GAP_THETA="${GAP_THETA:-0.6096934757736867}"
+TL_THETA="${TL_THETA:-0.375}"
+GAP_THETA="${GAP_THETA:-0.55836}"
 # official gap binarization
 # R-SERIES RULE: the loss is a FROZEN CONTROL across R-arms. Pin the pilot
 # winner's config at submit time: SEARCH_THETAS=false TL_THETA=<θ*>
