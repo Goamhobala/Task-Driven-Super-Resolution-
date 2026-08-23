@@ -14,7 +14,7 @@
 #       -> sbatch -J r7a_all_both_s0_bce_dice-cldice ... train_both.sbatch ...
 #   bash scripts/hpc/submit.sh sr/r2a_all.sh STAGE=tune -- --time=16:00:00
 #
-# Logs: slurm-%x-%j.out (name + jobid), so `ls slurm-r6_all*` finds a run.
+# Logs: slurm-%x-%j.txt (name + jobid), so `ls slurm-r6_all*` finds a run.
 # DRY_RUN=1 prints the sbatch command without submitting.
 set -euo pipefail
 
@@ -76,7 +76,7 @@ if [ "$BOTH" -eq 0 ] && { [ "$STAGE" = "fit" ] || [ "$STAGE" = "bench" ]; }; the
   esac
 fi
 
-CMD=(sbatch -J "$JOB" -o "slurm-%x-%j.out"
+CMD=(sbatch -J "$JOB" -o "slurm-%x-%j.txt"
      ${GRES_ARGS[@]+"${GRES_ARGS[@]}"}
      ${EXTRA[@]+"${EXTRA[@]}"}
      "$SBATCH_FILE" "--SCRIPT=$SCRIPT"

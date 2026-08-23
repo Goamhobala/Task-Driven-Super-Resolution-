@@ -27,7 +27,7 @@
 #                 sequence (one swept key per side)
 #   KEY=VALUE     shared override, exported to both sides
 #
-# Each side writes its own log: pair_<side>_<timestamp>.log in the current dir
+# Each side writes its own log: pair_<side>_<timestamp>.txt in the current dir
 # (the engines additionally tee per-stage logs into the run dirs).
 # =============================================================================
 set -uo pipefail   # NB no -e: background sides report via `wait`, not ERR
@@ -95,7 +95,7 @@ run_side() {  # $1 side label, $2 script path, $3 gpu ("" = unpinned), rest: sid
       sweep_key="${envs[$i]%%=*}"; sweep_vals="${envs[$i]#*=}"; sweep_idx=$i ;;
     esac
   done
-  local log="pair_${side}_${STAMP}.log"
+  local log="pair_${side}_${STAMP}.txt"
   {
     echo "### side ${side}: $(basename "$script") on GPU ${gpu:-<shared>}  env=[${envs[*]:-}] ###"
     if [ -z "$sweep_key" ]; then
@@ -127,7 +127,7 @@ else
   run_side B "$PATH_B" "" ${B_ENV[@]+"${B_ENV[@]}"}; RC_B=$?
 fi
 
-echo "### side A exit=${RC_A} (pair_A_${STAMP}.log)  side B exit=${RC_B} (pair_B_${STAMP}.log) ###"
-tail -n 3 "pair_A_${STAMP}.log" "pair_B_${STAMP}.log" 2>/dev/null || true
+echo "### side A exit=${RC_A} (pair_A_${STAMP}.txt)  side B exit=${RC_B} (pair_B_${STAMP}.txt) ###"
+tail -n 3 "pair_A_${STAMP}.txt" "pair_B_${STAMP}.txt" 2>/dev/null || true
 [ "$RC_A" -eq 0 ] && [ "$RC_B" -eq 0 ] || exit 1
 echo "### run_pair DONE: both sides fit + bench ###"

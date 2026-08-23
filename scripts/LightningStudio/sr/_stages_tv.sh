@@ -353,7 +353,7 @@ fi
 # checkpoint was ever selected on a holdout, and the filename says so.
 FINAL_CKPT_NAME="unet_s2rosa_jointsr_final"
 
-LOG_FILE="${RUN_DIR}/${STAGE}_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="${RUN_DIR}/${STAGE}_$(date +%Y%m%d_%H%M%S).txt"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Logging to ${LOG_FILE}"
 echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}"

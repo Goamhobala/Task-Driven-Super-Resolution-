@@ -58,7 +58,7 @@ WANDB_CONFIG="$REPO_DIR/src/unet/configs/wandb.yaml"
 RUN_DIR="/scratch/${USER_NAME}/InstaRoad/runs/unet_${EXP_TAG}_seed${SEED}"
 mkdir -p "$RUN_DIR"
 
-LOG_FILE="${RUN_DIR}/${STAGE}_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="${RUN_DIR}/${STAGE}_$(date +%Y%m%d_%H%M%S).txt"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Logging to ${LOG_FILE}"
 echo "host=$(hostname)  exp=unet/${EXP_TAG}  stage=${STAGE}  seed=${SEED}"

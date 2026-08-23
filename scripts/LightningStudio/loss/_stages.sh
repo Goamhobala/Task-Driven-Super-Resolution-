@@ -136,7 +136,7 @@ RUN_DIR="${INSTAROAD_ROOT}/runs/loss_${FULL_TAG}_seed${SEED}"
 MODEL_NAME="${MODEL_NAME:-${FULL_TAG}}"   # what the stats pair/group on (seed = a column)
 mkdir -p "$RUN_DIR"
 
-LOG_FILE="${RUN_DIR}/${STAGE}_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="${RUN_DIR}/${STAGE}_$(date +%Y%m%d_%H%M%S).txt"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Logging to ${LOG_FILE}"
 echo "host=$(hostname)  exp=loss/${EXP_TAG}  arm=${ARM}  stage=${STAGE}  seed=${SEED}"

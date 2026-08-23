@@ -5,12 +5,12 @@
 #SBATCH --job-name="train-both"
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:2
-#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
 #SBATCH --time=24:00:00
 #SBATCH --mail-user=yhxjin001@myuct.ac.za
 #SBATCH --mail-type=ALL
-#SBATCH --output=slurm-%j.out
+#SBATCH --output=slurm-%j.txt
 
 # End-to-end dispatcher: run STAGE=tune, then fit, then bench for one experiment
 # in a SINGLE allocation. Same interface as train.sbatch (--SCRIPT= + KEY=VALUE),

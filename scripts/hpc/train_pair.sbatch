@@ -9,7 +9,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --mail-user=yhxjin001@myuct.ac.za
 #SBATCH --mail-type=ALL
-#SBATCH --output=slurm-%j.out
+#SBATCH --output=slurm-%j.txt
 
 
 # Pair dispatcher: run TWO independent single-GPU experiments in ONE job,
@@ -50,7 +50,7 @@
 #   * Sides run under `wait PID`, so one side failing does NOT kill the other;
 #     the job exits non-zero if either failed. Concurrent STAGE=bench into a
 #     shared STORE_DIR is safe (sharded, atomic per-run writes).
-#   * Each side gets its own log (pair_<side>_<jobid>.log next to slurm out);
+#   * Each side gets its own log (pair_<side>_<jobid>.txt next to slurm out);
 #     _stages.sh additionally tees per-stage logs into the run dirs.
 set -uo pipefail   # NB no -e: background sides report via `wait`, not ERR
 
@@ -111,7 +111,7 @@ run_side() {  # $1 side label, $2 script path, $3 gpu index, rest: side env
       sweep_key="${envs[$i]%%=*}"; sweep_vals="${envs[$i]#*=}"; sweep_idx=$i ;;
     esac
   done
-  local log="pair_${side}_${JOB_ID}.log"
+  local log="pair_${side}_${JOB_ID}.txt"
   {
     echo "### side ${side}: $(basename "$script") on GPU ${gpu}  env=[${envs[*]:-}] ###"
     if [ -z "$sweep_key" ]; then
@@ -137,7 +137,7 @@ run_side B "$PATH_B" 1 ${B_ENV[@]+"${B_ENV[@]}"} & PID_B=$!
 
 wait "$PID_A"; RC_A=$?
 wait "$PID_B"; RC_B=$?
-echo "### side A exit=${RC_A} (pair_A_${JOB_ID}.log)  side B exit=${RC_B} (pair_B_${JOB_ID}.log) ###"
-tail -n 3 "pair_A_${JOB_ID}.log" "pair_B_${JOB_ID}.log" 2>/dev/null || true
+echo "### side A exit=${RC_A} (pair_A_${JOB_ID}.txt)  side B exit=${RC_B} (pair_B_${JOB_ID}.txt) ###"
+tail -n 3 "pair_A_${JOB_ID}.txt" "pair_B_${JOB_ID}.txt" 2>/dev/null || true
 [ "$RC_A" -eq 0 ] && [ "$RC_B" -eq 0 ] || exit 1
 echo "### train_pair DONE: both sides fit + bench ###"

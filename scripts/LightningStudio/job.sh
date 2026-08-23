@@ -12,7 +12,7 @@
 #   bash scripts/LightningStudio/job.sh run_pair --A=loss/l1_all.sh --B=loss/la0_all.sh
 #
 # Manage running jobs:
-#   tail -f <the .log path printed below>     # follow progress
+#   tail -f <the .txt log path printed below>     # follow progress
 #   kill $(cat <the .pid path printed below>) # stop it
 #
 # This detaches WITHIN the current Studio machine (the machine must stay on).
@@ -38,7 +38,7 @@ mkdir -p "$JOBS_DIR"
 TAG="job"
 for a in "$@"; do case "$a" in *.sh|--A=*.sh|--a=*.sh) TAG="$(basename "${a#*=}" .sh)"; break ;; esac; done
 STAMP="$(date +%Y%m%d_%H%M%S)"
-LOG="$JOBS_DIR/${DISP}_${TAG}_${STAMP}.log"
+LOG="$JOBS_DIR/${DISP}_${TAG}_${STAMP}.txt"
 PIDF="$JOBS_DIR/${DISP}_${TAG}_${STAMP}.pid"
 
 echo "launching detached: $DISP $*"
