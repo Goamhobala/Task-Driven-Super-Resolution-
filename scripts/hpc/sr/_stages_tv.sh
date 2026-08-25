@@ -1165,8 +1165,16 @@ MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}
 MASK_ARGS_SWEEP=(--mask-source "$MASK_SOURCE")
 [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_SWEEP+=(--mask-dirname "$MASK_DIRNAME")
 
-echo "=== θ* SWEEP (split=${SWEEP_SPLIT} — seen data, selection-only) ==="
+# What θ* is the argmax OF. iou|f1 are global pooled counts (a few dense urban
+# chips dominate); iou_macro|f1_macro are the mean of the per-chip values (every
+# chip weighs the same). All four land in sweep.json whichever is selected on,
+# so switching later costs no inference — but a seed swept on one and its
+# siblings on another are NOT at a comparable operating point.
+SWEEP_CRITERION="${SWEEP_CRITERION:-iou}"
+
+echo "=== θ* SWEEP (split=${SWEEP_SPLIT}, criterion=${SWEEP_CRITERION} — seen data, selection-only) ==="
 python -m benchmarking.cli sweep \
+  --criterion "$SWEEP_CRITERION" \
   --dataset-dir "$DATASET_DIR" \
   --checkpoint "$CKPT" \
   --model sr \
@@ -1190,8 +1198,9 @@ if [ "${SKIP_TEST:-0}" = "1" ]; then
   exit 0
 fi
 
-echo "=== TEST θ SENSITIVITY SWEEP (buffer_px=1,2,3,4,5) ==="
+echo "=== TEST θ SENSITIVITY SWEEP (criterion=${SWEEP_CRITERION}, buffer_px=1,2,3,4,5) ==="
 python -m benchmarking.cli sweep \
+  --criterion "$SWEEP_CRITERION" \
   --dataset-dir "$DATASET_DIR" \
   --checkpoint "$CKPT" \
   --model sr \

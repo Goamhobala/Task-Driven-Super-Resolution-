@@ -24,9 +24,10 @@
 #
 # So: this file resolves one path and validates it. That is all it should do.
 #
-# In:  STAGE1_TAG   the frozen twin (rl1_new for rl2_new, rl3_new for rl4_new)
-#      SEED / LOSS_ARM / REG / TRAIN_SPLITS / HEAD — must match the twin's run;
-#      the run-dir naming ties them together automatically.
+# In:  STAGE1_TAG   the frozen twin (rl1_new for rl2_new, rl3_new for rl4_new,
+#                   rl1b_new for rl2b_new, rl3a_new for rl4a_new)
+#      SEED / LOSS_ARM / REG / TRAIN_SPLITS / HEAD / SR_HC — must match the
+#      twin's run; the run-dir naming ties them together automatically.
 # Out: WARM_START_HEAD   the twin's FINAL ckpt (env override respected)
 set -euo pipefail
 USER_NAME="${USER:-$(whoami)}"
@@ -38,7 +39,24 @@ SEED="${SEED:-0}"
 # because _stages_tv.sh has not been sourced yet — and every one of them is a
 # place the two files can silently disagree, so they are kept in the same order
 # as the RUN_DIR assignment there:
-#   sr_${EXP_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}
+#   sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}
+#
+# HC_TAG is derived from the arm's own SR_HC, which is exactly right: the HC
+# lane of the rl 2x2 (rl2b/rl4a) must warm-start from a stage 1 that ran under
+# the SAME constraint setting, or the probe would arrive converged on a
+# different input distribution and LP-FT's whole argument (§2) evaporates. The
+# native arms (rl2/rl4) get an empty tag, so their resolved path is unchanged.
+SR_HC="${SR_HC:-native}"
+case "$SR_HC" in
+native) HC_TAG="" ;;
+on) HC_TAG="_hc" ;;
+off) HC_TAG="_nohc" ;;
+*)
+  echo "ERROR: SR_HC must be native|on|off, got '${SR_HC}'." >&2
+  exit 2
+  ;;
+esac
+
 HEAD="${HEAD:-unet}"
 HEAD_TAG=""
 [ "$HEAD" != "unet" ] && HEAD_TAG="_${HEAD}"
@@ -65,7 +83,7 @@ case " ${TRAIN_SPLITS} " in
 esac
 
 RUNS_ROOT="${RUNS_ROOT:-/scratch/${USER_NAME}/InstaRoad/runs}"
-STAGE1_RUN="${STAGE1_RUN:-${RUNS_ROOT}/sr_${STAGE1_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}}"
+STAGE1_RUN="${STAGE1_RUN:-${RUNS_ROOT}/sr_${STAGE1_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}}"
 
 # _final, not _best: this protocol never selects a checkpoint on a holdout, and
 # the FINAL head is what §2 calls for — a 5-parameter near-convex problem is
@@ -83,7 +101,8 @@ if [ ! -f "$WARM_START_HEAD" ]; then
   echo "  Looked in: ${STAGE1_RUN}" >&2
   if [ ! -d "$STAGE1_RUN" ]; then
     echo "  (that run dir does not exist at all — check SEED, LOSS_ARM, REG," >&2
-    echo "   ADAPTIVE_NORM/NORM_RECALIBRATE and TRAIN_SPLITS match the twin's submit)" >&2
+    echo "   SR_HC, ADAPTIVE_NORM/NORM_RECALIBRATE and TRAIN_SPLITS match the" >&2
+    echo "   twin's submit)" >&2
   fi
   exit 1
 fi
