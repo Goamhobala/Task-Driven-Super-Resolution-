@@ -16,8 +16,11 @@ data/
 */*.tiff
 */*.parquet
 */.DS_Store
+*/*.npy
 
 # Dummy data for testing/benchmarking
 **/dummy_data/
 models/*
 src/*/examples/*
+*/figures/*
+figures/
