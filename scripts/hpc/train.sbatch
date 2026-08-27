@@ -10,7 +10,7 @@
 #SBATCH --time=12:00:00
 #SBATCH --mail-user=yhxjin001@myuct.ac.za
 #SBATCH --mail-type=ALL
-#SBATCH --output=slurm-%j.out
+#SBATCH --output=slurm-%j.txt
 
 # Generic batch dispatcher: one set of SBATCH headers for every stage. Pick the
 # experiment script with --SCRIPT= (resolved under scripts/hpc/) and pass config

@@ -10,11 +10,11 @@
 # else changes: same 100-epoch budget, same train+val merge, same θ* sweep on
 # val at the end, same store. `model_name` carries no seed, so these rows group
 # with the tuned seed's row automatically under `report`.
-#
-#   cd scripts/hpc
-#   sbatch --job-name=refit-r2a_new_gap_ce --time=24:00:00 \
-#          --gres=gpu:1 --cpus-per-task=8 \
-#          train.sbatch --SCRIPT=sr/refit/r2a_new_gap_ce.sh
+# 
+# cd scripts/hpc
+# sbatch --job-name=refit-r2a_new_gap_ce --time=48:00:00 \
+#        --gres=gpu:1 --cpus-per-task=8 \
+#        train.sbatch --SCRIPT=sr/refit/r2a_new_gap_ce.sh
 #
 # CHANGE THE SEEDS AND NOTHING ELSE:
 #   sbatch ... train.sbatch --SCRIPT=sr/refit/r2a_new_gap_ce.sh   # SEEDS defaults below
@@ -41,7 +41,7 @@ source "$REPO_DIR/scripts/hpc/sr/refit/_refit_lib.sh"
 
 EXP_TAG="r2a_new"
 LOSS_ARM="gap_ce"
-SEEDS="${SEEDS:-1 2}"          # <-- the only thing you normally change
+SEEDS="${SEEDS:-42 888}"          # <-- the only thing you normally change
 
 # --- this arm's SR treatment -------------------------------------------------
 UPSAMPLER="sen2sr"

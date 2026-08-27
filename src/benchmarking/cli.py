@@ -393,7 +393,7 @@ def run_sweep(
     device: Annotated[Optional[str], typer.Option(help="cuda | cpu (default: auto)")] = None,
     max_tiles: Annotated[Optional[int], typer.Option(help="Score only the first N tiles of the split (quick local smoke)")] = None,
     thresholds: Annotated[str, typer.Option(help="θ grid as start:stop:step, stop-inclusive")] = "0.05:0.95:0.05",
-    criterion: Annotated[str, typer.Option(help="Argmax criterion for best_threshold: iou | f1 (global pooled counts)")] = "iou",
+    criterion: Annotated[str, typer.Option(help="Argmax criterion for best_threshold: iou | f1 (GLOBAL, pooled counts) or iou_macro | f1_macro (MEAN of the per-chip values). Micro is dominated by the densest chips; macro weights every chip equally. All four are recorded at every theta regardless.")] = "iou",
     buffer_px: Annotated[Optional[str], typer.Option(help="Buffered-F1 tolerance(s) in px, e.g. '1,2,3,4,5' — adds buffered_* columns to every θ entry")] = None,
     out: Annotated[Optional[Path], typer.Option(help="Output JSON (default: <ckpt run dir>/sweep.json)")] = None,
 ):
@@ -401,16 +401,27 @@ def run_sweep(
 
     Writes NOTHING to the store (that is ``eval``'s job, once, at θ*). Per θ the
     JSON records GLOBAL pooled-count IoU/F1 (tp/fp/fn summed over chips — the
-    same accumulation semantics as the training-time BinaryJaccardIndex), plus
-    micro-pooled buffered metrics when --buffer-px is given. ``best_threshold``
-    is the --criterion argmax; ``purpose`` derives from the split so a test
-    sweep can never be mistaken for a selection artifact.
+    same accumulation semantics as the training-time BinaryJaccardIndex), the
+    MACRO companions ``iou_macro``/``f1_macro`` (mean of the per-chip values,
+    NaN chips dropped), plus micro-pooled buffered metrics when --buffer-px is
+    given. ``best_threshold`` is the --criterion argmax; ``purpose`` derives
+    from the split so a test sweep can never be mistaken for a selection
+    artifact.
+
+    MICRO AND MACRO ARE DIFFERENT QUESTIONS, AND THEY PICK DIFFERENT theta.
+    Micro pools tp/fp/fn over every chip, so a handful of dense urban chips
+    carry most of the weight and theta* is tuned for them. Macro averages the
+    per-chip metric, so a near-empty desert chip counts as much as a city one.
+    Both are recorded at every theta whatever --criterion selects on, so the
+    choice is auditable after the fact and re-argmaxing on the other one costs
+    no inference.
     """
     from benchmarking.runner import evaluate
     from benchmarking.stats import _micro_metric_from_counts
 
-    if criterion not in ("iou", "f1"):
-        raise typer.BadParameter(f"--criterion must be iou or f1, got {criterion!r}")
+    if criterion not in ("iou", "f1", "iou_macro", "f1_macro"):
+        raise typer.BadParameter(
+            f"--criterion must be iou | f1 | iou_macro | f1_macro, got {criterion!r}")
     grid = _parse_theta_grid(thresholds)
 
     per_theta = evaluate(
@@ -425,7 +436,14 @@ def run_sweep(
     curve = {}
     for t, chips in sorted(per_theta.items()):
         entry = {"iou": _micro_metric_from_counts(chips, "iou"),
-                 "f1": _micro_metric_from_counts(chips, "f1")}
+                 "f1": _micro_metric_from_counts(chips, "f1"),
+                 # Mean of the per-chip values. `pixel_metrics_from_counts`
+                 # already emits NaN for a chip where the metric is undefined
+                 # (no road in prediction AND none in GT), and pandas' mean
+                 # skips those — so an empty chip is excluded rather than
+                 # scored as 0 and dragging the mean down.
+                 "iou_macro": float(chips["iou"].mean()),
+                 "f1_macro": float(chips["f1"].mean())}
         for col in sorted(c for c in chips.columns if c.startswith("buffered_")):
             entry[col] = _micro_metric_from_counts(chips, col)
         curve[str(t)] = entry
@@ -450,7 +468,8 @@ def run_sweep(
         {"run": model_name, "split": split, "criterion": criterion,
          "purpose": purpose, "checkpoint": str(Path(checkpoint).resolve()),
          "best_threshold": best_t, "sweep": curve}, indent=1))
-    print(f"θ* = {best_t}  ({criterion}={scored[best_key]:.4f} global, split={split}, "
+    agg = "macro" if criterion.endswith("_macro") else "global"
+    print(f"θ* = {best_t}  ({criterion}={scored[best_key]:.4f} {agg}, split={split}, "
           f"purpose={purpose})\nwrote {out}")
 
 
@@ -623,6 +642,8 @@ def report(
     stratum: Annotated[Optional[str], typer.Option(help="Report only this stratum, e.g. Urban | PeriUrban | Rural. Slices the existing store — no re-inference.")] = None,
     stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
     by_stratum: Annotated[bool, typer.Option(help="Report every stratum in turn (overrides --stratum)")] = False,
+    tile_agg: Annotated[str, typer.Option(help="macro | micro. With --pair-on tile, whether a tile's score is the mean of its chip scores (macro, matches the old chip-level pairing) or derived from its pooled counts (micro). They can differ in sign.")] = "macro",
+    pair_on: Annotated[str, typer.Option(help="chip | tile. Unit the PAIRWISE stats pair on. 'tile' collapses to the sampled tile (9 of them) before pairing, so spatially correlated chips inside one tile stop counting as independent evidence. Per-model summaries are unaffected.")] = "chip",
 ):
     """Per-model cross-seed mean +/- std + all pairwise comparisons, per metric.
 
@@ -636,10 +657,12 @@ def report(
         for s in _store_strata(store_dir, stratum_col):
             typer.secho(f"\n{'#' * 70}\n# stratum: {s}\n{'#' * 70}", fg=typer.colors.CYAN)
             _run_report(store_dir, metrics, aggregation, n_boot,
-                        _stratum_out(out, s), stratum=s, stratum_col=stratum_col)
+                        _stratum_out(out, s), stratum=s, stratum_col=stratum_col,
+                        pair_on=pair_on, tile_agg=tile_agg)
         return
     _run_report(store_dir, metrics, aggregation, n_boot, out,
-                stratum=stratum, stratum_col=stratum_col)
+                stratum=stratum, stratum_col=stratum_col, pair_on=pair_on,
+                tile_agg=tile_agg)
 
 
 def _store_strata(store_dir, stratum_col: Optional[str]) -> list[str]:
@@ -661,8 +684,57 @@ def _stratum_out(out: Optional[Path], stratum: str) -> Optional[Path]:
     return out.with_name(f"{out.stem}_{stratum}{out.suffix}")
 
 
+# The sampled TILE is the unit the dataset was drawn at; the store's `tile_id`
+# is one level finer (a ~2x2 sub-tile of it) and `chip_id` finer still. Chips
+# inside a tile share land cover, season and acquisition, so their scores are
+# strongly correlated -- pairing ~760 chips treats that correlation as
+# independent evidence and reports intervals far tighter than the data support.
+# Collapsing to the 9 sampled tiles first makes the pairing unit the thing that
+# was actually randomised.
+_SUBTILE_RE = r"_r\d+_c\d+$"
+
+
+def _region_key(df):
+    """The sampled tile id: store tile_id (or chip_id, for tile-level metrics
+    where _load_metric_table already renamed it) minus the sub-tile suffix."""
+    src = df["tile_id"] if "tile_id" in df.columns else df["chip_id"]
+    return src.astype(str).str.replace(_SUBTILE_RE, "", regex=True)
+
+
+def _collapse_to_region(df, metric, can_micro, tile_agg="macro"):
+    """Seed-averaged per-TILE values, ready for the paired stats.
+
+    `tile_agg` picks WHAT a tile's score means, and the two are not
+    interchangeable -- on this data they disagree even in SIGN for some pairs:
+
+      macro  mean of the tile's chip scores. Every chip counts equally, which
+             is what the chip-level pairing already did and what the macro
+             summary reports, so only the unit of analysis changes.
+      micro  pool tp/fp/fn over the tile's chips, then derive the metric. Road
+             -dense chips dominate their tile, matching the micro summary.
+
+    Either way counts/values are combined WITHIN (model, seed, tile) first and
+    only then averaged across seeds: seeds are replicates of one experiment, so
+    pooling their counts would inflate the denominator and pretend one tile was
+    three.
+    """
+    from benchmarking.stats import _micro_metric_from_counts
+
+    d = df.assign(_region=_region_key(df))
+    keys = ["model_name", "seed", "_region"]
+    if can_micro and tile_agg == "micro":
+        per = (d.groupby(keys, sort=False)
+                 .apply(lambda g: _micro_metric_from_counts(g, metric),
+                        include_groups=False)
+                 .rename(metric).reset_index())
+    else:
+        per = d.groupby(keys, as_index=False, sort=False)[metric].mean()
+    return (per.groupby(["model_name", "_region"], as_index=False)[metric].mean()
+               .rename(columns={"_region": "chip_id"}))
+
+
 def _run_report(store_dir, metrics, aggregation, n_boot, out,
-                stratum=None, stratum_col=None):
+                stratum=None, stratum_col=None, pair_on="chip", tile_agg="macro"):
     """Shared body of the ``report`` command; also chained from ``eval-dir``."""
     import numpy as np
     import pandas as pd
@@ -732,8 +804,26 @@ def _run_report(store_dir, metrics, aggregation, n_boot, out,
 
         pair_rows = []
         if len(models) > 1:
-            avg = df.groupby(["model_name", "chip_id"], as_index=False)[met].mean()
-            typer.echo(f"== pairwise (seed-averaged per-{unit} {met}; * = p<0.05) ==")
+            if pair_on == "tile":
+                avg = _collapse_to_region(df, met, can_micro, tile_agg)
+                pair_unit = f"tile/{tile_agg}"
+            else:
+                avg = df.groupby(["model_name", "chip_id"], as_index=False)[met].mean()
+                pair_unit = unit
+            n_pairs = avg["chip_id"].nunique()
+            # Wilcoxon's smallest attainable p is 2/2**n. Below 6 pairs that is
+            # >= 0.0625, so NOTHING can reach p<0.05 however large the effect --
+            # the stars would be absent for arithmetic reasons, not evidential
+            # ones. Say so rather than let a reader infer "no difference".
+            if n_pairs < 6:
+                typer.secho(
+                    f"  NOTE: only {n_pairs} {pair_unit}s — Wilcoxon cannot reach "
+                    f"p<0.05 (min attainable p = {2 / 2 ** n_pairs:.3f}); "
+                    "treat the CI, not the star, as the evidence.",
+                    fg=typer.colors.YELLOW,
+                )
+            typer.echo(f"== pairwise (seed-averaged per-{pair_unit} {met}, "
+                       f"n={n_pairs}; * = p<0.05) ==")
             for a, b in itertools.combinations(models, 2):
                 boot = bootstrap_paired_diff(
                     avg, a, b, metric=met, n_boot=n_boot, rng=np.random.default_rng(0)
@@ -756,8 +846,10 @@ def _run_report(store_dir, metrics, aggregation, n_boot, out,
         # repeating it under both headings would duplicate the bootstrap (the
         # expensive part) to print identical numbers twice.
         if pair_rows:
-            md_parts.append(_md_table(["model A", "model B", "diff", "95% CI", "p", "sig"],
-                                      pair_rows))
+            md_parts.append(
+                f"### pairwise {met} (paired on {pair_unit}, n={n_pairs})\n\n"
+                + _md_table(["model A", "model B", "diff", "95% CI", "p", "sig"],
+                            pair_rows))
 
     if out is not None:
         out = Path(out)

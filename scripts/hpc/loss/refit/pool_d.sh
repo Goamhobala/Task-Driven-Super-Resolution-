@@ -2,7 +2,7 @@
 # Refit pool d — the SIX arms still at n=2 seeds, on 1 GPU, in ONE SLURM job.
 #
 #   cd scripts/hpc
-#   sbatch --job-name=refit-pool-d --time=24:00:00 --qos=l40sfree \
+#   sbatch --job-name=refit-pool-d --time=12:00:00 --qos=l40sfree \
 #          --gres=gpu:1 --cpus-per-task=8 \
 #          train.sbatch --SCRIPT=loss/refit/pool_d.sh
 #
