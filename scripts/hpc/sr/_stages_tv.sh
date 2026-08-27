@@ -59,6 +59,20 @@
 #     ADAPTIVE_NORM=1 / ADAPTIVE_NORM_M / NORM_RECALIBRATE=off|pre|post|auto.
 #     Both tag the run dir, study and bench model_name (ANORM_TAG), so an
 #     adaptive-norm arm can never land in a frozen-stats row of the same arm.
+#   STD_BAND_ACTION=warn|raise   what a std-band exit DOES. Default: the fit
+#                warns and continues (a band exit is a result, not a fault),
+#                the tune prunes the trial. `warn` disarms the tune's abort
+#                too — for a pinned-lr_sr cell, where a pruned trial silently
+#                removes its lr from the ranking. Tagged (RAILS_TAG).
+#   STD_BAND_RAISE_LO / STD_BAND_RAISE_HI   the post-SR std band's hard rails,
+#                as multiples of the run's STARTING std (production 0.5 / 4.0).
+#                Set BOTH or neither. For the lr_sr mechanism grid only
+#                (docs/lrsr_grid_ablation_plan.md §3): the tune prunes on band
+#                exit, so with lr_sr pinned the production band would prune
+#                every trial of the extreme cells and the guard would decide
+#                which cells exist. Tagged (RAILS_TAG) into run dir, study and
+#                bench model_name — loosened rails are a protocol difference
+#                and must never share a row with a production-band arm.
 #
 # NEW here:
 #   REFIT_EPOCHS     the pre-registered budget (default 100). This is now a
@@ -278,6 +292,96 @@ if [ "$ADAPTIVE_NORM" = "1" ] || [ "$ADAPTIVE_NORM" = "true" ]; then
 fi
 if [ "$NORM_RECALIBRATE" != "off" ]; then
   ANORM_TAG="${ANORM_TAG}_recal${NORM_RECALIBRATE}"
+fi
+
+# --- Std-band rails (docs/lrsr_grid_ablation_plan.md §3) ---------------------
+# The post-SR std band is a HARD guard: `sr.tune` runs the model with
+# std_band_action=raise, so a trial whose band leaves [lo, hi] x its starting
+# std is PRUNED, and the fit logs adapt_band_exit=1 and keeps going. Both rails
+# default to the production band (0.5x / 4.0x, src/sr/configs/joint_sr.yaml) and
+# NOTHING is appended to any command line unless they are set here — so every
+# arm already in the store keeps its exact invocation.
+#
+# They exist as envs for ONE purpose: the lr_sr mechanism grid, whose whole
+# point is to observe the collapse the guard exists to kill. With lr_sr pinned
+# per cell, the production band would band-exit-prune every trial of the bare
+# lane at lr_sr=1e-4, no best_params would be written, and the GUARD (not the
+# design) would decide which cells exist. The grid therefore sets 0.01 / 100 —
+# the raise can never fire, while the warn stream and the variance-floor
+# diagnostic keep printing. Do NOT instead silence the check with
+# adaptive_norm_check_every=0: that kills the diagnostics the grid is FOR.
+#
+# Rules that come with them:
+#   * BOTH or NEITHER. A half-loosened band is a different treatment on one
+#     side only, and the collapse side is the one that matters.
+#   * IDENTICAL across every cell of one grid (the pair rule).
+#   * SET FOR EVERY STAGE of a cell. RAILS_TAG lands in the run dir, so a tune
+#     with rails followed by a fit without them looks for best_params.yaml in a
+#     directory that does not exist — loud, not silent, but still a waste of a
+#     queue slot. Set them in the arm script (r2grid_new.sh does), not at submit.
+#
+# STD_BAND_ACTION is the companion knob: WHAT an exit does.
+#   fit   ALWAYS warn unless this env says otherwise — joint_sr.yaml's default,
+#         and the reason a band exit can never end a refit (the 2026-08-19
+#         r4b_new kill is what set that default).
+#   tune  `sr.tune` hard-codes `raise` so a hopeless corner is PRUNED. That is
+#         wrong for a pinned-lr_sr cell: with lr_sr fixed, a pruned trial
+#         removes its lr from the ranking, while a completed one records "this
+#         lr, at this adaptation rate, scored X" — a terrible X included.
+#         STD_BAND_ACTION=warn switches the search to that behaviour. Trials
+#         are still pruned by MedianPruner on the OBJECTIVE; only the moment-
+#         based abort goes away.
+STD_BAND_RAISE_LO="${STD_BAND_RAISE_LO:-}"
+STD_BAND_RAISE_HI="${STD_BAND_RAISE_HI:-}"
+STD_BAND_ACTION="${STD_BAND_ACTION:-}"
+RAILS_TAG=""
+RAILS_ARGS_TUNE=()
+RAILS_ARGS_FIT=()
+if [ -n "$STD_BAND_ACTION" ]; then
+  case "$STD_BAND_ACTION" in
+  warn | raise) : ;;
+  *)
+    echo "ERROR: STD_BAND_ACTION must be warn|raise, got '${STD_BAND_ACTION}'." >&2
+    exit 2
+    ;;
+  esac
+  RAILS_TAG="_rails" # band-guard policy differs from production: tag it
+  RAILS_ARGS_TUNE+=(--std-band-action "$STD_BAND_ACTION")
+  RAILS_ARGS_FIT+=(--model.std_band_action "$STD_BAND_ACTION")
+  if [ "$STD_BAND_ACTION" = "raise" ] && [ "$STAGE" = "fit" ]; then
+    echo "WARN: STD_BAND_ACTION=raise on a FIT. A band exit will then KILL this" >&2
+    echo "  refit mid-budget. That is what took out r4b_new at epoch 13 of 100" >&2
+    echo "  on 2026-08-19, on a decelerating trend that crossed the bound by" >&2
+    echo "  0.004. A band exit in a fit is the experiment's RESULT — it is" >&2
+    echo "  logged as adapt_band_exit=1 and the run should finish. Are you sure?" >&2
+  fi
+fi
+if [ -n "$STD_BAND_RAISE_LO" ] || [ -n "$STD_BAND_RAISE_HI" ]; then
+  if [ -z "$STD_BAND_RAISE_LO" ] || [ -z "$STD_BAND_RAISE_HI" ]; then
+    echo "ERROR: set BOTH STD_BAND_RAISE_LO and STD_BAND_RAISE_HI or neither" >&2
+    echo "  (got lo='${STD_BAND_RAISE_LO}' hi='${STD_BAND_RAISE_HI}'). The band is" >&2
+    echo "  one treatment; loosening only the growth side leaves the collapse" >&2
+    echo "  side — the one the runaway happens on — at the production rail." >&2
+    exit 2
+  fi
+  if ! awk -v lo="$STD_BAND_RAISE_LO" -v hi="$STD_BAND_RAISE_HI" \
+    'BEGIN { exit !(lo + 0 == lo && hi + 0 == hi && lo > 0 && lo < hi) }' \
+    </dev/null 2>/dev/null; then
+    echo "ERROR: STD_BAND_RAISE_LO='${STD_BAND_RAISE_LO}' / HI='${STD_BAND_RAISE_HI}'" >&2
+    echo "  is not a band. They are MULTIPLES of the run's starting std, so they" >&2
+    echo "  must be numeric with 0 < lo < hi (e.g. 0.01 and 100)." >&2
+    exit 2
+  fi
+  RAILS_TAG="_rails"
+  RAILS_ARGS_TUNE+=(--std-band-raise-lo "$STD_BAND_RAISE_LO"
+    --std-band-raise-hi "$STD_BAND_RAISE_HI")
+  RAILS_ARGS_FIT+=(--model.std_band_raise_lo "$STD_BAND_RAISE_LO"
+    --model.std_band_raise_hi "$STD_BAND_RAISE_HI")
+  if [ "$ADAPTIVE_NORM_FLAG" != "true" ]; then
+    echo "WARN: STD_BAND_RAISE_* set but adaptive_norm is OFF. The band check runs" >&2
+    echo "  inside the adaptive-norm EMA update, so with frozen stats the rails" >&2
+    echo "  are inert — and the run dir still carries ${RAILS_TAG}." >&2
+  fi
 fi
 
 SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-0}"
@@ -503,7 +607,25 @@ WANDB_CONFIG="$REPO_DIR/src/unet/configs/wandb.yaml"
 # (Resolved BEFORE the norm stats so the train+val generation below has a
 # guaranteed-writable fallback location.)
 RUNS_ROOT="${RUNS_ROOT:-/scratch/${USER_NAME}/InstaRoad/runs}"
-RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}"
+RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}_seed${SEED}"
+
+# --- name query: PRINT_RUN_DIR=1 ---------------------------------------------
+# A pool driver has to know a cell's RUN_DIR and MODEL_NAME BEFORE running it,
+# to decide whether that stage is already done. Re-deriving the tag chain in the
+# driver is precisely the footgun the refit scripts' RUN_TAG comment warns
+# about: one tag out of sync and the guard inspects a directory the run will
+# never write, so every stage looks "not done" and a finished 100-epoch refit is
+# silently redone. So the names are asked for, not reconstructed.
+#
+# Prints and exits — no mkdir, no norm stats, no venv, nothing. Cheap enough to
+# call per stage. Every tag it interpolates is resolved above this line; if a
+# new tag is ever added BELOW it, add it here too or this lies.
+if [ "${PRINT_RUN_DIR:-0}" = "1" ]; then
+  echo "RUN_DIR=${RUN_DIR}"
+  echo "MODEL_NAME=${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}${MON_TAG}}"
+  exit 0
+fi
+
 mkdir -p "$RUN_DIR"
 
 # §4.7 stats provenance under the train+val refit: norm_stats.yaml is computed
@@ -644,6 +766,15 @@ echo "hard constraint: sr_hc=${SR_HC}${HC_TAG:+  tag=${HC_TAG}}${HC_MASK_PATH:+ 
 echo "recipe: reg=${REG}${REG_TAG:+ [${REG_TAG}]}  clip=${CLIP} (trainer=${CLIP_TRAINER}, sr_group=${CLIP_SR})  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}  sr_snapshot_every=${SR_SNAPSHOT_EVERY}"
 echo "head=${HEAD}  monitor=${MONITOR}  warm_start_head=${WARM_START_HEAD:-none}"
 echo "adapter: adaptive_norm=${ADAPTIVE_NORM_FLAG} (m=${ADAPTIVE_NORM_M})  norm_recalibrate=${NORM_RECALIBRATE}${ANORM_TAG:+  tag=${ANORM_TAG}}"
+if [ -n "$RAILS_TAG" ]; then
+  _RAILS_DESC="production (the config's, [0.5x, 4.0x] unless joint_sr.yaml moved it)"
+  if [ -n "$STD_BAND_RAISE_LO" ]; then
+    _RAILS_DESC="[${STD_BAND_RAISE_LO}x, ${STD_BAND_RAISE_HI}x] of the starting std"
+  fi
+  echo "std band guard: rails=${_RAILS_DESC}  action=${STD_BAND_ACTION:-default (tune prunes, fit warns)}  tag=${RAILS_TAG}  (docs/lrsr_grid_ablation_plan.md §3)"
+else
+  echo "std band guard: production band from the config ([0.5x, 4.0x] unless joint_sr.yaml moved it), action=default (tune prunes the trial, fit warns and continues)"
+fi
 echo "protocol: tune on train/val -> refit on '${TRAIN_SPLITS}' (merge_val=${MERGE_VAL}) -> report on test"
 echo "DATASET_DIR=${DATASET_DIR}  warm_start=${WARM_START_CKPT:-none}"
 echo "norm_stats=${NORM_CONFIG}  [${NORM_SOURCE}]"
@@ -838,7 +969,7 @@ fi
 if [ "$STAGE" = "tune" ]; then
   STORAGE="${STORAGE:-sqlite:///${RUN_DIR}/study.db}"
   SAMPLER_OFFSET="${SAMPLER_OFFSET:-0}"
-  STUDY_NAME="sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}_seed${SEED}"
+  STUDY_NAME="sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}${MON_TAG}_seed${SEED}"
 
   run_tuner() { # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
     local gpu="$1" ntrials="$2" seed="$3" pin=""
@@ -872,6 +1003,7 @@ if [ "$STAGE" = "tune" ]; then
       --adaptive-norm "$ADAPTIVE_NORM_FLAG" \
       --adaptive-norm-momentum "$ADAPTIVE_NORM_M" \
       --norm-recalibrate "$NORM_RECALIBRATE" \
+      ${RAILS_ARGS_TUNE[@]+"${RAILS_ARGS_TUNE[@]}"} \
       --seed "$seed" \
       --train-seed "$SEED" \
       --study-name "$STUDY_NAME" \
@@ -938,7 +1070,7 @@ if [ "$STAGE" = "bench" ]; then
   fi
 
   STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}" # SHARED across experiments
-  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}}"
+  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}${MON_TAG}}"
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
   TILE_METRICS="${TILE_METRICS:-apls}"
@@ -1057,6 +1189,16 @@ MODEL_ARGS=(--model.upsampler "$UPSAMPLER" --model.freeze_sr "$FREEZE_SR"
 if [ "$SR_HC" != "native" ]; then
   MODEL_ARGS+=("${HC_ARGS_FIT[@]}")
 fi
+# Same discipline for the std-band rails: nothing is appended unless
+# STD_BAND_RAISE_LO/HI (or STD_BAND_ACTION) were set. The fit's action is `warn`
+# from joint_sr.yaml either way, so the rails do not change whether the run
+# survives a band exit — they change where the exit is DECLARED, i.e. what the
+# adapt_band_exit metric and the post-hoc envelope crossing are measured
+# against. (An explicit STD_BAND_ACTION=raise DOES change it, which is why the
+# block above shouts about that combination.)
+if [ ${#RAILS_ARGS_FIT[@]} -gt 0 ]; then
+  MODEL_ARGS+=("${RAILS_ARGS_FIT[@]}")
+fi
 if [ -n "$WARM_START_CKPT" ]; then
   MODEL_ARGS+=(--model.warm_start_unet "$WARM_START_CKPT")
 fi
@@ -1161,7 +1303,7 @@ fi   # end SKIP_TEST gate around the held-out test
 # point (docs/ap_threshold_protocol_plan.md §1.2). The bench stage refuses to
 # run without a θ (BENCH_THRESHOLD or this sweep.json).
 SWEEP_SPLIT="${SWEEP_SPLIT:-val}"
-MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}${MON_TAG}}"
+MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}${MON_TAG}}"
 MASK_ARGS_SWEEP=(--mask-source "$MASK_SOURCE")
 [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_SWEEP+=(--mask-dirname "$MASK_DIRNAME")
 

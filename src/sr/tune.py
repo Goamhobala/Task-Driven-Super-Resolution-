@@ -53,7 +53,8 @@ torch.backends.cudnn.benchmark = True
 
 # Same imports the LightningCLI uses -- keep the search and the real fit identical.
 from sentinel2data.dataset.joint_sr_dataset import JointSRDataModule
-from sr.model import AdaptiveNormBandExit, JointSRUNetLightning
+from sr.model import (
+    _STD_RAISE_HI, _STD_RAISE_LO, AdaptiveNormBandExit, JointSRUNetLightning)
 # Study plumbing shared with unet.tune (single source of truth: the retry-on-
 # DDL-race create, the journal/RDB storage handling, the best-score tracker).
 from unet.tune import (
@@ -177,6 +178,60 @@ def build_objective(args, base_cfg: dict):
     norm_recalibrate = (args.norm_recalibrate
                         if args.norm_recalibrate is not None
                         else str(model_cfg.get("norm_recalibrate", "off")))
+    # --- std-band rails (docs/lrsr_grid_ablation_plan.md §3) -----------------
+    # The hard band is what `std_band_action="raise"` (below) prunes trials on,
+    # so it decides which corners of the space can be scored at all. The lr_sr
+    # grid LOOSENS it (0.01x / 100x) for exactly that reason: with lr_sr PINNED
+    # per cell, the production band (0.5x-4x) would band-exit-prune every trial
+    # of the bare lane at 1e-4, the study would write no best_params, and the
+    # guard — not the design — would decide which cells exist. Loosened rails
+    # are a protocol difference from the formal arms and are stated as one
+    # wherever grid and formal results appear together (§10).
+    #
+    # Read from the base config when no flag is given. joint_sr.yaml carries
+    # 0.5/4.0, which IS the model default, so every existing arm is unchanged —
+    # but a config that moves them is now honoured in the trials too, instead
+    # of only in the refit (the `adapt_rest` problem, one line down).
+    band_rails: dict[str, float] = {}
+    for _key, _flag in (("std_band_raise_lo", args.std_band_raise_lo),
+                        ("std_band_raise_hi", args.std_band_raise_hi)):
+        _val = _flag if _flag is not None else model_cfg.get(_key)
+        if _val is not None:
+            band_rails[_key] = float(_val)
+    _rail_lo = band_rails.get("std_band_raise_lo", _STD_RAISE_LO)
+    _rail_hi = band_rails.get("std_band_raise_hi", _STD_RAISE_HI)
+    if not 0 < _rail_lo < _rail_hi:
+        raise SystemExit(
+            f"std_band_raise_lo={_rail_lo} / std_band_raise_hi={_rail_hi} is not a "
+            "band: the rails are MULTIPLES of the run's starting std, so they must "
+            "satisfy 0 < lo < hi. (Loosening for a mechanism ablation means e.g. "
+            "0.01 / 100 — never a crossed or non-positive pair, which would make "
+            "every check trip on step one.)")
+    if (_rail_lo, _rail_hi) != (_STD_RAISE_LO, _STD_RAISE_HI):
+        print(f"[sr.tune] std band rails LOOSENED to [{_rail_lo}x, {_rail_hi}x] of the "
+              f"starting std (production: [{_STD_RAISE_LO}x, {_STD_RAISE_HI}x]). "
+              "Trials will no longer be pruned on band exit inside these rails; the "
+              "warn stream and the variance-floor diagnostic are untouched.")
+    # Companion knob: WHAT a band exit does here. The tune's default is "raise"
+    # (see the model construction below) because a short trial that destroys the
+    # SR front-end is a verdict on that corner and pruning it buys budget.
+    #
+    # CLI-ONLY, deliberately not read from the base config: joint_sr.yaml says
+    # `warn` — correct for fits, and honouring it here would silently disarm
+    # pruning for every arm ever tuned. An arm that wants a collapsing trial
+    # SCORED rather than pruned has to say so on the command line.
+    #
+    # `warn` is the right setting for a pinned-lr_sr mechanism cell: with lr_sr
+    # fixed, a pruned trial removes its lr from the ranking entirely, whereas a
+    # completed one records "this lr, at this adaptation rate, scored X" —
+    # including a terrible X, which is itself the result. MedianPruner still
+    # prunes on the objective, so a hopeless trial is still cut short; it is
+    # cut on its SCORE rather than on the adapter's moments.
+    std_band_action = args.std_band_action or "raise"
+    if std_band_action != "raise":
+        print(f"[sr.tune] std_band_action={std_band_action!r}: a band exit will NOT "
+              "prune the trial. It logs adapt_band_exit=1 and the trial runs to its "
+              "epoch budget, to be ranked on the objective like any other.")
     # The remaining adapter settings have no CLI flag (they are not treatment
     # variables), but they MUST still be read from the base config: otherwise a
     # config that changes one is honoured in the refit and silently ignored in
@@ -291,13 +346,17 @@ def build_objective(args, base_cfg: dict):
             adaptive_norm=adaptive_norm,
             adaptive_norm_momentum=adaptive_norm_momentum,
             norm_recalibrate=norm_recalibrate,
+            # Resolved above: CLI flag > base config > model default. Empty for
+            # every arm that sets neither, so their trials are unchanged.
+            **band_rails,
             # Tuning is the ONE place aborting is the right trade: a short
             # trial that leaves the band is a verdict on that corner of the
             # search space, and pruning it buys budget for corners that might
             # win. Fits default to "warn" and must stay that way -- a band exit
             # there is the experiment's result, not a reason to bin a
-            # multi-day run.
-            std_band_action="raise",
+            # multi-day run. --std-band-action overrides this per arm (the
+            # mechanism grid asks for "warn" here too); nothing else does.
+            std_band_action=std_band_action,
             head=head,
             warm_start_head=warm_start_head,
             clip_sr=clip_sr,
@@ -402,6 +461,8 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
                        clip_sr: float | None = None,
                        sr_hc: str = "native",
                        hc_mask_path: str | None = None,
+                       std_band_raise_lo: float | None = None,
+                       std_band_raise_hi: float | None = None,
                        monitor: str = MONITOR) -> Path:
     p = study.best_params
     # Record the resolved SR treatment AND loss so the refit is unambiguous
@@ -459,6 +520,15 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
         model_overlay["adaptive_norm_momentum"] = adaptive_norm_momentum
     if norm_recalibrate is not None:
         model_overlay["norm_recalibrate"] = str(norm_recalibrate)
+    # Std-band rails: written ONLY when the CLI forced them (never when merely
+    # inherited from the base config), so every overlay already on disk stays
+    # byte-identical to what it was before the flags existed. When they ARE
+    # forced the refit must carry them, or a grid cell searched under loosened
+    # rails would be refitted under the production band it exists to leave.
+    if std_band_raise_lo is not None:
+        model_overlay["std_band_raise_lo"] = float(std_band_raise_lo)
+    if std_band_raise_hi is not None:
+        model_overlay["std_band_raise_hi"] = float(std_band_raise_hi)
     data_overlay = {"batch_size": p["batch_size"]}
     if mask_source:
         # Label-source leak fix: a raster-mask search must not silently refit
@@ -685,6 +755,30 @@ def parse_args(argv=None):
                          "style recompute of the post-SR stats (pre = before "
                          "fitting, the complete fix for frozen-SR arms; post = "
                          "before the final ckpt is written).")
+    ap.add_argument("--std-band-raise-lo", type=float, default=None, metavar="RATIO",
+                    help="Override model.std_band_raise_lo — the LOWER hard "
+                         "rail of the post-SR std band, as a multiple of the "
+                         "run's starting std (production 0.5). A trial that "
+                         "leaves the band is PRUNED, so this decides which "
+                         "corners of the space can be scored at all; loosen it "
+                         "only for a mechanism ablation whose point is to "
+                         "observe the collapse (docs/lrsr_grid_ablation_plan.md "
+                         "§3), and then use the SAME rails for every cell.")
+    ap.add_argument("--std-band-action", default=None, choices=["warn", "raise"],
+                    help="What a std-band exit does DURING THE SEARCH. Default "
+                         "'raise' = prune the trial (a corner that destroys the "
+                         "SR front-end is a verdict on that corner, and pruning "
+                         "buys budget). 'warn' = log adapt_band_exit=1 and let "
+                         "the trial finish, to be ranked on the objective like "
+                         "any other — what a pinned-lr_sr mechanism cell wants, "
+                         "since a pruned trial removes its lr from the ranking. "
+                         "NOT read from the base config (whose 'warn' is the "
+                         "fit-stage setting), so no existing arm changes.")
+    ap.add_argument("--std-band-raise-hi", type=float, default=None, metavar="RATIO",
+                    help="Override model.std_band_raise_hi — the UPPER hard "
+                         "rail (production 4.0). Pinned into the overlay "
+                         "alongside --std-band-raise-lo when either is given, "
+                         "so the refit runs the band the search ran.")
     ap.add_argument("--l2sp-lambda", type=float, default=None,
                     help="Override model.l2sp_lambda (default: base config's, "
                          "0.0 = dormant). Escalation knob -- raise above 0 "
@@ -770,6 +864,13 @@ def main(argv=None):
                       # storage row with the frozen-stats study of the same arm.
                       + ("_anorm" if adaptive_norm else "")
                       + (f"_recal{norm_recalibrate}" if norm_recalibrate != "off" else "")
+                      # Loosened rails change WHICH trials survive to be
+                      # ranked, so a loose-rails study must never resume (or be
+                      # read back as) a production-band one. Empty unless the
+                      # rails were forced, as for every other treatment tag.
+                      + ("_rails" if (args.std_band_raise_lo is not None
+                                      or args.std_band_raise_hi is not None
+                                      or args.std_band_action is not None) else "")
                       + (f"_{loss_arm}" if loss_arm else ""))
         print(f"[sr.tune] study name (treatment-derived): {study_name}")
 
@@ -821,6 +922,8 @@ def main(argv=None):
                                       clip_sr=clip_sr,
                                       sr_hc=sr_hc,
                                       hc_mask_path=hc_mask_path,
+                                      std_band_raise_lo=args.std_band_raise_lo,
+                                      std_band_raise_hi=args.std_band_raise_hi,
                                       monitor=args.monitor)
     print(f"\nBest {args.monitor}={study.best_value:.4f} (trial #{study.best_trial.number})")
     print(f"Best params: {study.best_params}  encoder_weights={encoder_weights}")
