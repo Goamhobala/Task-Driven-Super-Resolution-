@@ -1,41 +1,60 @@
 #!/bin/bash
 # Resume guards shared by every per-arm refit script here. Sourced, not run.
 
-# --- is this seed's FIT actually finished? -----------------------------------
-# `unet_s2rosa_jointsr_final.ckpt` is written EVERY EPOCH, so its existence
-# means "a fit started", not "a fit finished". A chain that dies at the wall
-# clock leaves a perfectly readable checkpoint from whatever epoch it reached,
-# and the next submit skips the fit and benches THAT.
+# --- how far did this seed's FIT actually get? -------------------------------
+# Prints one of:
+#   done        weights AND sweep.json present -> skip the stage entirely
+#   sweep_only  training finished but sweep.json is missing -> RESUME, which
+#               reaches the sweep WITHOUT retraining (see below)
+#   resume      a partial checkpoint exists -> continue from it
+#   fresh       nothing usable -> train from scratch
 #
-# This is not hypothetical: sr_r2b_new_nohc_pstar_sdice_anorm_recalpost_seed42
-# shipped a "final" checkpoint from EPOCH 14 of a 100-epoch refit, and its
-# test row + θ* sweep were both computed on it. The completed 100-epoch weights
-# sat beside it as *-v1.ckpt, unused.
+# WHY `unet_s2rosa_jointsr_final.ckpt` IS NOT A DONE-MARKER
+# ---------------------------------------------------------
+# It is rewritten EVERY EPOCH, so its existence means "a fit started". A job
+# killed at the wall clock leaves a perfectly readable checkpoint from whatever
+# epoch it reached. sr_r2b_new_nohc_pstar_sdice_..._seed42 shipped a "final"
+# checkpoint from EPOCH 14 of a 100-epoch refit, and its test row and theta*
+# sweep were both computed on it. Hence the epoch check.
 #
-# So the guard reads the epoch out of the checkpoint and requires it to have
-# reached REFIT_EPOCHS. sweep.json must exist too — the bench needs the
-# operating point, and a run interrupted between the two would otherwise never
-# get one.
-fit_complete () {  # run_dir want_epochs -> 0 if finished
-  local run_dir="$1" want="$2"
-  [ -f "$run_dir/sweep.json" ] || return 1
-  python - "$run_dir/checkpoints/unet_s2rosa_jointsr_final.ckpt" "$want" <<'PYEOF' 2>/dev/null
+# WHY `sweep_only` MATTERS MORE THAN IT LOOKS
+# -------------------------------------------
+# STAGE=fit is refit -> test -> theta* sweep as ONE unit under `set -e`. If the
+# sweep dies (an unstaged benchmarking change, a bad --criterion, an OOM in the
+# scorer) the 100 epochs are already on disk but sweep.json is not — and a guard
+# that simply demands sweep.json would throw those epochs away and retrain.
+# RESUME_FIT=1 hands Lightning `--ckpt_path last.ckpt`; with the checkpoint
+# already at max_epochs there is nothing left to train, so it returns at once
+# and the stage walks on to the test + sweep it died at. Minutes, not hours.
+ckpt_epoch () {  # ckpt -> completed-epoch count, or -1 if missing/unreadable
+  python - "$1" <<'PYEOF' 2>/dev/null || echo -1
 import sys
 from pathlib import Path
-ck, want = Path(sys.argv[1]), int(sys.argv[2])
+ck = Path(sys.argv[1])
 if not ck.is_file():
-    sys.exit(1)
+    print(-1); raise SystemExit
 import torch
 try:
-    epoch = int(torch.load(ck, map_location="cpu", weights_only=False,
-                           mmap=True).get("epoch", -1))
+    print(int(torch.load(ck, map_location="cpu", weights_only=False,
+                         mmap=True).get("epoch", -1)))
 except Exception:
-    sys.exit(1)                      # unreadable/truncated -> refit it
-# Lightning writes `epoch` as the count of completed epochs at save time, which
-# lands on REFIT_EPOCHS for a run that used its whole budget.
-print(f"    final ckpt epoch={epoch} (want {want})", file=sys.stderr)
-sys.exit(0 if epoch >= want else 1)
+    print(-1)                        # truncated / unreadable -> refit it
 PYEOF
+}
+
+fit_state () {  # run_dir want_epochs -> prints the state
+  local run_dir="$1" want="$2" epoch has_last=0
+  # Resuming needs last.ckpt specifically: it is the only checkpoint carrying
+  # optimizer/scheduler state, and it is what RESUME_FIT hands --ckpt_path.
+  [ -f "$run_dir/checkpoints/last.ckpt" ] && has_last=1
+  epoch=$(ckpt_epoch "$run_dir/checkpoints/unet_s2rosa_jointsr_final.ckpt")
+  if [ "$epoch" -ge "$want" ] 2>/dev/null; then
+    if [ -f "$run_dir/sweep.json" ]; then echo done
+    elif [ "$has_last" = "1" ]; then echo sweep_only
+    else echo sweep_only_nolast; fi
+    return
+  fi
+  if [ "$has_last" = "1" ]; then echo resume; else echo fresh; fi
 }
 
 # --- already benched? --------------------------------------------------------
@@ -84,14 +103,47 @@ run_seeds () {
     # that ran it.
     printf '%s\n' "$BEST_PARAMS" > "$run_dir/best_params.yaml"
 
-    if [ "${FORCE_FIT:-0}" != "1" ] && fit_complete "$run_dir" "$epochs"; then
-      echo "########## ${RUN_TAG}  SEED=${seed}  FIT already complete — skipping ##########"
-    else
-      echo "########## ${RUN_TAG}  SEED=${seed}  FIT (${epochs} epochs, train+val) ##########"
+    state=fresh
+    [ "${FORCE_FIT:-0}" = "1" ] || state=$(fit_state "$run_dir" "$epochs")
+    resume=0
+    case "$state" in
+      done)
+        echo "########## ${RUN_TAG}  SEED=${seed}  FIT complete (>=${epochs} epochs + sweep.json) — skipping ##########" ;;
+      sweep_only)
+        echo "########## ${RUN_TAG}  SEED=${seed}  weights at >=${epochs} epochs but NO sweep.json ##########"
+        echo "##########   resuming to reach the theta* sweep — no epoch is retrained ##########"
+        resume=1 ;;
+      resume)
+        echo "########## ${RUN_TAG}  SEED=${seed}  partial fit — RESUMING from last.ckpt ##########"
+        echo "##########   (FORCE_FIT=1 to discard it and train from scratch) ##########"
+        resume=1 ;;
+      sweep_only_nolast)
+        # Trained weights, no sweep.json, and no last.ckpt to resume from
+        # (KEEP_LAST=0 removes it, but only AFTER a successful bench — so this
+        # normally means it was deleted by hand). Retraining would be a waste:
+        # the sweep is store-free and one inference pass, so run it directly.
+        echo "########## ${RUN_TAG}  SEED=${seed}  WARNING ##########"
+        echo "##########   weights are complete but sweep.json is missing AND"
+        echo "##########   last.ckpt is gone, so the fit cannot be resumed."
+        echo "##########   Refusing to retrain ${epochs} epochs. Produce the"
+        echo "##########   sweep directly, then re-run this script:"
+        echo "##########     python -m benchmarking.cli sweep --model sr \\"
+        echo "##########       --checkpoint ${run_dir}/checkpoints/unet_s2rosa_jointsr_final.ckpt \\"
+        echo "##########       --dataset-dir \$DATASET_DIR --split val \\"
+        echo "##########       --model-name ${MODEL_NAME} --seed ${seed} \\"
+        echo "##########       --criterion \${SWEEP_CRITERION:-f1_macro} \\"
+        echo "##########       --mask-source raster --mask-dirname mask_new_2pt5 \\"
+        echo "##########       --out ${run_dir}/sweep.json"
+        echo "##########   (or FORCE_FIT=1 to retrain anyway)"
+        continue ;;
+      fresh)
+        echo "########## ${RUN_TAG}  SEED=${seed}  FIT (${epochs} epochs, train+val) ##########" ;;
+    esac
+    if [ "$state" != "done" ]; then
       env EXP_TAG="$EXP_TAG" LOSS_ARM="$LOSS_ARM" SEED="$seed" STAGE=fit \
           UPSAMPLER="$UPSAMPLER" FREEZE_SR="$FREEZE_SR" SR_PAD="$SR_PAD" \
           SR_HC="$SR_HC" SR_SNAPSHOT_EVERY="$SR_SNAPSHOT_EVERY" \
-          REFIT_EPOCHS="$epochs" \
+          REFIT_EPOCHS="$epochs" RESUME_FIT="$resume" \
           bash "$REPO_DIR/scripts/hpc/sr/refit/_refit_arm.sh"
     fi
 
