@@ -1,30 +1,125 @@
 #!/bin/bash
 # Shared tune/fit/bench engine for the FINAL (train+val refit) SR series —
-# LIGHTNING STUDIO port of scripts/hpc/sr/_stages_tv.sh (keep the two in sync;
-# only the environment block below and the /scratch->INSTAROAD_ROOT paths
-# differ). NOT run directly — each r*_new.sh / loss pilot script sets its
-# config and sources this.
+# LIGHTNING STUDIO port of scripts/hpc/sr/_stages_tv.sh.
+# NOT run directly — each r*_new.sh / rl/*.sh sets its config and sources this.
 #
-# Protocol (identical to the HPC engine):
-#   1. DATASET   LABELS=new -> ROSA_New; pre-rasterised mask_new_2pt5 COGs.
-#   2. STAGE=tune  Optuna on train/val (the holdout is spent here, once).
-#      STAGE=fit   REFITS on TRAIN_SPLITS (default "train val") for a FIXED
-#                  REFIT_EPOCHS budget — no early stopping, no val-monitored
-#                  selection; checkpoint = END of budget
-#                  (unet_s2rosa_jointsr_final.ckpt, never *_best.ckpt).
-#      STAGE=bench Score the final ckpt into the store (default split: test).
-#   TRAIN_SPLITS=train reverts to the holdout protocol (val NOT folded in):
-#   run dirs / study / bench names gain a _holdout tag, and BENCH_SPLIT=val
-#   becomes legal — this is the LOSS-PILOT mode (see loss/_pilot_new.sh).
+# GENERATED FILE — do not edit. Add the feature to the HPC twin, then run
+#   python scripts/LightningStudio/sync_engine.py
+# The port is four mechanical substitutions and nothing else, so `diff` against
+# the twin should show only:
+#   1. this header;
+#   2. the environment block (env.sh instead of USER_NAME/VENV_DIR — Lightning
+#      has no /scratch and no module system);
+#   3. /scratch/$USER/InstaRoad -> $INSTAROAD_ROOT throughout;
+#   4. the loader-worker derivation (nproc instead of SLURM_CPUS_PER_TASK) and
+#      the two diagnostics that name cluster-only things.
+# Anything else in that diff is drift, and drift here silently changes what a
+# Lightning arm means relative to its cluster twin.
 #
-# Interface, stages, guards: see the HPC twin's header for the full prose.
+# This is the sibling of _stages.sh. Same arms, same recipe-v2 dynamics, same
+# model code. Two deliberate differences, and nothing else:
+#
+#   1. DATASET   LABELS=new -> ROSA_New (the final curated dataset). The _all
+#                series stays pointed at ROSA_all; run dirs, Optuna studies and
+#                benchmark model_names are keyed on EXP_TAG (r0_new vs r0_all),
+#                so old and new results can never mix in the store.
+#
+#   2. PROTOCOL  STAGE=tune is UNCHANGED — Optuna still trains on `train` and
+#                scores on `val`, because that is what the holdout is for.
+#                STAGE=fit then RE-FOLDS val into the training set
+#                (data.train_splits = [train, val]) and reports on `test`
+#                alone. Hyperparameters were already paid for out of val; once
+#                chosen, withholding those tiles from the fit throws away ~17%
+#                of the data for no inferential gain.
+#
+# Consequence of (2): during the refit there is NO honest holdout, so the
+# val-driven machinery is removed rather than allowed to peek at data the model
+# now trains on. src/sr/configs/joint_sr_trainval.yaml does this:
+#   * limit_val_batches: 0     — no val loop at all
+#   * EarlyStopping dropped    — FIXED, pre-registered epoch budget, identical
+#                                across arms (same fairness rule as the loss
+#                                ablation). Recipe v2's cosine has T_max =
+#                                max_epochs, so the budget ends at LR 0: the
+#                                schedule always completes.
+#   * monitor: null            — the tested checkpoint is the END of the
+#                                budget, saved as unet_s2rosa_jointsr_final.ckpt
+#                                (NOT ..._best.ckpt, which by convention means
+#                                "argmax over val" — the two names must never
+#                                be confusable downstream).
+#
+# ---- Interface (identical to _stages.sh unless noted) -----------------------
+# Experiment scripts must set:
+#   EXP_TAG      e.g. r2a_new (drives the run dir + study + benchmark name)
+#   LABELS       new | all | cdngi | overture | osm   (label/dataset source)
+#   UPSAMPLER    sen2sr | sen2sr_full | sr4rs | bicubic
+#   FREEZE_SR    true | false
+#   SR_PAD       reflect-pad in native px (0 = off, 8 = border-artifact fix)
+#
+# Optional (submit-time or experiment-script) — see _stages.sh for the full
+# prose on each; they behave identically here:
+#   WARM_START_CKPT  stage-1 UNet init (r6/r7 staged protocol). _warm_tv.sh
+#                derives it from the stage-1 arm's FINAL ckpt.
+#   LOSS_ARM     any unet.losses.build_loss arm (+ its hps).
+#   Recipe v2:   CLIP LR_SCHEDULE SR_WARMUP_EPOCHS L2SP_LAMBDA REG
+#   SR_HC        native (default) | on | off — the FFT hard constraint as a
+#                TREATMENT, crossed with the generator (the HC 2x2,
+#                docs/hc_2x2_plan.md). native = each upsampler's shipped
+#                behaviour, i.e. every pre-existing arm, and appends no flags at
+#                all. HC_MASK_PATH supplies the shipped mask when the generator
+#                does not ship one (sr4rs). Tagged (HC_TAG) into run dir, study
+#                and bench model_name.
+#   SR_SNAPSHOT_EVERY   fit-stage SR-weights-only snapshots every N epochs.
+#   Adaptive post-SR normalisation (docs/adaptive_norm_plan.md, default OFF):
+#     ADAPTIVE_NORM=1 / ADAPTIVE_NORM_M / NORM_RECALIBRATE=off|pre|post|auto.
+#     Both tag the run dir, study and bench model_name (ANORM_TAG), so an
+#     adaptive-norm arm can never land in a frozen-stats row of the same arm.
+#   STD_BAND_ACTION=warn|raise   what a std-band exit DOES. Default: the fit
+#                warns and continues (a band exit is a result, not a fault),
+#                the tune prunes the trial. `warn` disarms the tune's abort
+#                too — for a pinned-lr_sr cell, where a pruned trial silently
+#                removes its lr from the ranking. Tagged (RAILS_TAG).
+#   STD_BAND_RAISE_LO / STD_BAND_RAISE_HI   the post-SR std band's hard rails,
+#                as multiples of the run's STARTING std (production 0.5 / 4.0).
+#                Set BOTH or neither. For the lr_sr mechanism grid only
+#                (docs/lrsr_grid_ablation_plan.md §3): the tune prunes on band
+#                exit, so with lr_sr pinned the production band would prune
+#                every trial of the extreme cells and the guard would decide
+#                which cells exist. Tagged (RAILS_TAG) into run dir, study and
+#                bench model_name — loosened rails are a protocol difference
+#                and must never share a row with a production-band arm.
+#
+# NEW here:
+#   REFIT_EPOCHS     the pre-registered budget (default 100). This is now a
+#                nothing-stops-it-early budget, so it is a BETWEEN-ARM CONSTANT
+#                of the protocol: change it for one arm and the comparison is
+#                void. Check the walltime — every arm now runs the full count.
+#   TRAIN_SPLITS     "train val" (default). Set "train" to reproduce the old
+#                holdout protocol on ROSA_New without switching engines; the
+#                run dir / study / bench name then gain a _holdout tag so the
+#                two protocols can never land in the same store row.
+#   NORM_CONFIG      normalisation stats. DEFAULT = <DATASET_DIR>/norm_stats.yaml,
+#                i.e. the file `sentinel2data.cli norm-stats` writes into the
+#                dataset itself — the only copy guaranteed to have been computed
+#                from THIS dataset's splits/train.csv. Unlike _stages.sh, this
+#                engine does NOT hard-code the repo copy; it falls back to it
+#                only if the dataset has none, and then refuses to run without
+#                NORM_FALLBACK_OK=1.
+#
+# STAGE=tune   Optuna on train/val (unchanged). CHAIN_FIT=1 continues into fit
+#              in the same allocation. Early stop: `touch <run dir>/STOP`.
+#              Rescue a killed search: rerun with N_TRIALS=0.
+# STAGE=fit    Refit on train+val for REFIT_EPOCHS on ONE GPU, then test.
+#              RESUME_FIT=1 continues from last.ckpt.
+# STAGE=bench  Score unet_s2rosa_jointsr_final.ckpt into the shared store.
+#
 # Replication contract: only SEED, STAGE and the loss block are meant to vary.
 set -euo pipefail
 
 # Lightning Studio config (paths, venv, GPU defaults) — single source of truth.
+# It defines REPO_DIR, INSTAROAD_ROOT, VENV_DIR, SEARCH_GPUS/REFIT_GPUS,
+# PRECISION and NUM_WORKERS, each behind a ${VAR:-default} guard, so anything an
+# arm script or a submit-time KEY=VALUE already set survives.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/env.sh"
-REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
-VENV_DIR="${VENV_DIR:-$REPO_DIR/.venv}"
 
 : "${EXP_TAG:?experiment script must set EXP_TAG}"
 : "${LABELS:-new}"
@@ -32,27 +127,88 @@ VENV_DIR="${VENV_DIR:-$REPO_DIR/.venv}"
 : "${FREEZE_SR:?experiment script must set FREEZE_SR (true|false)}"
 : "${SR_PAD:?experiment script must set SR_PAD (0 = off)}"
 
+# --- FFT hard constraint x generator (docs/hc_2x2_plan.md) -------------------
+# The constraint is architecture-agnostic (a pure function of lr, sr and the
+# shipped mask), so it can be taken OFF SEN2SR (r2b) or put ON SR4RS (r4a).
+#   native  each upsampler's shipped default — sen2sr applies it, sr4rs and
+#           bicubic do not. EVERY EXISTING ARM. No flag is appended to any
+#           command line in this mode, so their invocations stay byte-identical.
+#   on|off  forced. The treatment is the whole bundle: positivity clamp +
+#           frequency splice. The pad component travels with it too, but as an
+#           ARM-SCRIPT setting (SR_PAD), not from here — the r4b-at-pad-8
+#           control has to stay expressible.
+# HC_TAG goes into the run dir, the Optuna study AND the bench model_name, like
+# REG_TAG/ANORM_TAG. That is what makes the r2b redefinition safe: r2b_new used
+# to mean "SEN2SR+HC, pad 0" and now means "SEN2SR, no HC", so any legacy
+# sr_r2b_new_* rows can never collide with the new sr_r2b_new_nohc_* ones in the
+# append-only store.
+SR_HC="${SR_HC:-native}"
+HC_MASK_PATH="${HC_MASK_PATH:-}"
+case "$SR_HC" in
+native) HC_TAG="" ;;
+on) HC_TAG="_hc" ;;
+off) HC_TAG="_nohc" ;;
+*)
+  echo "ERROR: SR_HC must be native|on|off, got '${SR_HC}'." >&2
+  exit 2
+  ;;
+esac
+if [ "$SR_HC" = "on" ] && [ "$UPSAMPLER" = "bicubic" ]; then
+  echo "ERROR: SR_HC=on with UPSAMPLER=bicubic. The constraint splices the" >&2
+  echo "  bicubic upsampling of the input into the SR output, so on a bicubic" >&2
+  echo "  'generator' the cell is a near-identity, not a treatment." >&2
+  exit 2
+fi
+if [ "$SR_HC" = "on" ] && [ "$UPSAMPLER" = "sr4rs" ] && [ -z "$HC_MASK_PATH" ]; then
+  echo "ERROR: SR_HC=on with UPSAMPLER=sr4rs needs HC_MASK_PATH — SEN2SR-Lite's" >&2
+  echo "  hard_constraint.safetensor. SEN2SR_DIR points at SR4RS_RGBN here, which" >&2
+  echo "  ships no mask. Reuse the shipped file byte-for-byte: its cutoff is the" >&2
+  echo "  value the SEN2SR paper optimised (Table 4), and re-deriving one would" >&2
+  echo "  make the two rows of the 2x2 different operators." >&2
+  exit 2
+fi
+# Appended to the tune/fit command lines ONLY when the constraint is forced, so
+# every native arm's invocation is unchanged (the same discipline as HEAD_TAG).
+HC_ARGS_TUNE=()
+HC_ARGS_FIT=()
+if [ "$SR_HC" != "native" ]; then
+  HC_ARGS_TUNE=(--sr-hc "$SR_HC")
+  HC_ARGS_FIT=(--model.sr_hc "$SR_HC")
+  if [ -n "$HC_MASK_PATH" ]; then
+    HC_ARGS_TUNE+=(--hc-mask-path "$HC_MASK_PATH")
+    HC_ARGS_FIT+=(--model.hc_mask_path "$HC_MASK_PATH")
+  fi
+fi
+
 STAGE="${STAGE:-tune}"
 SEED="${SEED:-0}"
-# env.sh defaults NUM_WORKERS=0 (GDAL fork guard). With the pre-rasterised
-# mask_new_2pt5 COGs the loaders are fork-safe and IO-light; NUM_WORKERS=2..4
-# at submit time is fine if GPU utilisation sawtooths.
-NUM_WORKERS="${NUM_WORKERS:-0}"
+# 0 was a DDP-era guard (GDAL handles + forked ranks). Search runs one
+# single-GPU process per GPU and the refit is single-GPU, and the datasets
+# open rasters lazily inside __getitem__, so forked loader workers are safe.
+# Default is computed below, after SEARCH_GPUS is known.
+NUM_WORKERS="${NUM_WORKERS:-}"
 PRECISION="${PRECISION:-bf16-mixed}"
 SEN2SR_DIR="${SEN2SR_DIR:-${INSTAROAD_ROOT}/models/SEN2SRLite_RGBN}"
 WARM_START_CKPT="${WARM_START_CKPT:-}"
 
 # --- The train+val protocol switch -------------------------------------------
+# Space-separated split names for the REFIT's train loader. The default IS the
+# protocol; "train" reverts to the classic holdout fit and tags itself so the
+# two never mix.
 TRAIN_SPLITS="${TRAIN_SPLITS:-train val}"
 PROTO_TAG=""
 MERGE_VAL=1
 case " ${TRAIN_SPLITS} " in
-  *" test "*)
-    echo "ERROR: TRAIN_SPLITS must never contain 'test' — that is the held-out" >&2
-    echo "  evaluation split. Got '${TRAIN_SPLITS}'." >&2
-    exit 2 ;;
-  *" val "*) : ;;
-  *) PROTO_TAG="_holdout"; MERGE_VAL=0 ;;
+*" test "*)
+  echo "ERROR: TRAIN_SPLITS must never contain 'test' — that is the held-out" >&2
+  echo "  evaluation split. Got '${TRAIN_SPLITS}'." >&2
+  exit 2
+  ;;
+*" val "*) : ;;
+*)
+  PROTO_TAG="_holdout"
+  MERGE_VAL=0
+  ;;
 esac
 
 # --- Recipe v2 training dynamics (defaults = the agreed recipe) --------------
@@ -64,11 +220,103 @@ if [ "$REG" = "false" ] || [ "$REG" = "0" ]; then
   LR_SCHEDULE="${LR_SCHEDULE:-none}"
   SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-0}"
 fi
-CLIP="${CLIP:-1.0}"                          # gradient clip (global L2; 0=off)
-LR_SCHEDULE="${LR_SCHEDULE:-cosine}"         # cosine | none
-SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-1.0}"  # SR-group ramp; model auto-off
-                                             # for frozen/bicubic/warm-start
-L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}"            # 0 = dormant L2-SP anchor
+CLIP="${CLIP:-1.0}"                         # gradient clip (global L2; 0=off)
+LR_SCHEDULE="${LR_SCHEDULE:-cosine}"        # cosine | none
+SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-1.0}" # SR-group ramp; model auto-off
+# for frozen/bicubic/warm-start
+
+# --- Hard hold on the SR group (docs/rl_lightning_campaign_plan.md §2) -------
+# Epochs during which lr_sr is EXACTLY 0 while the head trains alone; after the
+# boundary the SR group runs its own cosine over the remaining budget, with
+# SR_WARMUP_EPOCHS re-based to that boundary. Not a ramp and not a small LR: an
+# LR gate, so Adam's update is identically zero while its moments warm on the
+# real gradients.
+#
+# This is what lets the rl campaign run ONE 30-epoch job per arm-seed instead of
+# a stage pair: with lr_sr=0 the joint arm's first HOLD epochs ARE a frozen-arm
+# run, so the branches diverge only at the boundary and the frozen arm's
+# remaining epochs are the matched-budget control. No warm_start_head, no
+# inheritance, no stage-1 dependency.
+#
+# DEFAULT 0 = no hold, i.e. exactly the behaviour every arm in the append-only
+# store was trained under — and NOTHING is appended to any command line at 0
+# (same discipline as HC_ARGS/RAILS_ARGS/HEAD_TAG), so their invocations stay
+# byte-identical. It is deliberately NOT tagged into the run dir / study /
+# model_name: the only arms that use it are the rl joint rungs, whose EXP_TAG
+# already carries the rung. If a held and an unheld variant of the SAME EXP_TAG
+# are ever both wanted, tag it before running the second one.
+SR_HOLD_EPOCHS="${SR_HOLD_EPOCHS:-0}"
+HOLD_ARGS_TUNE=()
+HOLD_ARGS_FIT=()
+if awk -v h="$SR_HOLD_EPOCHS" 'BEGIN { exit !(h + 0 == h && h > 0) }' </dev/null 2>/dev/null; then
+  HOLD_ARGS_TUNE=(--sr-hold-epochs "$SR_HOLD_EPOCHS")
+  HOLD_ARGS_FIT=(--model.sr_hold_epochs "$SR_HOLD_EPOCHS")
+  if [ "$FREEZE_SR" = "true" ] || [ "$UPSAMPLER" = "bicubic" ]; then
+    echo "NOTE: SR_HOLD_EPOCHS=${SR_HOLD_EPOCHS} on a front-end with no trainable" >&2
+    echo "  SR parameters (freeze_sr=${FREEZE_SR}, upsampler=${UPSAMPLER}) — the" >&2
+    echo "  model auto-disables it. Harmless; the frozen rl arms pass it anyway so" >&2
+    echo "  one submit line covers the whole series." >&2
+  fi
+  if [ "$LR_SCHEDULE" != "cosine" ]; then
+    echo "ERROR: SR_HOLD_EPOCHS=${SR_HOLD_EPOCHS} with LR_SCHEDULE=${LR_SCHEDULE}." >&2
+    echo "  The gate lives inside the cosine LambdaLR; with lr_schedule=none there" >&2
+    echo "  is no scheduler at all and lr_sr would be live from step 1 — a joint" >&2
+    echo "  arm silently running without its hold. Refusing." >&2
+    exit 2
+  fi
+fi
+L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}" # 0 = dormant L2-SP anchor
+
+# --- Read-out head: U-Net (default) or linear probe (docs/sr_linear_probe.md) -
+# HEAD=linear replaces the 24 M-param U-Net with a 1x1 conv (4 weights + 1 bias)
+# applied after the existing z-score adapter — the rl-series. It removes the
+# decoder's ability to compensate for a bad SR front-end, so every bit of
+# structure in the prediction must have been put there by the upsampler.
+#
+# DEFAULT IS `unet`, and every derived string below is EMPTY in that case, so
+# each r*-arm's run dir, study name and bench model_name are byte-identical to
+# what they were before this block existed. Verify that before trusting any
+# comparison against a row already in the (append-only) store.
+#
+# HEAD_TAG goes into RUN_DIR as well as STUDY_NAME/MODEL_NAME (unlike MON_TAG,
+# which is deliberately kept out of RUN_DIR). That is safe only because
+# _warm_head_tv.sh reconstructs the same tag when it resolves a stage-1 run dir
+# — change one and you must change the other.
+HEAD="${HEAD:-unet}"
+case "$HEAD" in
+unet | linear) : ;;
+*)
+  echo "ERROR: HEAD must be unet|linear, got '${HEAD}'." >&2
+  exit 2
+  ;;
+esac
+HEAD_TAG=""
+[ "$HEAD" != "unet" ] && HEAD_TAG="_${HEAD}"
+
+# Gradient clipping split (docs/sr_linear_probe.md §6.2). Lightning's
+# `gradient_clip_val` is a SINGLE GLOBAL L2 norm over all trainable parameters.
+# For the U-Net arms that is fine — one 24 M-param group. For the linear probe
+# it is not: in rl1 the group is 5 parameters, in rl2 it is those 5 plus ~240 k
+# SEN2SR parameters, so the same setting means something different in each arm
+# and the nuisance variable moves with the treatment. Under HEAD=linear the
+# Trainer-level clip is therefore switched OFF and the value is handed to the
+# module as `clip_sr`, which clips the SR parameter group only and leaves the
+# head unclipped (configure_gradient_clipping override). CLIP stays the single
+# source of the 1.0 — the arms do not carry their own copy.
+CLIP_TRAINER="$CLIP"
+CLIP_SR="0"
+if [ "$HEAD" = "linear" ]; then
+  CLIP_TRAINER="0"
+  CLIP_SR="$CLIP"
+fi
+
+# Head warm start (LP-FT). Set by _warm_head_tv.sh for rl2/rl4 — the joint arm
+# takes its frozen twin's FINAL head so the probe is fully converged on the
+# frozen-SR input distribution before any gradient reaches the generator.
+# DELIBERATELY NOT `warm_start_unet`: model.py zeroes the SR warmup ramp when
+# warm_start_unet is set (correct for a staged U-Net start, wrong here), so
+# routing the head through that flag would silently drop sr_warmup_epochs.
+WARM_START_HEAD="${WARM_START_HEAD:-}"
 
 # --- Adaptive post-SR normalisation (docs/adaptive_norm_plan.md) -------------
 # The post-SR z-score uses FROZEN dataset stats; SR4RS's output is unanchored
@@ -83,12 +331,15 @@ L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}"            # 0 = dormant L2-SP anchor
 # Both contribute to ANORM_TAG so the run dir, Optuna study and benchmark
 # model_name can never collide with the frozen-stats rows of the same arm
 # (the store is append-only -- §4.6).
-ADAPTIVE_NORM="${ADAPTIVE_NORM:-0}"
+ADAPTIVE_NORM="${ADAPTIVE_NORM:-1}"
 ADAPTIVE_NORM_M="${ADAPTIVE_NORM_M:-0.01}"
-NORM_RECALIBRATE="${NORM_RECALIBRATE:-off}"
+NORM_RECALIBRATE="${NORM_RECALIBRATE:-post}"
 case "$NORM_RECALIBRATE" in
-  off|pre|post|auto) : ;;
-  *) echo "ERROR: NORM_RECALIBRATE must be off|pre|post|auto, got '${NORM_RECALIBRATE}'." >&2; exit 2 ;;
+off | pre | post | auto) : ;;
+*)
+  echo "ERROR: NORM_RECALIBRATE must be off|pre|post|auto, got '${NORM_RECALIBRATE}'." >&2
+  exit 2
+  ;;
 esac
 ANORM_TAG=""
 ADAPTIVE_NORM_FLAG="false"
@@ -100,45 +351,181 @@ if [ "$NORM_RECALIBRATE" != "off" ]; then
   ANORM_TAG="${ANORM_TAG}_recal${NORM_RECALIBRATE}"
 fi
 
+# --- Std-band rails (docs/lrsr_grid_ablation_plan.md §3) ---------------------
+# The post-SR std band is a HARD guard: `sr.tune` runs the model with
+# std_band_action=raise, so a trial whose band leaves [lo, hi] x its starting
+# std is PRUNED, and the fit logs adapt_band_exit=1 and keeps going. Both rails
+# default to the production band (0.5x / 4.0x, src/sr/configs/joint_sr.yaml) and
+# NOTHING is appended to any command line unless they are set here — so every
+# arm already in the store keeps its exact invocation.
+#
+# They exist as envs for ONE purpose: the lr_sr mechanism grid, whose whole
+# point is to observe the collapse the guard exists to kill. With lr_sr pinned
+# per cell, the production band would band-exit-prune every trial of the bare
+# lane at lr_sr=1e-4, no best_params would be written, and the GUARD (not the
+# design) would decide which cells exist. The grid therefore sets 0.01 / 100 —
+# the raise can never fire, while the warn stream and the variance-floor
+# diagnostic keep printing. Do NOT instead silence the check with
+# adaptive_norm_check_every=0: that kills the diagnostics the grid is FOR.
+#
+# Rules that come with them:
+#   * BOTH or NEITHER. A half-loosened band is a different treatment on one
+#     side only, and the collapse side is the one that matters.
+#   * IDENTICAL across every cell of one grid (the pair rule).
+#   * SET FOR EVERY STAGE of a cell. RAILS_TAG lands in the run dir, so a tune
+#     with rails followed by a fit without them looks for best_params.yaml in a
+#     directory that does not exist — loud, not silent, but still a waste of a
+#     queue slot. Set them in the arm script (r2grid_new.sh does), not at submit.
+#
+# STD_BAND_ACTION is the companion knob: WHAT an exit does.
+#   fit   ALWAYS warn unless this env says otherwise — joint_sr.yaml's default,
+#         and the reason a band exit can never end a refit (the 2026-08-19
+#         r4b_new kill is what set that default).
+#   tune  `sr.tune` hard-codes `raise` so a hopeless corner is PRUNED. That is
+#         wrong for a pinned-lr_sr cell: with lr_sr fixed, a pruned trial
+#         removes its lr from the ranking, while a completed one records "this
+#         lr, at this adaptation rate, scored X" — a terrible X included.
+#         STD_BAND_ACTION=warn switches the search to that behaviour. Trials
+#         are still pruned by MedianPruner on the OBJECTIVE; only the moment-
+#         based abort goes away.
+STD_BAND_RAISE_LO="${STD_BAND_RAISE_LO:-}"
+STD_BAND_RAISE_HI="${STD_BAND_RAISE_HI:-}"
+STD_BAND_ACTION="${STD_BAND_ACTION:-}"
+RAILS_TAG=""
+RAILS_ARGS_TUNE=()
+RAILS_ARGS_FIT=()
+if [ -n "$STD_BAND_ACTION" ]; then
+  case "$STD_BAND_ACTION" in
+  warn | raise) : ;;
+  *)
+    echo "ERROR: STD_BAND_ACTION must be warn|raise, got '${STD_BAND_ACTION}'." >&2
+    exit 2
+    ;;
+  esac
+  RAILS_TAG="_rails" # band-guard policy differs from production: tag it
+  RAILS_ARGS_TUNE+=(--std-band-action "$STD_BAND_ACTION")
+  RAILS_ARGS_FIT+=(--model.std_band_action "$STD_BAND_ACTION")
+  if [ "$STD_BAND_ACTION" = "raise" ] && [ "$STAGE" = "fit" ]; then
+    echo "WARN: STD_BAND_ACTION=raise on a FIT. A band exit will then KILL this" >&2
+    echo "  refit mid-budget. That is what took out r4b_new at epoch 13 of 100" >&2
+    echo "  on 2026-08-19, on a decelerating trend that crossed the bound by" >&2
+    echo "  0.004. A band exit in a fit is the experiment's RESULT — it is" >&2
+    echo "  logged as adapt_band_exit=1 and the run should finish. Are you sure?" >&2
+  fi
+fi
+if [ -n "$STD_BAND_RAISE_LO" ] || [ -n "$STD_BAND_RAISE_HI" ]; then
+  if [ -z "$STD_BAND_RAISE_LO" ] || [ -z "$STD_BAND_RAISE_HI" ]; then
+    echo "ERROR: set BOTH STD_BAND_RAISE_LO and STD_BAND_RAISE_HI or neither" >&2
+    echo "  (got lo='${STD_BAND_RAISE_LO}' hi='${STD_BAND_RAISE_HI}'). The band is" >&2
+    echo "  one treatment; loosening only the growth side leaves the collapse" >&2
+    echo "  side — the one the runaway happens on — at the production rail." >&2
+    exit 2
+  fi
+  if ! awk -v lo="$STD_BAND_RAISE_LO" -v hi="$STD_BAND_RAISE_HI" \
+    'BEGIN { exit !(lo + 0 == lo && hi + 0 == hi && lo > 0 && lo < hi) }' \
+    </dev/null 2>/dev/null; then
+    echo "ERROR: STD_BAND_RAISE_LO='${STD_BAND_RAISE_LO}' / HI='${STD_BAND_RAISE_HI}'" >&2
+    echo "  is not a band. They are MULTIPLES of the run's starting std, so they" >&2
+    echo "  must be numeric with 0 < lo < hi (e.g. 0.01 and 100)." >&2
+    exit 2
+  fi
+  RAILS_TAG="_rails"
+  RAILS_ARGS_TUNE+=(--std-band-raise-lo "$STD_BAND_RAISE_LO"
+    --std-band-raise-hi "$STD_BAND_RAISE_HI")
+  RAILS_ARGS_FIT+=(--model.std_band_raise_lo "$STD_BAND_RAISE_LO"
+    --model.std_band_raise_hi "$STD_BAND_RAISE_HI")
+  if [ "$ADAPTIVE_NORM_FLAG" != "true" ]; then
+    echo "WARN: STD_BAND_RAISE_* set but adaptive_norm is OFF. The band check runs" >&2
+    echo "  inside the adaptive-norm EMA update, so with frozen stats the rails" >&2
+    echo "  are inert — and the run dir still carries ${RAILS_TAG}." >&2
+  fi
+fi
+
 SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-0}"
 
+# --- Val loop during a HOLDOUT fit ------------------------------------------
+# joint_sr_trainval.yaml is layered LAST at the fit stage and sets
+# `limit_val_batches: 0` UNCONDITIONALLY — correct under the merged protocol
+# (val tiles are training tiles then, so a "val_iou" would be train IoU in
+# disguise), but it also applies when TRAIN_SPLITS=train reverts to the holdout
+# protocol, where val IS honestly held out and there is no reason not to look.
+#
+# FIT_VAL_LOOP=1 restores the loop for a holdout fit, and ONLY for one:
+# requesting it under the merged protocol is refused rather than silently
+# ignored. What it does NOT restore is any form of selection — the trainval
+# overlay's callback list still has no EarlyStopping and its ModelCheckpoint
+# still runs monitor:null / save_on_train_epoch_end, so the checkpoint remains
+# the END of a fixed, pre-registered budget. The val loop only LOGS.
+#
+# That is why it carries no tag: it changes what is recorded, not what is
+# trained. (One caveat worth knowing: the loop advances global RNG, so a
+# FIT_VAL_LOOP=1 run is not step-for-step identical to the same seed without
+# it. It is a between-arm constant wherever it is used, so no contrast moves.)
+#
+# The rl campaign needs it: "frozen val-AP plateaus before epoch 10" and "the
+# joint arms' hold phases reproduce the frozen curves" are its falsifiable
+# checks, and both are per-epoch val curves
+# (docs/rl_lightning_campaign_plan.md §2, §6.1). DEFAULT 0 = the behaviour every
+# existing arm and the loss pilot were run under; nothing is appended at 0.
+FIT_VAL_LOOP="${FIT_VAL_LOOP:-0}"
+VAL_ARGS_FIT=()
+if [ "$FIT_VAL_LOOP" = "1" ]; then
+  if [ "$MERGE_VAL" = "1" ]; then
+    echo "ERROR: FIT_VAL_LOOP=1 with TRAIN_SPLITS='${TRAIN_SPLITS}'. val is" >&2
+    echo "  folded into the training set under this protocol, so the curve would" >&2
+    echo "  be a training curve wearing a val label. Use TRAIN_SPLITS=train." >&2
+    exit 2
+  fi
+  VAL_ARGS_FIT=(--trainer.limit_val_batches "${LIMIT_VAL_BATCHES:-1.0}")
+fi
+
 # LABELS -> dataset dir + code-level mask_source (+ mask_dirname when raster).
-# LABELS=new reads the ONCE-OFF pre-rasterised HR label COGs. Generate once:
+# LABELS=new reads the ONCE-OFF pre-rasterised HR label COGs (the labels are
+# frozen; per-crop graph rasterisation was the GPU-starving bottleneck).
+# Generate them one time per dataset (standalone script, no PYTHONPATH/GPU;
+# login node is fine):
 #   $VENV_DIR/bin/python $REPO_DIR/src/sentinel2data/dataset/rasterize_hr_masks.py \
 #     --dataset-dir <DATASET_DIR> --out-dirname mask_new_2pt5
-# Submit-time MASK_SOURCE=graph reverts to on-the-fly rasterisation (slow).
+# Submit-time MASK_SOURCE=graph reverts to on-the-fly rasterisation.
 case "$LABELS" in
-  new)
-    DATASET_DIR="${DATASET_DIR:-${INSTAROAD_ROOT}/ROSA_New}"
-    MASK_SOURCE="${MASK_SOURCE:-raster}"   # pre-rasterised graph labels
-    MASK_DIRNAME="${MASK_DIRNAME:-mask_new_2pt5}" ;;
-  all)
-    DATASET_DIR="${DATASET_DIR:-${INSTAROAD_ROOT}/ROSA_all}"
-    MASK_SOURCE="graph" ;;
-  cdngi)
-    DATASET_DIR="${DATASET_DIR:-${INSTAROAD_ROOT}/ROSA_Dense_CDNGI}"
-    MASK_SOURCE="graph" ;;
-  overture)
-    DATASET_DIR="${DATASET_DIR:-${INSTAROAD_ROOT}/ROSA_Dense_Overture}"
-    MASK_SOURCE="graph" ;;
-  osm)
-    DATASET_DIR="${DATASET_DIR:-${INSTAROAD_ROOT}/ROSA_New}"
-    MASK_SOURCE="raster"
-    MASK_DIRNAME="${MASK_DIRNAME:-mask_osm_2pt5}" ;;  # OSM HR rasters
-  *)
-    echo "ERROR: LABELS must be new|all|cdngi|overture|osm, got '${LABELS}'." >&2; exit 2 ;;
+new)
+  DATASET_DIR="${DATASET_DIR:-${INSTAROAD_ROOT}/ROSA_New}"
+  MASK_SOURCE="${MASK_SOURCE:-raster}" # pre-rasterised graph labels
+  MASK_DIRNAME="${MASK_DIRNAME:-mask_new_2pt5}"
+  ;;
+all)
+  DATASET_DIR="${DATASET_DIR:-${INSTAROAD_ROOT}/ROSA_all}"
+  MASK_SOURCE="graph"
+  ;;
+cdngi)
+  DATASET_DIR="${DATASET_DIR:-${INSTAROAD_ROOT}/ROSA_Dense_CDNGI}"
+  MASK_SOURCE="graph"
+  ;;
+overture)
+  DATASET_DIR="${DATASET_DIR:-${INSTAROAD_ROOT}/ROSA_Dense_Overture}"
+  MASK_SOURCE="graph"
+  ;;
+osm)
+  DATASET_DIR="${DATASET_DIR:-${INSTAROAD_ROOT}/ROSA_New}"
+  MASK_SOURCE="raster"
+  MASK_DIRNAME="${MASK_DIRNAME:-mask_osm_2pt5}"
+  ;; # OSM HR rasters
+*)
+  echo "ERROR: LABELS must be new|all|cdngi|overture|osm, got '${LABELS}'." >&2
+  exit 2
+  ;;
 esac
-MASK_DIRNAME="${MASK_DIRNAME:-}"   # empty for the graph (on-the-fly) sources
+MASK_DIRNAME="${MASK_DIRNAME:-}" # empty for the graph (on-the-fly) sources
 
 # --- Tune budget (train/val — UNCHANGED from _stages.sh) ---------------------
-N_TRIALS="${N_TRIALS:-200}"
-SEARCH_GPUS="${SEARCH_GPUS:-1}"
-TUNE_EPOCHS="${TUNE_EPOCHS:-8}"
-PATIENCE="${PATIENCE:-3}"
+N_TRIALS="${N_TRIALS:-30}"
+SEARCH_GPUS="${SEARCH_GPUS:-2}"
+TUNE_EPOCHS="${TUNE_EPOCHS:-10}"
+PATIENCE="${PATIENCE:-5}"
 ENCODER_WEIGHTS="${ENCODER_WEIGHTS:-imagenet}"
 LR_MIN="${LR_MIN:-1e-5}"
 LR_MAX="${LR_MAX:-1e-2}"
-LR_SR_MIN="${LR_SR_MIN:-1e-7}"   # searched only when SR is learned & unfrozen
+LR_SR_MIN="${LR_SR_MIN:-1e-7}" # searched only when SR is learned & unfrozen
 # 1e-3 was 100x the design default (1e-5) and the whole upper decade is
 # known-wasted budget: on 2026-08-13 a sampled lr_sr=3.1e-4 drove the post-SR
 # std out of its band inside 1,400 steps on SEN2SR -- the arm most resistant to
@@ -150,66 +537,152 @@ LR_SR_MIN="${LR_SR_MIN:-1e-7}"   # searched only when SR is learned & unfrozen
 # destruction rate to the UNet's lr, dragging a trial that wants a fast UNet
 # toward a destructive SR lr for no physical reason. Do not "simplify" it back.
 LR_SR_MAX="${LR_SR_MAX:-1e-4}"
-POS_WEIGHT_MIN="${POS_WEIGHT_MIN:-1.0}"
-POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-15.0}"
-ENCODERS="${ENCODERS:-resnet34}"      # NOT searched: encoder constancy is the control
-BATCH_SIZES="${BATCH_SIZES:-2 4 8}"   # 512px UNet stage is memory-heavy
+POS_WEIGHT_MIN="${POS_WEIGHT_MIN:-4.77222}"
+POS_WEIGHT_MAX="${POS_WEIGHT_MAX:-4.77222}"
+ENCODERS="${ENCODERS:-resnet34}" # NOT searched: encoder constancy is the control
+BATCH_SIZES="${BATCH_SIZES:-4}"  # PINNED, not searched (2026-08-12). `length` is
+# fixed per epoch, so a bs=1 trial takes 4x the
+# optimiser steps of a bs=4 trial and wins the
+# tune on step count alone -- batch size is a
+# confound, not a hyperparameter. 4 is a
+# between-arm constant for the whole SR series.
+# NB never change this on a RESUME_FIT: it
+# changes steps/epoch and breaks cosine T_max.
 
-# --- Fit budget (FIXED — no early stopping) ----------------------------------
-# Pre-registered and identical across arms — a BETWEEN-ARM CONSTANT.
+# --- Model-selection criterion (2026-08-16) ----------------------------------
+# val_ap = threshold-free selection (binned AP; docs/ap_threshold_protocol_plan
+# .md §1.1) for BOTH series. The Python default stays val_iou, so the loss
+# pilot and every legacy path are byte-untouched — this shell default is what
+# flips the _new-series protocol. MON_TAG goes into STUDY_NAME (an AP-era
+# re-tune must never resume a val_iou-era study) and MODEL_NAME (the store is
+# append-only; θ*-era rows must not be confusable with old θ=0.5 rows) — NOT
+# into RUN_DIR, whose tag string _warm_tv.sh reconstructs for warm starts.
+MONITOR="${MONITOR:-val_ap}"
+MON_TAG=""
+[ "$MONITOR" != "val_iou" ] && MON_TAG="_${MONITOR#val_}"
+
+# Loader workers per training process: split the job's CPU allocation across
+# the stage's processes (search fans out SEARCH_GPUS tuners; fit/test run one).
+# Workers spend most time blocked on the prefetch queue, so no cores are
+# reserved for the mains.
+#
+# THE OLD NOTE HERE ("with pre-rasterised masks, 1-2 workers already keep the
+# GPU fed") WAS CALIBRATED ON THE U-NET ARMS AND EXPIRED WITH HEAD=linear.
+# Those arms ran forward+backward through 24 M parameters per batch; an rl arm
+# runs an SR forward under no_grad (freeze_sr) and backprops through FIVE
+# parameters. GPU work per batch collapsed; bytes read per batch did not. The
+# frozen rl arms are I/O-bound, so this number is now load-bearing — budget CPUs
+# generously (--cpus-per-task 8+) rather than relying on the default 4.
+#
+# SEARCH_GPUS is CAPPED TO THE VISIBLE GPU COUNT INSIDE THE TUNE STAGE, which
+# used to run AFTER this block: a job that asked for 2 GPUs and got 1 divided
+# its CPUs by 2 anyway and ran half the workers it could afford. Resolve the cap
+# here instead, before anything reads it.
+if [ "${STAGE}" = "tune" ]; then
+  # Deliberately NOT a one-liner. `grep -c` prints "0" AND exits 1 when it
+  # matches nothing, so under `set -o pipefail` a
+  #   $(command -v nvidia-smi && nvidia-smi ... | grep -c ... || echo 0)
+  # fires BOTH the grep's "0" and the fallback's "0" and yields a two-line
+  # value, which then makes `[ "$x" -gt 0 ]` emit "integer expression expected"
+  # and quietly evaluate false — i.e. the cap silently stops working in exactly
+  # the no-GPU case it exists to handle. (`set -e` does not catch it: the
+  # assignment takes the status of the LAST command in the substitution, and a
+  # failing `if` condition is exempt.)
+  _VIS_GPUS=0
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    _VIS_GPUS=$(nvidia-smi --list-gpus 2>/dev/null | grep -c '^GPU ' || true)
+    _VIS_GPUS="${_VIS_GPUS//[!0-9]/}"        # strip anything not a digit
+    [ -z "${_VIS_GPUS}" ] && _VIS_GPUS=0
+  fi
+  if [ "${_VIS_GPUS}" -gt 0 ] && [ "${SEARCH_GPUS}" -gt "${_VIS_GPUS}" ]; then
+    echo "NOTE: SEARCH_GPUS=${SEARCH_GPUS} but ${_VIS_GPUS} GPU(s) visible — capping now"
+    echo "  (before NUM_WORKERS is derived from it)."
+    SEARCH_GPUS="${_VIS_GPUS}"
+  fi
+fi
+# There is no SLURM allocation to ask, so the budget is the machine: `nproc` on
+# a Lightning job box IS what that job gets (an L4 studio job is 8 vCPU).
+# NB env.sh exports NUM_WORKERS=0 by default — a DDP-era GDAL fork guard. With
+# the pre-rasterised mask COGs the loaders open rasters lazily inside
+# __getitem__ and are fork-safe, so set NUM_WORKERS= (empty) to reach this
+# derivation, or pin a number at submit time. The rl campaign pins 4.
+JOB_CPUS="$( (command -v nproc >/dev/null 2>&1 && nproc) \
+  || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)"
+if [ -z "${NUM_WORKERS}" ]; then
+  if [ "${STAGE}" = "tune" ]; then
+    NUM_WORKERS=$((JOB_CPUS / SEARCH_GPUS))
+  else
+    NUM_WORKERS=$((JOB_CPUS - 1))
+  fi
+  [ "${NUM_WORKERS}" -lt 1 ] && NUM_WORKERS=1
+fi
+echo "loader: num_workers=${NUM_WORKERS} (job_cpus=${JOB_CPUS}, search_gpus=${SEARCH_GPUS})"
+
+# --- Fit budget (train+val, FIXED — no early stopping) -----------------------
+# Pre-registered and identical across arms. Nothing truncates it now, so budget
+# the SLURM walltime for the full count on the SLOWEST arm (sr4rs).
 REFIT_EPOCHS="${REFIT_EPOCHS:-100}"
 REFIT_GPUS="${REFIT_GPUS:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_joint_final}"
 
 # --- Loss (unet.losses.build_loss; empty = legacy Dice + pos-weighted BCE) ---
-LOSS_ARM="${LOSS_ARM:-wbce}"
-PSTAR="${PSTAR:-bce}"
-GAP_R="${GAP_R:-4}";                 GAP_K="${GAP_K:-60.0}"
-TL_ELL="${TL_ELL:-5}";               TL_THETA="${TL_THETA:-0.375}"
-GAP_THETA="${GAP_THETA:-0.5}"        # official gap binarization
-SEARCH_THETAS="${SEARCH_THETAS:-true}"  # tune searches θs for map-building arms
+LOSS_ARM="${LOSS_ARM:-gap_ce}"
+PSTAR="${PSTAR:-gap_ce}"
+GAP_R="${GAP_R:-4}"
+GAP_K="${GAP_K:-60.0}"
+TL_ELL="${TL_ELL:-5}"
+TL_THETA="${TL_THETA:-0.375}"
+GAP_THETA="${GAP_THETA:-0.55836}"
+# official gap binarization
+# R-SERIES RULE: the loss is a FROZEN CONTROL across R-arms. Pin the pilot
+# winner's config at submit time: SEARCH_THETAS=false TL_THETA=<θ*>
+# GAP_THETA=<θ*> POS_WEIGHT_MIN=<λ*> POS_WEIGHT_MAX=<λ*> (min==max = a
+# constant). Leaving SEARCH_THETAS=true re-searches loss hps per R-arm and
+# confounds the SR comparison.
+SEARCH_THETAS="${SEARCH_THETAS:-false}"
 # mix_w — the P*<->region ratio of the pstar_* compounds (2026-08-05). Searched
 # for those arms only (consumption-gated in sr.tune, same rule as the θs); the
-# bce_dice anchor stays frozen at 0.5/0.5 by build_loss's design.
-MIX_W="${MIX_W:-0.5}"                   # fixed value when SEARCH_MIX_W=false
-SEARCH_MIX_W="${SEARCH_MIX_W:-true}"
+# bce_dice anchor stays frozen at 0.5/0.5 by build_loss's design. Kept in sync
+# with the Lightning twin.
+SEARCH_MIX_W="${SEARCH_MIX_W:-false}"
+MIX_W="${MIX_W:-0.6075946831862098}"
 MIX_W_MIN="${MIX_W_MIN:-0.25}"
 MIX_W_MAX="${MIX_W_MAX:-0.75}"
-TUNE_LENGTH="${TUNE_LENGTH:-}"       # tune-time patches/epoch (cost lever)
-FIT_LENGTH="${FIT_LENGTH:-}"         # fit-time patches/epoch (between-arm constant!)
 TVERSKY_ALPHA="${TVERSKY_ALPHA:-0.7}"
-CL_ALPHA="${CL_ALPHA:-0.3}";         CL_ITERS="${CL_ITERS:-5}"
-SKEL_W="${SKEL_W:-1.0}";             SKEL_RADIUS="${SKEL_RADIUS:-1}"
-WARMUP_START="${WARMUP_START:-30}";  WARMUP_RAMP="${WARMUP_RAMP:-10}"
+CL_ALPHA="${CL_ALPHA:-0.3}"
+CL_ITERS="${CL_ITERS:-5}"
+SKEL_W="${SKEL_W:-1.0}"
+SKEL_RADIUS="${SKEL_RADIUS:-1}"
+WARMUP_START="${WARMUP_START:-30}"
+WARMUP_RAMP="${WARMUP_RAMP:-10}"
 
 LOSS_TAG=""
-LOSS_ARGS_TUNE=()   # sr.tune flags (argparse)
-LOSS_ARGS_FIT=()    # sr.cli fit/test flags (LightningCLI --model.*)
+LOSS_ARGS_TUNE=() # sr.tune flags (argparse)
+LOSS_ARGS_FIT=()  # sr.cli fit/test flags (LightningCLI --model.*)
 if [ -n "$LOSS_ARM" ]; then
   # '+' is not filesystem/wandb-friendly -> bce_dice+cldice => bce_dice-cldice
   LOSS_TAG="_$(echo "$LOSS_ARM" | tr '+' '-')"
   LOSS_ARGS_TUNE=(--loss-arm "$LOSS_ARM" --pstar "$PSTAR"
-                  --gap-r "$GAP_R" --gap-k "$GAP_K"
-                  --tl-ell "$TL_ELL" --tl-theta "$TL_THETA"
-                  --gap-theta "$GAP_THETA" --search-thetas "$SEARCH_THETAS"
-                  --mix-w "$MIX_W" --search-mix-w "$SEARCH_MIX_W"
-                  --mix-w-min "$MIX_W_MIN" --mix-w-max "$MIX_W_MAX"
-                  --tversky-alpha "$TVERSKY_ALPHA"
-                  --cl-alpha "$CL_ALPHA" --cl-iters "$CL_ITERS"
-                  --skel-w "$SKEL_W" --skel-radius "$SKEL_RADIUS"
-                  --warmup-start "$WARMUP_START" --warmup-ramp "$WARMUP_RAMP")
-  # NB tl_theta/gap_theta/pos_weight are NOT in the fit belt: since 2026-08-02
-  # the tune SEARCHES them (per arm) and pins the winners into
-  # best_params.yaml — an explicit --model.* here would override the tuned
-  # values with the env defaults. The overlay is authoritative for searched
-  # dims; the belt carries only the fixed treatment/schedule knobs.
+    --gap-r "$GAP_R" --gap-k "$GAP_K"
+    --tl-ell "$TL_ELL" --tl-theta "$TL_THETA"
+    --gap-theta "$GAP_THETA" --search-thetas "$SEARCH_THETAS"
+    --mix-w "$MIX_W" --search-mix-w "$SEARCH_MIX_W"
+    --mix-w-min "$MIX_W_MIN" --mix-w-max "$MIX_W_MAX"
+    --tversky-alpha "$TVERSKY_ALPHA"
+    --cl-alpha "$CL_ALPHA" --cl-iters "$CL_ITERS"
+    --skel-w "$SKEL_W" --skel-radius "$SKEL_RADIUS"
+    --warmup-start "$WARMUP_START" --warmup-ramp "$WARMUP_RAMP")
+  # NB tl_theta/gap_theta/pos_weight are NOT in the fit belt: the tune pins
+  # them (searched or fixed) into best_params.yaml, and an explicit --model.*
+  # here would override the pinned values with the env defaults. The overlay
+  # is authoritative for those dims. (Ported from the LS twin, 2026-08-04.)
   LOSS_ARGS_FIT=(--model.loss_arm "$LOSS_ARM" --model.pstar "$PSTAR"
-                 --model.gap_r "$GAP_R" --model.gap_k "$GAP_K"
-                 --model.tl_ell "$TL_ELL"
-                 --model.tversky_alpha "$TVERSKY_ALPHA"
-                 --model.cl_alpha "$CL_ALPHA" --model.cl_iters "$CL_ITERS"
-                 --model.sr_w "$SKEL_W" --model.sr_radius "$SKEL_RADIUS"
-                 --model.warmup_start "$WARMUP_START" --model.warmup_ramp "$WARMUP_RAMP")
+    --model.gap_r "$GAP_R" --model.gap_k "$GAP_K"
+    --model.tl_ell "$TL_ELL"
+    --model.tversky_alpha "$TVERSKY_ALPHA"
+    --model.cl_alpha "$CL_ALPHA" --model.cl_iters "$CL_ITERS"
+    --model.sr_w "$SKEL_W" --model.sr_radius "$SKEL_RADIUS"
+    --model.warmup_start "$WARMUP_START" --model.warmup_ramp "$WARMUP_RAMP")
 fi
 # =============================================================================
 
@@ -218,15 +691,41 @@ TRAINVAL_CONFIG="$REPO_DIR/src/sr/configs/joint_sr_trainval.yaml"
 WANDB_CONFIG="$REPO_DIR/src/unet/configs/wandb.yaml"
 
 # --- Norm stats: read them from the DATASET, not from the repo ---------------
-# Prefer <dataset_dir>/norm_stats.yaml (computed from ITS OWN splits/train.csv);
-# fall back to the repo copy only with NORM_FALLBACK_OK=1. NORM_CONFIG overrides.
+# `sentinel2data.cli norm-stats` writes <dataset_dir>/norm_stats.yaml by
+# default, so every dataset already ships the stats computed from ITS OWN
+# splits/train.csv — which is the only file that can be correct for it.
+# The repo copy at src/unet/configs/norm_stats.yaml is a hand-copy of one
+# dataset's file (its header still names the dataset it came from); pointing
+# every experiment at that single path means the stats silently stop matching
+# the moment you switch datasets, and nothing in the run would tell you.
+# So: prefer the dataset's own file, fall back to the repo copy only if the
+# dataset has none, and say loudly which one is in use. NORM_CONFIG=<path>
+# overrides both.
 #
 # RUNS_ROOT is shared with _warm_tv.sh, which reconstructs the STAGE-1 run dir
 # from it — override one and you must override both, so they read the same var.
 # (Resolved BEFORE the norm stats so the train+val generation below has a
 # guaranteed-writable fallback location.)
 RUNS_ROOT="${RUNS_ROOT:-${INSTAROAD_ROOT}/runs}"
-RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}"
+RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}_seed${SEED}"
+
+# --- name query: PRINT_RUN_DIR=1 ---------------------------------------------
+# A pool driver has to know a cell's RUN_DIR and MODEL_NAME BEFORE running it,
+# to decide whether that stage is already done. Re-deriving the tag chain in the
+# driver is precisely the footgun the refit scripts' RUN_TAG comment warns
+# about: one tag out of sync and the guard inspects a directory the run will
+# never write, so every stage looks "not done" and a finished 100-epoch refit is
+# silently redone. So the names are asked for, not reconstructed.
+#
+# Prints and exits — no mkdir, no norm stats, no venv, nothing. Cheap enough to
+# call per stage. Every tag it interpolates is resolved above this line; if a
+# new tag is ever added BELOW it, add it here too or this lies.
+if [ "${PRINT_RUN_DIR:-0}" = "1" ]; then
+  echo "RUN_DIR=${RUN_DIR}"
+  echo "MODEL_NAME=${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}${MON_TAG}}"
+  exit 0
+fi
+
 mkdir -p "$RUN_DIR"
 
 # §4.7 stats provenance under the train+val refit: norm_stats.yaml is computed
@@ -259,7 +758,7 @@ mkdir -p "$RUN_DIR"
 NORM_CONFIG_DATASET="${DATASET_DIR}/norm_stats.yaml"
 NORM_CONFIG_TV="${DATASET_DIR}/norm_stats_tv.yaml"
 NORM_CONFIG_REPO="$REPO_DIR/src/unet/configs/norm_stats.yaml"
-NORM_TV_WAIT="${NORM_TV_WAIT:-1800}"   # s to wait on another job's generation
+NORM_TV_WAIT="${NORM_TV_WAIT:-1800}" # s to wait on another job's generation
 USE_TV_STATS=0
 if [ "${NORM_TV:-0}" = "1" ] && [ "$STAGE" = "fit" ] && [ "$MERGE_VAL" = "1" ]; then
   USE_TV_STATS=1
@@ -269,19 +768,22 @@ elif [ "${NORM_TV:-0}" = "1" ]; then
   echo "  holdout, and bench restores the stats from the checkpoint."
 fi
 
-generate_tv_stats () {   # $1 = destination path; echoes nothing, returns 0/1
+generate_tv_stats() { # $1 = destination path; echoes nothing, returns 0/1
   local dest="$1" tmp="$1.tmp.$$" t0 rc
   t0=$(date +%s)
   echo "  generating $(basename "$dest") over train+val ..."
   PYTHONPATH="$REPO_DIR/src" "$VENV_DIR/bin/python" -m sentinel2data.cli norm-stats \
-      --dataset-dir "$DATASET_DIR" --splits train --splits val --out "$tmp"
+    --dataset-dir "$DATASET_DIR" --splits train --splits val --out "$tmp"
   rc=$?
   if [ $rc -ne 0 ] || [ ! -s "$tmp" ]; then
     rm -f "$tmp"
     return 1
   fi
-  mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
-  echo "  wrote ${dest} in $(( $(date +%s) - t0 ))s"
+  mv -f "$tmp" "$dest" || {
+    rm -f "$tmp"
+    return 1
+  }
+  echo "  wrote ${dest} in $(($(date +%s) - t0))s"
   return 0
 }
 
@@ -319,7 +821,8 @@ if [ "$USE_TV_STATS" = "1" ] && [ -z "${NORM_CONFIG:-}" ] && [ ! -f "$NORM_CONFI
     echo "  another job holds ${NORM_TV_LOCK}; waiting up to ${NORM_TV_WAIT}s ..."
     _waited=0
     while [ ! -f "$NORM_CONFIG_TV" ] && [ "$_waited" -lt "$NORM_TV_WAIT" ]; do
-      sleep 10; _waited=$(( _waited + 10 ))
+      sleep 10
+      _waited=$((_waited + 10))
     done
     if [ ! -f "$NORM_CONFIG_TV" ]; then
       # The holder died (or is slower than the wait). Take the lock over rather
@@ -329,7 +832,8 @@ if [ "$USE_TV_STATS" = "1" ] && [ -z "${NORM_CONFIG:-}" ] && [ ! -f "$NORM_CONFI
       rmdir "$NORM_TV_LOCK" 2>/dev/null || true
       generate_tv_stats "$NORM_CONFIG_TV" || {
         echo "ERROR: train+val norm-stats generation failed. See above." >&2
-        exit 2; }
+        exit 2
+      }
     else
       echo "  ${NORM_CONFIG_TV} appeared after ${_waited}s."
     fi
@@ -356,24 +860,39 @@ FINAL_CKPT_NAME="unet_s2rosa_jointsr_final"
 LOG_FILE="${RUN_DIR}/${STAGE}_$(date +%Y%m%d_%H%M%S).txt"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Logging to ${LOG_FILE}"
-echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}"
+echo "host=$(hostname)  exp=sr/${EXP_TAG}  stage=${STAGE}  seed=${SEED}  head=${HEAD}"
 echo "labels=${LABELS} (mask_source=${MASK_SOURCE}${MASK_DIRNAME:+, mask_dirname=${MASK_DIRNAME}})  upsampler=${UPSAMPLER}  freeze_sr=${FREEZE_SR}  sr_pad=${SR_PAD}  loss_arm=${LOSS_ARM:-legacy}"
-echo "recipe: reg=${REG}${REG_TAG:+ [${REG_TAG}]}  clip=${CLIP}  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}  sr_snapshot_every=${SR_SNAPSHOT_EVERY}"
+echo "hard constraint: sr_hc=${SR_HC}${HC_TAG:+  tag=${HC_TAG}}${HC_MASK_PATH:+  mask=${HC_MASK_PATH}}"
+echo "recipe: reg=${REG}${REG_TAG:+ [${REG_TAG}]}  clip=${CLIP} (trainer=${CLIP_TRAINER}, sr_group=${CLIP_SR})  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}  sr_snapshot_every=${SR_SNAPSHOT_EVERY}"
+echo "head=${HEAD}  monitor=${MONITOR}  warm_start_head=${WARM_START_HEAD:-none}"
+echo "sr_warmup_epochs=${SR_WARMUP_EPOCHS}  sr_hold_epochs=${SR_HOLD_EPOCHS}  lr_schedule=${LR_SCHEDULE}"
 echo "adapter: adaptive_norm=${ADAPTIVE_NORM_FLAG} (m=${ADAPTIVE_NORM_M})  norm_recalibrate=${NORM_RECALIBRATE}${ANORM_TAG:+  tag=${ANORM_TAG}}"
-echo "protocol: tune on train/val -> fit on '${TRAIN_SPLITS}' (merge_val=${MERGE_VAL}) -> report on $([ "$MERGE_VAL" = "1" ] && echo test || echo "val (holdout/pilot mode)")"
+if [ -n "$RAILS_TAG" ]; then
+  _RAILS_DESC="production (the config's, [0.5x, 4.0x] unless joint_sr.yaml moved it)"
+  if [ -n "$STD_BAND_RAISE_LO" ]; then
+    _RAILS_DESC="[${STD_BAND_RAISE_LO}x, ${STD_BAND_RAISE_HI}x] of the starting std"
+  fi
+  echo "std band guard: rails=${_RAILS_DESC}  action=${STD_BAND_ACTION:-default (tune prunes, fit warns)}  tag=${RAILS_TAG}  (docs/lrsr_grid_ablation_plan.md §3)"
+else
+  echo "std band guard: production band from the config ([0.5x, 4.0x] unless joint_sr.yaml moved it), action=default (tune prunes the trial, fit warns and continues)"
+fi
+echo "protocol: tune on train/val -> refit on '${TRAIN_SPLITS}' (merge_val=${MERGE_VAL}) -> report on test"
+echo "fit val loop: $([ "$FIT_VAL_LOOP" = "1" ] && echo "ON (holdout curves logged, never selected on)" || echo "off (joint_sr_trainval.yaml limit_val_batches=0)")"
 echo "DATASET_DIR=${DATASET_DIR}  warm_start=${WARM_START_CKPT:-none}"
 echo "norm_stats=${NORM_CONFIG}  [${NORM_SOURCE}]"
 
 # --- Fail fast ---------------------------------------------------------------
 if [ ! -d "${DATASET_DIR}" ]; then
   echo "ERROR: ${DATASET_DIR} not visible on $(hostname)." >&2
-  echo "  (LABELS=${LABELS}. Is INSTAROAD_ROOT set correctly and the data present?)" >&2
+  echo "  (LABELS=${LABELS}. Is INSTAROAD_ROOT=${INSTAROAD_ROOT} right and the" >&2
+  echo "  dataset present? A Lightning batch job inherits the STUDIO's files, so" >&2
+  echo "  upload ROSA_New to the studio once — do not stage it per job.)" >&2
   exit 1
 fi
 for _s in splits/train.csv splits/val.csv splits/test.csv; do
   if [ ! -f "${DATASET_DIR}/${_s}" ]; then
-    echo "ERROR: ${DATASET_DIR}/${_s} missing — this protocol needs all three" >&2
-    echo "  split CSVs (val merged or held out at fit; test is the report set)." >&2
+    echo "ERROR: ${DATASET_DIR}/${_s} missing — the train+val protocol needs all" >&2
+    echo "  three split CSVs (val is merged at fit; test is the only report set)." >&2
     exit 1
   fi
 done
@@ -385,6 +904,8 @@ if [ ! -f "${NORM_CONFIG}" ]; then
   echo "    python -m sentinel2data.cli norm-stats --dataset-dir ${DATASET_DIR}" >&2
   exit 1
 fi
+# The repo fallback belongs to whichever dataset it was last copied from, so it
+# is a coin flip on any other one. Refuse to guess silently.
 if [ "${NORM_SOURCE}" = "repo fallback" ]; then
   echo "WARN: ${DATASET_DIR}/norm_stats.yaml does not exist; falling back to the" >&2
   echo "  repo copy ${NORM_CONFIG_REPO}, which was computed from a DIFFERENT" >&2
@@ -402,26 +923,51 @@ if [ ! -f "${TRAINVAL_CONFIG}" ]; then
   exit 1
 fi
 case "${UPSAMPLER}" in
-  sen2sr|sen2sr_full)
-    if [ ! -f "${SEN2SR_DIR}/model.safetensor" ]; then
-      echo "ERROR: SEN2SR weights not at ${SEN2SR_DIR} (upsampler=${UPSAMPLER})." >&2
-      echo "  Lite: prefetch with sr.sen2sr_loader.download_sen2sr;" >&2
-      echo "  full: download the SEN2SR (Mamba) mlstac dir there yourself." >&2
-      exit 1
-    fi ;;
-  sr4rs)
-    if [ ! -f "${SEN2SR_DIR}/gen_weights.safetensors" ]; then
-      echo "ERROR: SR4RS extracted weights not at ${SEN2SR_DIR}/gen_weights.safetensors." >&2
-      echo "  Run scripts/sr4rs/extract_sr4rs.py locally (TF venv), verify with" >&2
-      echo "  'python -m sr.sr4rs_torch --model-dir ...', then upload the three" >&2
-      echo "  gen_* files into ${SEN2SR_DIR}." >&2
-      exit 1
-    fi ;;
+sen2sr | sen2sr_full)
+  if [ ! -f "${SEN2SR_DIR}/model.safetensor" ]; then
+    echo "ERROR: SEN2SR weights not at ${SEN2SR_DIR} (upsampler=${UPSAMPLER})." >&2
+    echo "  Lite: prefetch with sr.sen2sr_loader.download_sen2sr on a login node;" >&2
+    echo "  full: download the SEN2SR (Mamba) mlstac dir there yourself." >&2
+    exit 1
+  fi
+  ;;
+sr4rs)
+  if [ ! -f "${SEN2SR_DIR}/gen_weights.safetensors" ]; then
+    echo "ERROR: SR4RS extracted weights not at ${SEN2SR_DIR}/gen_weights.safetensors." >&2
+    echo "  Run scripts/sr4rs/extract_sr4rs.py locally (TF venv), verify with" >&2
+    echo "  'python -m sr.sr4rs_torch --model-dir ...', then upload the three" >&2
+    echo "  gen_* files into ${SEN2SR_DIR}." >&2
+    exit 1
+  fi
+  ;;
 esac
+if [ -n "${HC_MASK_PATH}" ] && [ ! -f "${HC_MASK_PATH}" ]; then
+  echo "ERROR: HC_MASK_PATH=${HC_MASK_PATH} not found on $(hostname)." >&2
+  echo "  It ships inside the SEN2SR-Lite model dir; prefetch that dir with" >&2
+  echo "  sr.sen2sr_loader.download_sen2sr on a login node (the r2 arms already" >&2
+  echo "  need it), or point HC_MASK_PATH at wherever it landed." >&2
+  exit 1
+fi
 if [ -n "${WARM_START_CKPT}" ] && [ ! -f "${WARM_START_CKPT}" ]; then
   echo "ERROR: WARM_START_CKPT=${WARM_START_CKPT} not found — run the stage-1" >&2
   echo "  (frozen-SR) arm's STAGE=fit first; its final ckpt seeds this arm's UNet." >&2
   exit 1
+fi
+if [ -n "${WARM_START_HEAD}" ] && [ ! -f "${WARM_START_HEAD}" ]; then
+  echo "ERROR: WARM_START_HEAD=${WARM_START_HEAD} not found — run the frozen twin" >&2
+  echo "  arm's STAGE=fit first; its final ckpt seeds this arm's linear probe." >&2
+  exit 1
+fi
+if [ -n "${WARM_START_HEAD}" ] && [ -n "${WARM_START_CKPT}" ]; then
+  echo "ERROR: WARM_START_HEAD and WARM_START_CKPT are both set. The two warm-start" >&2
+  echo "  paths are mutually exclusive: warm_start_unet auto-disables the SR warmup" >&2
+  echo "  ramp, which the head path must keep (docs/sr_linear_probe.md §2)." >&2
+  exit 2
+fi
+if [ -n "${WARM_START_HEAD}" ] && [ "$HEAD" != "linear" ]; then
+  echo "ERROR: WARM_START_HEAD is set but HEAD=${HEAD}. There is no linear probe to" >&2
+  echo "  warm-start. Did you mean WARM_START_CKPT (the staged U-Net path)?" >&2
+  exit 2
 fi
 if [ "${MASK_SOURCE}" = "raster" ]; then
   # -print -quit: no pipe to `head`, so `find` can't die of SIGPIPE and trip
@@ -432,7 +978,7 @@ if [ "${MASK_SOURCE}" = "raster" ]; then
     if [ "${LABELS}" = "osm" ]; then
       echo "  Generate with OpenStreetMapTest/dataset_hr_masks.py --scale 4" >&2
     else
-      echo "  Generate ONCE with (standalone, no GPU needed):" >&2
+      echo "  Generate ONCE with (standalone, login node is fine):" >&2
       echo "    ${VENV_DIR}/bin/python ${REPO_DIR}/src/sentinel2data/dataset/rasterize_hr_masks.py \\" >&2
       echo "      --dataset-dir ${DATASET_DIR} --out-dirname ${MASK_DIRNAME}" >&2
       echo "  (or MASK_SOURCE=graph to rasterise on the fly — slow.)" >&2
@@ -441,33 +987,95 @@ if [ "${MASK_SOURCE}" = "raster" ]; then
   fi
 fi
 
-# Venv-tolerant activation: on Kaggle (system python, deps pip-installed
-# globally) there is no venv — warn and continue with the current python.
-if [ -f "$VENV_DIR/bin/activate" ]; then
-  source "$VENV_DIR/bin/activate"
-else
-  echo "WARN: no venv at ${VENV_DIR} — using $(which python3 || which python)." >&2
-fi
+source "$VENV_DIR/bin/activate"
 export PYTHONPATH="$REPO_DIR/src:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 echo "python=$(which python)"
 
+# --- HEAD=linear capability preflight ----------------------------------------
+# The rl-series depends on model/tune changes that are NOT part of the U-Net
+# path (docs/sr_linear_probe.md §4). If they are absent, every flag this engine
+# passes for HEAD=linear is either rejected by argparse or — worse, for the
+# LightningCLI path — could be ignored, and the arm would quietly train a 24 M
+# -param U-Net under an `rl*` tag. That row would then sit in the append-only
+# store looking like a linear probe. Refuse to start instead.
+if [ "$HEAD" = "linear" ]; then
+  _missing=$(
+    python - <<'PY'
+import inspect
+missing = []
+try:
+    from sr.model import JointSRUNetLightning
+    params = inspect.signature(JointSRUNetLightning.__init__).parameters
+    for name in ("head", "warm_start_head", "clip_sr"):
+        if name not in params:
+            missing.append(f"JointSRUNetLightning.__init__({name}=...)")
+    # hasattr is useless here: LightningModule defines configure_gradient_clipping
+    # as a no-op base method, so it is ALWAYS present and an unimplemented
+    # per-group clip would sail through. Compare identities instead.
+    import lightning.pytorch as pl
+    if (JointSRUNetLightning.configure_gradient_clipping
+            is pl.LightningModule.configure_gradient_clipping):
+        missing.append("JointSRUNetLightning.configure_gradient_clipping override "
+                       "(base method is inherited unchanged — per-group clipping "
+                       "is NOT implemented)")
+except Exception as exc:                      # import error = missing anyway
+    missing.append(f"sr.model import failed: {exc}")
+try:
+    from sr.tune import parse_args
+    # parse_args() builds the parser inline, so introspect it the only way that
+    # does not require inventing an argv: let argparse render its own help.
+    import contextlib, io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.suppress(SystemExit):
+        parse_args(["--help"])
+    helptext = buf.getvalue()
+    for flag in ("--head", "--warm-start-head", "--clip-sr"):
+        if flag not in helptext:
+            missing.append(f"sr.tune {flag}")
+except Exception as exc:
+    missing.append(f"sr.tune introspection failed: {exc}")
+print("\n".join(missing))
+PY
+  )
+  if [ -n "${_missing}" ]; then
+    echo "ERROR: HEAD=linear, but the linear-probe support is not in this checkout." >&2
+    echo "  Missing:" >&2
+    echo "${_missing}" | sed 's/^/    - /' >&2
+    echo "" >&2
+    echo "  Implement docs/sr_linear_probe.md §4 before running any rl arm:" >&2
+    echo "    src/sr/model.py  head hparam ('unet'|'linear'); LinearProbeHead (1x1" >&2
+    echo "                     conv, bias init = logit(road base rate), weights 0);" >&2
+    echo "                     skip build_model when linear; warm_start_head" >&2
+    echo "                     (SEPARATE from warm_start_unet — §2); clip_sr with a" >&2
+    echo "                     configure_gradient_clipping override (§6.2); key the" >&2
+    echo "                     fp32 autocast island on head=='linear', NOT on the" >&2
+    echo "                     presence of an SR net (§6.3 — this is the rl0 bug)." >&2
+    echo "    src/sr/tune.py   --head / --warm-start-head / --clip-sr; drop the" >&2
+    echo "                     encoder_name categorical when linear." >&2
+    echo "" >&2
+    echo "  Then run Gates A and A2 (§10) locally before spending cluster time." >&2
+    exit 2
+  fi
+  echo "preflight: linear-probe support present."
+fi
+
 if [ "${UPSAMPLER}" = "sen2sr_full" ] && ! python -c "import mamba_ssm" 2>/dev/null; then
   echo "ERROR: upsampler=sen2sr_full but mamba_ssm is not importable in ${VENV_DIR}." >&2
-  echo "  Install on a GPU machine with matching torch/CUDA:  uv pip install mamba-ssm" >&2
+  echo "  Install on a GPU node with matching torch/CUDA:  uv pip install mamba-ssm" >&2
   exit 1
 fi
 
 # ============================== STAGE: tune ==================================
-# The search trains on `train` and scores on `val`. The holdout is spent here,
-# deliberately and once.
+# IDENTICAL to _stages.sh: the search trains on `train` and scores on `val`.
+# The holdout is spent here, deliberately and once.
 if [ "$STAGE" = "tune" ]; then
   STORAGE="${STORAGE:-sqlite:///${RUN_DIR}/study.db}"
   SAMPLER_OFFSET="${SAMPLER_OFFSET:-0}"
-  STUDY_NAME="sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}_seed${SEED}"
+  STUDY_NAME="sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}${MON_TAG}_seed${SEED}"
 
-  run_tuner () {   # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
+  run_tuner() { # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
     local gpu="$1" ntrials="$2" seed="$3" pin=""
     [ -n "$gpu" ] && pin="CUDA_VISIBLE_DEVICES=$gpu"
     env $pin python -m sr.tune \
@@ -480,7 +1088,11 @@ if [ "$STAGE" = "tune" ]; then
       --upsampler "$UPSAMPLER" \
       --freeze-sr "$FREEZE_SR" \
       --sr-pad "$SR_PAD" \
+      ${HC_ARGS_TUNE[@]+"${HC_ARGS_TUNE[@]}"} \
       ${WARM_START_CKPT:+--warm-start-unet "$WARM_START_CKPT"} \
+      ${HEAD_TAG:+--head "$HEAD"} \
+      ${HEAD_TAG:+--clip-sr "$CLIP_SR"} \
+      ${WARM_START_HEAD:+--warm-start-head "$WARM_START_HEAD"} \
       --out "$RUN_DIR" \
       --num-workers "$NUM_WORKERS" \
       --devices 1 \
@@ -488,24 +1100,26 @@ if [ "$STAGE" = "tune" ]; then
       --max-epochs "$TUNE_EPOCHS" \
       --patience "$PATIENCE" \
       --precision "$PRECISION" \
-      --clip "$CLIP" \
+      --clip "$CLIP_TRAINER" \
       --lr-schedule "$LR_SCHEDULE" \
       --sr-warmup-epochs "$SR_WARMUP_EPOCHS" \
+      ${HOLD_ARGS_TUNE[@]+"${HOLD_ARGS_TUNE[@]}"} \
       --l2sp-lambda "$L2SP_LAMBDA" \
       --adaptive-norm "$ADAPTIVE_NORM_FLAG" \
       --adaptive-norm-momentum "$ADAPTIVE_NORM_M" \
       --norm-recalibrate "$NORM_RECALIBRATE" \
+      ${RAILS_ARGS_TUNE[@]+"${RAILS_ARGS_TUNE[@]}"} \
       --seed "$seed" \
       --train-seed "$SEED" \
       --study-name "$STUDY_NAME" \
       --storage "$STORAGE" \
+      --monitor "$MONITOR" \
       --encoder-weights "$ENCODER_WEIGHTS" \
       --lr-min "$LR_MIN" --lr-max "$LR_MAX" \
       --lr-sr-min "$LR_SR_MIN" --lr-sr-max "$LR_SR_MAX" \
       --pos-weight-min "$POS_WEIGHT_MIN" --pos-weight-max "$POS_WEIGHT_MAX" \
       --encoders $ENCODERS \
       --batch-sizes $BATCH_SIZES \
-      ${TUNE_LENGTH:+--length "$TUNE_LENGTH"} \
       ${LOSS_ARGS_TUNE[@]+"${LOSS_ARGS_TUNE[@]}"}
   }
 
@@ -521,31 +1135,33 @@ if [ "$STAGE" = "tune" ]; then
   echo "=== OPTUNA SEARCH on train/val (n_trials=$N_TRIALS across ${SEARCH_GPUS} GPU(s), ${TUNE_EPOCHS} epochs/trial) ==="
   echo "    stop early (keeps study + writes overlay):  touch ${RUN_DIR}/STOP"
   if [ "$SEARCH_GPUS" -le 1 ]; then
-    run_tuner "" "$N_TRIALS" "$(( SEED * 1000 + SAMPLER_OFFSET ))"
+    run_tuner "" "$N_TRIALS" "$((SEED * 1000 + SAMPLER_OFFSET))"
   else
-    PER_WORKER=$(( (N_TRIALS + SEARCH_GPUS - 1) / SEARCH_GPUS ))
+    PER_WORKER=$(((N_TRIALS + SEARCH_GPUS - 1) / SEARCH_GPUS))
     echo "  fanning out ${SEARCH_GPUS} workers x ${PER_WORKER} trials each"
     pids=()
-    for (( g=0; g<SEARCH_GPUS; g++ )); do
-      run_tuner "$g" "$PER_WORKER" "$(( SEED * 1000 + SAMPLER_OFFSET + g ))" &
+    for ((g = 0; g < SEARCH_GPUS; g++)); do
+      run_tuner "$g" "$PER_WORKER" "$((SEED * 1000 + SAMPLER_OFFSET + g))" &
       pids+=($!)
-      sleep 3   # stagger so worker 0 creates the study before the others attach
+      sleep 3 # stagger so worker 0 creates the study before the others attach
     done
     fail=0
     for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
-    [ "$fail" -eq 0 ] || { echo "ERROR: an Optuna search worker failed (see log above)." >&2; exit 1; }
+    [ "$fail" -eq 0 ] || {
+      echo "ERROR: an Optuna search worker failed (see log above)." >&2
+      exit 1
+    }
   fi
   echo "=== SEARCH DONE ===  best_params.yaml + study.db in $RUN_DIR"
-  echo "Next:"
-  echo "  bash scripts/LightningStudio/run.sh sr/${EXP_TAG}.sh STAGE=fit SEED=${SEED}${LOSS_ARM:+ LOSS_ARM=${LOSS_ARM}}"
+  echo "Next (refit on train+val, then test):"
+  echo "  bash scripts/hpc/submit.sh sr/${EXP_TAG}.sh STAGE=fit SEED=${SEED}${LOSS_ARM:+ LOSS_ARM=${LOSS_ARM}}"
   exit 0
 fi
 
 # ============================== STAGE: bench =================================
-# Score the FINAL checkpoint into the benchmark store, at 2.5 m against the
-# experiment's own GT. Default split: test (the refit protocol's only report
-# set). Holdout runs (TRAIN_SPLITS=train) may bench val — the pilot's decision
-# split.
+# Score the FINAL checkpoint into the shared benchmark store, at 2.5 m against
+# the experiment's own GT, through the same joint_sr_dataset helpers training
+# used. Default split is `test` — the only split this protocol reports.
 if [ "$STAGE" = "bench" ]; then
   CKPT="${RUN_DIR}/checkpoints/${FINAL_CKPT_NAME}.ckpt"
   if [ ! -f "$CKPT" ]; then
@@ -558,53 +1174,23 @@ if [ "$STAGE" = "bench" ]; then
     fi
   fi
 
-  STORE_DIR="${STORE_DIR:-${INSTAROAD_ROOT}/benchmarks}"   # SHARED across experiments
-  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}}"
+  STORE_DIR="${STORE_DIR:-${INSTAROAD_ROOT}/benchmarks}" # SHARED across experiments
+  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}${MON_TAG}}"
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
   TILE_METRICS="${TILE_METRICS:-apls}"
+  # Per-chip extras, empty = off. Set them so a seed-N bench carries the SAME
+  # columns as the seed-0 rows it will be averaged with — a ragged store makes
+  # cross_seed_ci drop whichever metric a seed happens to lack.
+  BUFFER_PX="${BUFFER_PX:-}"          # e.g. "1,2,3,4,5"
+  AP_BINS="${AP_BINS:-}"              # e.g. 101
 
-  # val tiles are TRAINING tiles under the refit protocol — scoring on them
-  # would be a train-set number sitting beside honest test numbers.
+  # val tiles are TRAINING tiles under this protocol — scoring on them would be
+  # a train-set number sitting in the same store as honest test numbers.
   if [ "$MERGE_VAL" = "1" ] && [ "$BENCH_SPLIT" = "val" ]; then
     echo "ERROR: BENCH_SPLIT=val, but val was folded into training (TRAIN_SPLITS='${TRAIN_SPLITS}')." >&2
     echo "  That score would be a training score. Use BENCH_SPLIT=test." >&2
     exit 2
-  fi
-
-  # --- θ* sweep (2026-08-04): bench at the arm's tuned operating point ------
-  # benchmarking.runner scores at the checkpoint's threshold hparam (0.5 —
-  # the SR configs never set one) unless --threshold overrides it. θ* is
-  # loss-dependent by construction (a λ≈15 arm sits far from 0.5), so a
-  # common 0.5 confounds calibration with quality. The sweep selects θ* on
-  # VAL (always — even when BENCH_SPLIT=test, the confirmation runs use the
-  # val-selected θ*), one inference pass for the whole grid, macro per-chip
-  # IoU by default (SELECT_ON). sweep.json is reused when present (e.g.
-  # produced by the local runner); REFRESH_SWEEP=1 redoes it; SWEEP=0
-  # reverts to fixed 0.5.
-  THRESHOLD_ARGS=()
-  if [ "${SWEEP:-1}" = "1" ]; then
-    SWEEP_EXTRA=()
-    [ "${REFRESH_SWEEP:-0}" = "1" ] && SWEEP_EXTRA=(--refresh-sweep)
-    if [ ! -f "${RUN_DIR}/sweep.json" ] || [ "${REFRESH_SWEEP:-0}" = "1" ]; then
-      # Every path is passed EXPLICITLY. The script falls back to its author's
-      # laptop paths when these are unset, and STORE_DIR above is a plain
-      # assignment (not exported), so it would not reach a child process.
-      # --skip-bench means the store is never written here — the bench below
-      # does that — but pass it anyway so nothing can default to /Volumes/...
-      python "$REPO_DIR/scripts/local/theta_sweep_bench.py" \
-        --run-dir "$RUN_DIR" --model-name "$MODEL_NAME" \
-        --exp-tag "$EXP_TAG" --seed "$SEED" \
-        --dataset-dir "$DATASET_DIR" \
-        --runs-dir "$RUNS_ROOT" \
-        --store-dir "${STORE_DIR}_theta" \
-        ${SEN2SR_DIR:+--sen2sr-dir "$SEN2SR_DIR"} \
-        --select-on "${SELECT_ON:-iou_mean}" \
-        --skip-bench ${SWEEP_EXTRA[@]+"${SWEEP_EXTRA[@]}"}
-    fi
-    THETA=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['best_threshold'])" "${RUN_DIR}/sweep.json")
-    echo "θ* = ${THETA}  [$([ -n "${SWEEP_EXTRA[*]:-}" ] && echo fresh || echo from sweep.json)]"
-    THRESHOLD_ARGS=(--threshold "$THETA")
   fi
 
   CONFIG_ARGS=()
@@ -613,11 +1199,33 @@ if [ "$STAGE" = "bench" ]; then
   [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_BENCH+=(--mask-dirname "$MASK_DIRNAME")
   METRIC_ARGS=()
   if [ -n "${TILE_METRICS}" ]; then
-    IFS=',' read -r -a _TMS <<< "${TILE_METRICS}"
+    IFS=',' read -r -a _TMS <<<"${TILE_METRICS}"
     for _tm in "${_TMS[@]}"; do METRIC_ARGS+=(--tile-metric "${_tm}"); done
   fi
 
-  echo "=== BENCH (ckpt=$(basename "$CKPT"), model_name=${MODEL_NAME}, seed=${SEED}, split=${BENCH_SPLIT}, gt=${MASK_SOURCE}, tile_metrics=${TILE_METRICS:-none}) ==="
+  # --- θ resolution: BENCH_THRESHOLD env > sweep.json > hard error -----------
+  # The runner's silent fallback (checkpoint hparam, 0.5 — the SR configs
+  # never set one) is exactly how the store filled with θ=0.5 rows nobody
+  # chose. This stage now refuses to score without an explicit operating point.
+  if [ -n "${BENCH_THRESHOLD:-}" ]; then
+    THETA="$BENCH_THRESHOLD"
+    THETA_SRC="BENCH_THRESHOLD (env override)"
+  elif [ -f "${RUN_DIR}/sweep.json" ]; then
+    THETA=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['best_threshold'])" "${RUN_DIR}/sweep.json")
+    THETA_SRC="${RUN_DIR}/sweep.json"
+  else
+    echo "ERROR: no operating point for the bench row — refusing the silent θ=0.5 default." >&2
+    echo "  STAGE=fit now ends with the post-refit θ* sweep that writes ${RUN_DIR}/sweep.json;" >&2
+    echo "  for an older run, produce it with:" >&2
+    echo "    python -m benchmarking.cli sweep --dataset-dir ${DATASET_DIR} --checkpoint ${CKPT} \\" >&2
+    echo "      --model sr --model-name ${MODEL_NAME} --split val --sen2sr-dir ${SEN2SR_DIR} \\" >&2
+    echo "      --mask-source ${MASK_SOURCE}${MASK_DIRNAME:+ --mask-dirname ${MASK_DIRNAME}} --out ${RUN_DIR}/sweep.json" >&2
+    echo "  or set BENCH_THRESHOLD explicitly." >&2
+    exit 2
+  fi
+  echo "bench θ = ${THETA}  [${THETA_SRC}]"
+
+  echo "=== BENCH (ckpt=$(basename "$CKPT"), model_name=${MODEL_NAME}, seed=${SEED}, split=${BENCH_SPLIT}, θ=${THETA}, gt=${MASK_SOURCE}, tile_metrics=${TILE_METRICS:-none}) ==="
   python -m benchmarking.cli eval \
     --dataset-dir "$DATASET_DIR" \
     --checkpoint "$CKPT" \
@@ -629,27 +1237,12 @@ if [ "$STAGE" = "bench" ]; then
     --sen2sr-dir "$SEN2SR_DIR" \
     --exp-tag "$EXP_TAG" \
     --label-source "$LABEL_SOURCE" \
+    --threshold "$THETA" \
     ${METRIC_ARGS[@]+"${METRIC_ARGS[@]}"} \
+    ${BUFFER_PX:+--buffer-px "$BUFFER_PX"} \
+    ${AP_BINS:+--ap-bins "$AP_BINS"} \
     ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"} \
-    ${THRESHOLD_ARGS[@]+"${THRESHOLD_ARGS[@]}"} \
     "${MASK_ARGS_BENCH[@]}"
-
-  # --- push θ*-swept val metrics into the arm's wandb run (not 0.5!) --------
-  if [ -f "${RUN_DIR}/sweep.json" ] && LATEST_RUN=$(readlink -f "$RUN_DIR/wandb/latest-run" 2>/dev/null) && [ -n "$LATEST_RUN" ]; then
-    WANDB_RUN_ID="${LATEST_RUN##*-}" WANDB_PROJECT="$WANDB_PROJECT" \
-    python - "${RUN_DIR}/sweep.json" <<'PY' || echo "WARN: wandb θ* push failed (non-fatal — numbers are in sweep.json + the store)" >&2
-import json, os, sys
-import wandb
-s = json.load(open(sys.argv[1]))
-best = s["sweep"][f"{float(s['best_threshold']):.4f}"]
-run = wandb.init(project=os.environ["WANDB_PROJECT"],
-                 id=os.environ["WANDB_RUN_ID"], resume="must")
-run.summary["bench_val/theta_star"] = float(s["best_threshold"])
-for k, v in best.items():
-    run.summary[f"bench_val/{k}_at_theta_star"] = v
-run.finish()
-PY
-  fi
 
   echo "=== BENCH DONE ===  store: ${STORE_DIR}"
   echo "Report: python -m benchmarking.cli report --store-dir ${STORE_DIR}"
@@ -665,11 +1258,11 @@ fi
 BEST_CONFIG="${RUN_DIR}/best_params.yaml"
 CKPT="${RUN_DIR}/checkpoints/${FINAL_CKPT_NAME}.ckpt"
 if [ ! -f "$BEST_CONFIG" ]; then
-  echo "ERROR: ${BEST_CONFIG} not found — run STAGE=tune first (or, in pilot" >&2
-  echo "  mode, let loss/_pilot_new.sh copy the shared screening config in)." >&2
+  echo "ERROR: ${BEST_CONFIG} not found — run STAGE=tune first." >&2
   exit 1
 fi
-echo "--- best hyperparameters (chosen on val, before any merge) ---"; cat "$BEST_CONFIG"
+echo "--- best hyperparameters (chosen on val, before the merge) ---"
+cat "$BEST_CONFIG"
 
 # Refit from inside RUN_DIR so the base config's relative `checkpoints/` lands here.
 cd "$RUN_DIR"
@@ -686,20 +1279,45 @@ if [ "${RESUME_FIT:-0}" = "1" ]; then
 fi
 
 # The SR treatment (and loss arm) is passed explicitly (belt) even though the
-# best_params overlay records it too (braces) — drift is impossible. This is
-# also what makes the pilot's SHARED overlay safe: the explicit --model.loss_arm
-# always wins over whatever arm the overlay was tuned under.
+# best_params overlay records it too (braces) — drift is impossible.
 MODEL_ARGS=(--model.upsampler "$UPSAMPLER" --model.freeze_sr "$FREEZE_SR"
-            --model.sr_pad "$SR_PAD" --model.sen2sr_dir "$SEN2SR_DIR"
-            --model.lr_schedule "$LR_SCHEDULE"
-            --model.sr_warmup_epochs "$SR_WARMUP_EPOCHS"
-            --model.l2sp_lambda "$L2SP_LAMBDA"
-            --model.adaptive_norm "$ADAPTIVE_NORM_FLAG"
-            --model.adaptive_norm_momentum "$ADAPTIVE_NORM_M"
-            --model.norm_recalibrate "$NORM_RECALIBRATE"
-            --model.sr_snapshot_every "$SR_SNAPSHOT_EVERY")
+  --model.sr_pad "$SR_PAD" --model.sen2sr_dir "$SEN2SR_DIR"
+  --model.lr_schedule "$LR_SCHEDULE"
+  --model.sr_warmup_epochs "$SR_WARMUP_EPOCHS"
+  --model.l2sp_lambda "$L2SP_LAMBDA"
+  --model.adaptive_norm "$ADAPTIVE_NORM_FLAG"
+  --model.adaptive_norm_momentum "$ADAPTIVE_NORM_M"
+  --model.norm_recalibrate "$NORM_RECALIBRATE"
+  --model.sr_snapshot_every "$SR_SNAPSHOT_EVERY")
+# Appended only when the constraint is forced (see the SR_HC block): the native
+# arms' fit/test command lines stay byte-identical.
+if [ "$SR_HC" != "native" ]; then
+  MODEL_ARGS+=("${HC_ARGS_FIT[@]}")
+fi
+# Same discipline for the std-band rails: nothing is appended unless
+# STD_BAND_RAISE_LO/HI (or STD_BAND_ACTION) were set. The fit's action is `warn`
+# from joint_sr.yaml either way, so the rails do not change whether the run
+# survives a band exit — they change where the exit is DECLARED, i.e. what the
+# adapt_band_exit metric and the post-hoc envelope crossing are measured
+# against. (An explicit STD_BAND_ACTION=raise DOES change it, which is why the
+# block above shouts about that combination.)
+if [ ${#RAILS_ARGS_FIT[@]} -gt 0 ]; then
+  MODEL_ARGS+=("${RAILS_ARGS_FIT[@]}")
+fi
+# Same again for the hard hold: appended only when SR_HOLD_EPOCHS > 0.
+if [ ${#HOLD_ARGS_FIT[@]} -gt 0 ]; then
+  MODEL_ARGS+=("${HOLD_ARGS_FIT[@]}")
+fi
 if [ -n "$WARM_START_CKPT" ]; then
   MODEL_ARGS+=(--model.warm_start_unet "$WARM_START_CKPT")
+fi
+# Head args are appended ONLY for the linear probe, so the U-Net arms' command
+# line is byte-identical to what it was before HEAD existed.
+if [ -n "$HEAD_TAG" ]; then
+  MODEL_ARGS+=(--model.head "$HEAD" --model.clip_sr "$CLIP_SR")
+  if [ -n "$WARM_START_HEAD" ]; then
+    MODEL_ARGS+=(--model.warm_start_head "$WARM_START_HEAD")
+  fi
 fi
 if [ -n "$LOSS_ARM" ]; then
   MODEL_ARGS+=("${LOSS_ARGS_FIT[@]}")
@@ -711,21 +1329,10 @@ fi
 # overlay's default rather than needing a second config file.
 # shellcheck disable=SC2206
 TRAIN_SPLITS_ARR=(${TRAIN_SPLITS})
-SPLIT_ARGS=(--data.train_splits "[$(IFS=,; echo "${TRAIN_SPLITS_ARR[*]}")]")
-
-# VAL_EVERY=N (holdout/pilot mode only): re-enable the val loop every N
-# epochs for wandb curve visibility. Selection stays end-of-budget (monitor
-# is null in the trainval overlay), so this observes without selecting.
-# Refused when val is folded into training — those would be train scores.
-VAL_ARGS=()
-if [ -n "${VAL_EVERY:-}" ] && [ "${VAL_EVERY}" != "0" ]; then
-  if [ "$MERGE_VAL" = "1" ]; then
-    echo "WARN: VAL_EVERY ignored — val is folded into training (TRAIN_SPLITS='${TRAIN_SPLITS}')." >&2
-  else
-    VAL_ARGS=(--trainer.check_val_every_n_epoch "$VAL_EVERY"
-              --trainer.limit_val_batches 1.0)
-  fi
-fi
+SPLIT_ARGS=(--data.train_splits "[$(
+  IFS=,
+  echo "${TRAIN_SPLITS_ARR[*]}"
+)]")
 
 echo "=== REFIT on '${TRAIN_SPLITS}' (best config, FIXED ${REFIT_EPOCHS} epochs, no early stopping, ${REFIT_GPUS} GPU) ==="
 python -m sr.cli fit \
@@ -738,21 +1345,20 @@ python -m sr.cli fit \
   --data.num_workers "$NUM_WORKERS" \
   --data.mask_source "$MASK_SOURCE" \
   ${MASK_DIRNAME:+--data.mask_dirname "$MASK_DIRNAME"} \
-  ${FIT_LENGTH:+--data.length "$FIT_LENGTH"} \
   "${SPLIT_ARGS[@]}" \
   "${MODEL_ARGS[@]}" \
-  ${VAL_ARGS[@]+"${VAL_ARGS[@]}"} \
   --trainer.max_epochs "$REFIT_EPOCHS" \
   --trainer.devices "$REFIT_GPUS" \
   --trainer.precision "$PRECISION" \
-  --trainer.gradient_clip_val "$CLIP" \
+  ${VAL_ARGS_FIT[@]+"${VAL_ARGS_FIT[@]}"} \
+  --trainer.gradient_clip_val "$CLIP_TRAINER" \
   --trainer.logger.init_args.project "$WANDB_PROJECT" \
   --seed_everything "$SEED" \
   ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 
 # Log the test metrics to the SAME wandb run the refit just created.
 if LATEST_RUN=$(readlink -f "$RUN_DIR/wandb/latest-run" 2>/dev/null) && [ -n "$LATEST_RUN" ]; then
-  export WANDB_RUN_ID="${LATEST_RUN##*-}"   # .../run-<timestamp>-<id> -> <id>
+  export WANDB_RUN_ID="${LATEST_RUN##*-}" # .../run-<timestamp>-<id> -> <id>
   export WANDB_RESUME=must
   echo "resuming wandb run ${WANDB_RUN_ID} for the test split"
 else
@@ -772,24 +1378,91 @@ fi
 # Under the refit protocol this is the ONLY held-out evaluation. Under the
 # pilot (TRAIN_SPLITS=train) it is a free preview — decisions still read the
 # val bench, and the pilot never compares these test numbers between arms.
+# SKIP_TEST=1 keeps test genuinely unseen; the Lightning twin has had this
+# guard since the pilot was ported, this engine had not (added 2026-08-16).
+# SKIP_TEST gates only the steps that READ test. The val theta* sweep below is
+# NOT gated: the bench stage refuses to run without sweep.json, so skipping it
+# turns a pilot fit into a run that can never be benched. (An earlier version of
+# this guard exited here and did exactly that.)
 if [ "${SKIP_TEST:-0}" = "1" ]; then
   echo "=== SKIP_TEST=1: not running the test split (pilot mode) ==="
 else
-  echo "=== TEST (held-out split, ckpt=$(basename "$CKPT")) ==="
-  python -m sr.cli test \
-    --config "$BASE_CONFIG" \
-    --config "$NORM_CONFIG" \
-    --config "$WANDB_CONFIG" \
-    --config "$BEST_CONFIG" \
-    --data.dataset_dir "$DATASET_DIR" \
-    --data.num_workers "$NUM_WORKERS" \
-    --data.mask_source "$MASK_SOURCE" \
-    ${MASK_DIRNAME:+--data.mask_dirname "$MASK_DIRNAME"} \
-    "${MODEL_ARGS[@]}" \
-    --trainer.devices 1 \
-    --trainer.logger.init_args.project "$WANDB_PROJECT" \
-    --ckpt_path "$CKPT"
+
+# The ONLY held-out evaluation in this protocol.
+echo "=== TEST (held-out split, ckpt=$(basename "$CKPT")) ==="
+python -m sr.cli test \
+  --config "$BASE_CONFIG" \
+  --config "$NORM_CONFIG" \
+  --config "$WANDB_CONFIG" \
+  --config "$BEST_CONFIG" \
+  --data.dataset_dir "$DATASET_DIR" \
+  --data.num_workers "$NUM_WORKERS" \
+  --data.mask_source "$MASK_SOURCE" \
+  ${MASK_DIRNAME:+--data.mask_dirname "$MASK_DIRNAME"} \
+  "${MODEL_ARGS[@]}" \
+  --trainer.devices 1 \
+  --trainer.logger.init_args.project "$WANDB_PROJECT" \
+  --ckpt_path "$CKPT"
+
+fi   # end SKIP_TEST gate around the held-out test
+
+# --- Post-refit θ* sweep (selection) -----------------------------------------
+# θ* is selected AFTER the refit, on the val split — refit TRAINING data under
+# this protocol (TRAIN_SPLITS='train val'), deliberately: a θ chosen on seen
+# data cannot inflate test numbers, only cost a mildly suboptimal operating
+# point (docs/ap_threshold_protocol_plan.md §1.2). The bench stage refuses to
+# run without a θ (BENCH_THRESHOLD or this sweep.json).
+SWEEP_SPLIT="${SWEEP_SPLIT:-val}"
+MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}${MON_TAG}}"
+MASK_ARGS_SWEEP=(--mask-source "$MASK_SOURCE")
+[ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_SWEEP+=(--mask-dirname "$MASK_DIRNAME")
+
+# What θ* is the argmax OF. iou|f1 are global pooled counts (a few dense urban
+# chips dominate); iou_macro|f1_macro are the mean of the per-chip values (every
+# chip weighs the same). All four land in sweep.json whichever is selected on,
+# so switching later costs no inference — but a seed swept on one and its
+# siblings on another are NOT at a comparable operating point.
+SWEEP_CRITERION="${SWEEP_CRITERION:-iou}"
+
+echo "=== θ* SWEEP (split=${SWEEP_SPLIT}, criterion=${SWEEP_CRITERION} — seen data, selection-only) ==="
+python -m benchmarking.cli sweep \
+  --criterion "$SWEEP_CRITERION" \
+  --dataset-dir "$DATASET_DIR" \
+  --checkpoint "$CKPT" \
+  --model sr \
+  --model-name "$MODEL_NAME" \
+  --seed "$SEED" \
+  --split "$SWEEP_SPLIT" \
+  --sen2sr-dir "$SEN2SR_DIR" \
+  --out "${RUN_DIR}/sweep.json" \
+  "${MASK_ARGS_SWEEP[@]}"
+THETA=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['best_threshold'])" "${RUN_DIR}/sweep.json")
+echo "θ* = ${THETA}  -> ${RUN_DIR}/sweep.json"
+
+# --- Test θ-sensitivity sweep (reporting ONLY, never selection) --------------
+# The full IoU/F1(θ) curve on test plus the buffered-F1 tolerance sweep for the
+# write-up: θ-flatness around θ*, the IoU@0.5 companion number, tolerances
+# 1-5 px. purpose="sensitivity" is stamped in the JSON so it cannot later be
+# mistaken for a selection artifact.
+if [ "${SKIP_TEST:-0}" = "1" ]; then
+  echo "=== SKIP_TEST=1: skipping the test sensitivity sweep too ==="
+  echo "=== FIT DONE ===  sweep.json written; bench with STAGE=bench ==="
+  exit 0
 fi
+
+echo "=== TEST θ SENSITIVITY SWEEP (criterion=${SWEEP_CRITERION}, buffer_px=1,2,3,4,5) ==="
+python -m benchmarking.cli sweep \
+  --criterion "$SWEEP_CRITERION" \
+  --dataset-dir "$DATASET_DIR" \
+  --checkpoint "$CKPT" \
+  --model sr \
+  --model-name "$MODEL_NAME" \
+  --seed "$SEED" \
+  --split test \
+  --sen2sr-dir "$SEN2SR_DIR" \
+  --buffer-px 1,2,3,4,5 \
+  --out "${RUN_DIR}/test_sweep.json" \
+  "${MASK_ARGS_SWEEP[@]}"
 
 echo "=== DONE ===  outputs in $RUN_DIR"
 echo "Bench: bash scripts/LightningStudio/run.sh sr/${EXP_TAG}.sh STAGE=bench SEED=${SEED}${LOSS_ARM:+ LOSS_ARM=${LOSS_ARM}}"

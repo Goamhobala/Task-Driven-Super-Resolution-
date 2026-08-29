@@ -194,6 +194,29 @@ class JointSRUNetLightning(UNetLightning):
         # when structurally covered: frozen/bicubic SR (no gradients to
         # protect against) or staged warm starts (stage-1 IS the warmup).
         sr_warmup_epochs: float = 1.0,
+        # HARD HOLD on the SR group, in epochs, applied BEFORE the ramp above
+        # (docs/rl_lightning_campaign_plan.md §2). While `epoch < sr_hold_epochs`
+        # the SR parameter group's LR is EXACTLY 0 -- not "small", not
+        # "ramping": the gate multiplies the group's lambda by 0, so Adam's
+        # update is identically zero while its moments keep warming on the real
+        # gradients. That is what makes the rl-series' single-run protocol fair
+        # by construction: with the hold set, a joint arm's first
+        # `sr_hold_epochs` epochs ARE a frozen-arm run, so the joint and frozen
+        # branches diverge only at the hold boundary and the frozen arm's
+        # remaining epochs are the matched-budget control. No inheritance, no
+        # warm_start_head, no stage pairing.
+        #
+        # After the boundary the SR group runs its OWN cosine over the REMAINING
+        # budget (peaking at the full `lr_sr` at the boundary, reaching 0 at the
+        # end of the run) with `sr_warmup_epochs` re-based to the boundary. The
+        # head/U-Net group is untouched: it keeps one cosine over the whole
+        # budget, so the hold phase is dynamically identical to the frozen twin.
+        #
+        # 0.0 (the default) reduces this to EXACTLY the pre-existing behaviour
+        # -- one cosine over the whole budget, warmup measured from step 0 --
+        # so every arm already in the store keeps its recipe bit-for-bit.
+        # AUTO-DISABLED with the ramp when there are no trainable SR params.
+        sr_hold_epochs: float = 0.0,
         # Optional L2-SP anchor (Li et al. 2018, arXiv:1802.01483):
         # + l2sp_lambda * sum ||theta_sr - theta_sr,0||^2. Decays toward the
         # PRETRAINED weights (unlike weight decay's pull toward 0). Default 0
@@ -525,6 +548,12 @@ class JointSRUNetLightning(UNetLightning):
         self._sr_warmup_epochs = (float(sr_warmup_epochs)
                                   if (sr_train and not warm_start_unet)
                                   else 0.0)
+        # The hold is NOT disabled by warm_start_unet: a staged U-Net start
+        # covers the random-decoder window (which is what the RAMP guards
+        # against), but says nothing about when the generator should start
+        # moving, which is what the hold decides. It IS disabled when there is
+        # nothing to hold.
+        self._sr_hold_epochs = float(sr_hold_epochs) if sr_train else 0.0
 
         # Differentiable post-SR normalisation adapter: the same frozen z-score
         # the baseline's dataloader applies, sliced to this model's bands.
@@ -1509,6 +1538,11 @@ class JointSRUNetLightning(UNetLightning):
                 # 'native' alone would not tell it which.
                 "sr_hc": "on" if self._sr_hc_on else "off",
                 "lr_sr": self.hparams.lr_sr,
+                # The hold boundary, so a reader of the snapshot strip can tell
+                # a dose-0 frame (epoch < sr_hold_epochs, the free zero-dose
+                # point of the rl ladder) from an adapting one without going
+                # back to the run's config.
+                "sr_hold_epochs": float(getattr(self, "_sr_hold_epochs", 0.0)),
                 "sr_drift_rel": float(drift) if drift is not None else None,
                 # Reload: build the SR net via the matching load_trainable_*
                 # helper (or a JointSRUNetLightning), then
@@ -1683,6 +1717,13 @@ class JointSRUNetLightning(UNetLightning):
         # decoder noise phase lasts the same number of steps however long the
         # run is (~10% of a 10-epoch trial, ~1% of a 100-epoch refit).
         warm = int(round(self._sr_warmup_epochs * steps_per_epoch))
+        # HARD HOLD (docs/rl_lightning_campaign_plan.md §2). Clamped to the
+        # budget so a mis-set hold can never make `joint` an empty phase with a
+        # division by zero; it degrades to "lr_sr was 0 for the whole run",
+        # which is a legible result rather than a crash. Warned about below.
+        hold = int(round(self._sr_hold_epochs * steps_per_epoch))
+        hold = max(0, min(hold, total))
+        joint = max(1, total - hold)
 
         def cosine(step):
             t = min(step, total) / total
@@ -1691,9 +1732,26 @@ class JointSRUNetLightning(UNetLightning):
         lambdas = [cosine]                     # UNet group: no warmup -- the
         if sr_params:                          # critic must learn full-speed
             def sr_lambda(step):
-                ramp = min(1.0, step / warm) if warm > 0 else 1.0
-                return ramp * cosine(step)
+                # hold == 0 -> this branch never fires and the two lines below
+                # reduce to `ramp * cosine(step)`, i.e. the pre-hold behaviour.
+                if step < hold:
+                    return 0.0
+                s = step - hold                # steps since the hold ended
+                ramp = min(1.0, s / warm) if warm > 0 else 1.0
+                t = min(s, joint) / joint      # the SR group's own cosine
+                return ramp * 0.5 * (1.0 + math.cos(math.pi * t))
             lambdas.append(sr_lambda)
+            if hold > 0:
+                print(f"[joint_sr] lr_sr HOLD: exactly 0 for the first {hold} "
+                      f"steps (~{self._sr_hold_epochs:g} epochs), then a "
+                      f"{joint}-step cosine from lr_sr={self.hparams.lr_sr:g} "
+                      f"to 0 (ramp re-based to the boundary, warm={warm}).")
+                if hold >= total and self.trainer.max_epochs > 1:
+                    print("[joint_sr] WARN: sr_hold_epochs covers the WHOLE "
+                          "budget — lr_sr is 0 for every step of this run, "
+                          "i.e. a frozen arm wearing a joint arm's tag. "
+                          "(Expected only on a 1-epoch pin/timing pass, which "
+                          "this is not.)")
 
         sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lambdas)
         return {"optimizer": opt,

@@ -208,6 +208,47 @@ CLIP="${CLIP:-1.0}"                         # gradient clip (global L2; 0=off)
 LR_SCHEDULE="${LR_SCHEDULE:-cosine}"        # cosine | none
 SR_WARMUP_EPOCHS="${SR_WARMUP_EPOCHS:-1.0}" # SR-group ramp; model auto-off
 # for frozen/bicubic/warm-start
+
+# --- Hard hold on the SR group (docs/rl_lightning_campaign_plan.md §2) -------
+# Epochs during which lr_sr is EXACTLY 0 while the head trains alone; after the
+# boundary the SR group runs its own cosine over the remaining budget, with
+# SR_WARMUP_EPOCHS re-based to that boundary. Not a ramp and not a small LR: an
+# LR gate, so Adam's update is identically zero while its moments warm on the
+# real gradients.
+#
+# This is what lets the rl campaign run ONE 30-epoch job per arm-seed instead of
+# a stage pair: with lr_sr=0 the joint arm's first HOLD epochs ARE a frozen-arm
+# run, so the branches diverge only at the boundary and the frozen arm's
+# remaining epochs are the matched-budget control. No warm_start_head, no
+# inheritance, no stage-1 dependency.
+#
+# DEFAULT 0 = no hold, i.e. exactly the behaviour every arm in the append-only
+# store was trained under — and NOTHING is appended to any command line at 0
+# (same discipline as HC_ARGS/RAILS_ARGS/HEAD_TAG), so their invocations stay
+# byte-identical. It is deliberately NOT tagged into the run dir / study /
+# model_name: the only arms that use it are the rl joint rungs, whose EXP_TAG
+# already carries the rung. If a held and an unheld variant of the SAME EXP_TAG
+# are ever both wanted, tag it before running the second one.
+SR_HOLD_EPOCHS="${SR_HOLD_EPOCHS:-0}"
+HOLD_ARGS_TUNE=()
+HOLD_ARGS_FIT=()
+if awk -v h="$SR_HOLD_EPOCHS" 'BEGIN { exit !(h + 0 == h && h > 0) }' </dev/null 2>/dev/null; then
+  HOLD_ARGS_TUNE=(--sr-hold-epochs "$SR_HOLD_EPOCHS")
+  HOLD_ARGS_FIT=(--model.sr_hold_epochs "$SR_HOLD_EPOCHS")
+  if [ "$FREEZE_SR" = "true" ] || [ "$UPSAMPLER" = "bicubic" ]; then
+    echo "NOTE: SR_HOLD_EPOCHS=${SR_HOLD_EPOCHS} on a front-end with no trainable" >&2
+    echo "  SR parameters (freeze_sr=${FREEZE_SR}, upsampler=${UPSAMPLER}) — the" >&2
+    echo "  model auto-disables it. Harmless; the frozen rl arms pass it anyway so" >&2
+    echo "  one submit line covers the whole series." >&2
+  fi
+  if [ "$LR_SCHEDULE" != "cosine" ]; then
+    echo "ERROR: SR_HOLD_EPOCHS=${SR_HOLD_EPOCHS} with LR_SCHEDULE=${LR_SCHEDULE}." >&2
+    echo "  The gate lives inside the cosine LambdaLR; with lr_schedule=none there" >&2
+    echo "  is no scheduler at all and lr_sr would be live from step 1 — a joint" >&2
+    echo "  arm silently running without its hold. Refusing." >&2
+    exit 2
+  fi
+fi
 L2SP_LAMBDA="${L2SP_LAMBDA:-0.0}" # 0 = dormant L2-SP anchor
 
 # --- Read-out head: U-Net (default) or linear probe (docs/sr_linear_probe.md) -
@@ -385,6 +426,42 @@ if [ -n "$STD_BAND_RAISE_LO" ] || [ -n "$STD_BAND_RAISE_HI" ]; then
 fi
 
 SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-0}"
+
+# --- Val loop during a HOLDOUT fit ------------------------------------------
+# joint_sr_trainval.yaml is layered LAST at the fit stage and sets
+# `limit_val_batches: 0` UNCONDITIONALLY — correct under the merged protocol
+# (val tiles are training tiles then, so a "val_iou" would be train IoU in
+# disguise), but it also applies when TRAIN_SPLITS=train reverts to the holdout
+# protocol, where val IS honestly held out and there is no reason not to look.
+#
+# FIT_VAL_LOOP=1 restores the loop for a holdout fit, and ONLY for one:
+# requesting it under the merged protocol is refused rather than silently
+# ignored. What it does NOT restore is any form of selection — the trainval
+# overlay's callback list still has no EarlyStopping and its ModelCheckpoint
+# still runs monitor:null / save_on_train_epoch_end, so the checkpoint remains
+# the END of a fixed, pre-registered budget. The val loop only LOGS.
+#
+# That is why it carries no tag: it changes what is recorded, not what is
+# trained. (One caveat worth knowing: the loop advances global RNG, so a
+# FIT_VAL_LOOP=1 run is not step-for-step identical to the same seed without
+# it. It is a between-arm constant wherever it is used, so no contrast moves.)
+#
+# The rl campaign needs it: "frozen val-AP plateaus before epoch 10" and "the
+# joint arms' hold phases reproduce the frozen curves" are its falsifiable
+# checks, and both are per-epoch val curves
+# (docs/rl_lightning_campaign_plan.md §2, §6.1). DEFAULT 0 = the behaviour every
+# existing arm and the loss pilot were run under; nothing is appended at 0.
+FIT_VAL_LOOP="${FIT_VAL_LOOP:-0}"
+VAL_ARGS_FIT=()
+if [ "$FIT_VAL_LOOP" = "1" ]; then
+  if [ "$MERGE_VAL" = "1" ]; then
+    echo "ERROR: FIT_VAL_LOOP=1 with TRAIN_SPLITS='${TRAIN_SPLITS}'. val is" >&2
+    echo "  folded into the training set under this protocol, so the curve would" >&2
+    echo "  be a training curve wearing a val label. Use TRAIN_SPLITS=train." >&2
+    exit 2
+  fi
+  VAL_ARGS_FIT=(--trainer.limit_val_batches "${LIMIT_VAL_BATCHES:-1.0}")
+fi
 
 # LABELS -> dataset dir + code-level mask_source (+ mask_dirname when raster).
 # LABELS=new reads the ONCE-OFF pre-rasterised HR label COGs (the labels are
@@ -765,6 +842,7 @@ echo "labels=${LABELS} (mask_source=${MASK_SOURCE}${MASK_DIRNAME:+, mask_dirname
 echo "hard constraint: sr_hc=${SR_HC}${HC_TAG:+  tag=${HC_TAG}}${HC_MASK_PATH:+  mask=${HC_MASK_PATH}}"
 echo "recipe: reg=${REG}${REG_TAG:+ [${REG_TAG}]}  clip=${CLIP} (trainer=${CLIP_TRAINER}, sr_group=${CLIP_SR})  lr_schedule=${LR_SCHEDULE}  sr_warmup_epochs=${SR_WARMUP_EPOCHS}  l2sp_lambda=${L2SP_LAMBDA}  sr_snapshot_every=${SR_SNAPSHOT_EVERY}"
 echo "head=${HEAD}  monitor=${MONITOR}  warm_start_head=${WARM_START_HEAD:-none}"
+echo "sr_warmup_epochs=${SR_WARMUP_EPOCHS}  sr_hold_epochs=${SR_HOLD_EPOCHS}  lr_schedule=${LR_SCHEDULE}"
 echo "adapter: adaptive_norm=${ADAPTIVE_NORM_FLAG} (m=${ADAPTIVE_NORM_M})  norm_recalibrate=${NORM_RECALIBRATE}${ANORM_TAG:+  tag=${ANORM_TAG}}"
 if [ -n "$RAILS_TAG" ]; then
   _RAILS_DESC="production (the config's, [0.5x, 4.0x] unless joint_sr.yaml moved it)"
@@ -776,6 +854,7 @@ else
   echo "std band guard: production band from the config ([0.5x, 4.0x] unless joint_sr.yaml moved it), action=default (tune prunes the trial, fit warns and continues)"
 fi
 echo "protocol: tune on train/val -> refit on '${TRAIN_SPLITS}' (merge_val=${MERGE_VAL}) -> report on test"
+echo "fit val loop: $([ "$FIT_VAL_LOOP" = "1" ] && echo "ON (holdout curves logged, never selected on)" || echo "off (joint_sr_trainval.yaml limit_val_batches=0)")"
 echo "DATASET_DIR=${DATASET_DIR}  warm_start=${WARM_START_CKPT:-none}"
 echo "norm_stats=${NORM_CONFIG}  [${NORM_SOURCE}]"
 
@@ -999,6 +1078,7 @@ if [ "$STAGE" = "tune" ]; then
       --clip "$CLIP_TRAINER" \
       --lr-schedule "$LR_SCHEDULE" \
       --sr-warmup-epochs "$SR_WARMUP_EPOCHS" \
+      ${HOLD_ARGS_TUNE[@]+"${HOLD_ARGS_TUNE[@]}"} \
       --l2sp-lambda "$L2SP_LAMBDA" \
       --adaptive-norm "$ADAPTIVE_NORM_FLAG" \
       --adaptive-norm-momentum "$ADAPTIVE_NORM_M" \
@@ -1199,6 +1279,10 @@ fi
 if [ ${#RAILS_ARGS_FIT[@]} -gt 0 ]; then
   MODEL_ARGS+=("${RAILS_ARGS_FIT[@]}")
 fi
+# Same again for the hard hold: appended only when SR_HOLD_EPOCHS > 0.
+if [ ${#HOLD_ARGS_FIT[@]} -gt 0 ]; then
+  MODEL_ARGS+=("${HOLD_ARGS_FIT[@]}")
+fi
 if [ -n "$WARM_START_CKPT" ]; then
   MODEL_ARGS+=(--model.warm_start_unet "$WARM_START_CKPT")
 fi
@@ -1241,6 +1325,7 @@ python -m sr.cli fit \
   --trainer.max_epochs "$REFIT_EPOCHS" \
   --trainer.devices "$REFIT_GPUS" \
   --trainer.precision "$PRECISION" \
+  ${VAL_ARGS_FIT[@]+"${VAL_ARGS_FIT[@]}"} \
   --trainer.gradient_clip_val "$CLIP_TRAINER" \
   --trainer.logger.init_args.project "$WANDB_PROJECT" \
   --seed_everything "$SEED" \

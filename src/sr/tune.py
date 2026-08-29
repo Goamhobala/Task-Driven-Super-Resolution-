@@ -163,6 +163,11 @@ def build_objective(args, base_cfg: dict):
     lr_schedule = args.lr_schedule or model_cfg.get("lr_schedule", "cosine")
     sr_warmup_epochs = (args.sr_warmup_epochs if args.sr_warmup_epochs is not None
                         else float(model_cfg.get("sr_warmup_epochs", 1.0)))
+    # The rl-series hard hold (docs/rl_lightning_campaign_plan.md §2). 0.0
+    # everywhere else, which is EXACTLY the pre-hold behaviour, so no arm
+    # already in the store changes.
+    sr_hold_epochs = (args.sr_hold_epochs if args.sr_hold_epochs is not None
+                      else float(model_cfg.get("sr_hold_epochs", 0.0)))
     l2sp_lambda = (args.l2sp_lambda if args.l2sp_lambda is not None
                    else float(model_cfg.get("l2sp_lambda", 0.0)))
     # Adaptive post-SR normalisation (docs/adaptive_norm_plan.md). PINNED, not
@@ -342,6 +347,7 @@ def build_objective(args, base_cfg: dict):
             warm_start_unet=warm_start_unet,
             lr_schedule=lr_schedule,
             sr_warmup_epochs=sr_warmup_epochs,
+            sr_hold_epochs=sr_hold_epochs,
             l2sp_lambda=l2sp_lambda,
             adaptive_norm=adaptive_norm,
             adaptive_norm_momentum=adaptive_norm_momentum,
@@ -452,6 +458,7 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
                        mask_dirname: str | None = None,
                        lr_schedule: str | None = None,
                        sr_warmup_epochs: float | None = None,
+                       sr_hold_epochs: float | None = None,
                        l2sp_lambda: float | None = None,
                        adaptive_norm: bool | None = None,
                        adaptive_norm_momentum: float | None = None,
@@ -509,6 +516,11 @@ def write_best_overlay(study: optuna.Study, out_dir: Path, encoder_weights,
         model_overlay["lr_schedule"] = lr_schedule
     if sr_warmup_epochs is not None:
         model_overlay["sr_warmup_epochs"] = sr_warmup_epochs
+    # Written whenever the CLI resolves it (it always does), so the refit of a
+    # held run can never silently drop the hold and adapt the generator from
+    # step 0. 0.0 is the no-op value.
+    if sr_hold_epochs is not None:
+        model_overlay["sr_hold_epochs"] = float(sr_hold_epochs)
     if l2sp_lambda is not None:
         model_overlay["l2sp_lambda"] = l2sp_lambda
     # Adaptive-norm constants: pinned into the overlay so the refit runs the
@@ -736,6 +748,14 @@ def parse_args(argv=None):
                          "Default: model.sr_warmup_epochs (1.0). Auto-off in "
                          "the model for frozen/bicubic SR and staged warm "
                          "starts.")
+    ap.add_argument("--sr-hold-epochs", type=float, default=None,
+                    help="HARD HOLD on the SR group, in epochs: lr_sr is "
+                         "EXACTLY 0 until this boundary (Adam's moments still "
+                         "warm), then the group runs its own cosine over the "
+                         "remaining budget. 0 (default) = no hold, i.e. the "
+                         "pre-2026-08-29 behaviour. The rl-series joint arms "
+                         "hold 10 of 30 epochs so their hold phase IS a frozen "
+                         "run (docs/rl_lightning_campaign_plan.md §2).")
     ap.add_argument("--lr-schedule", default=None, choices=["cosine", "none"],
                     help="Override model.lr_schedule (default: base config's, "
                          "cosine). Applies to the trials AND is pinned into "
@@ -834,6 +854,11 @@ def main(argv=None):
     lr_schedule = args.lr_schedule or model_cfg.get("lr_schedule", "cosine")
     sr_warmup_epochs = (args.sr_warmup_epochs if args.sr_warmup_epochs is not None
                         else float(model_cfg.get("sr_warmup_epochs", 1.0)))
+    # The rl-series hard hold (docs/rl_lightning_campaign_plan.md §2). 0.0
+    # everywhere else, which is EXACTLY the pre-hold behaviour, so no arm
+    # already in the store changes.
+    sr_hold_epochs = (args.sr_hold_epochs if args.sr_hold_epochs is not None
+                      else float(model_cfg.get("sr_hold_epochs", 0.0)))
     l2sp_lambda = (args.l2sp_lambda if args.l2sp_lambda is not None
                    else float(model_cfg.get("l2sp_lambda", 0.0)))
     adaptive_norm = (args.adaptive_norm == "true" if args.adaptive_norm is not None
@@ -913,6 +938,7 @@ def main(argv=None):
                                       mask_dirname=mask_dirname,
                                       lr_schedule=lr_schedule,
                                       sr_warmup_epochs=sr_warmup_epochs,
+                                      sr_hold_epochs=sr_hold_epochs,
                                       l2sp_lambda=l2sp_lambda,
                                       adaptive_norm=adaptive_norm,
                                       adaptive_norm_momentum=adaptive_norm_momentum,
