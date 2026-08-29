@@ -23,12 +23,22 @@ DN<->scaled conversions are deliberately outside this module, which makes it
 contract-compatible with `JointSRUNetLightning.forward` (x/1e4 -> sr -> x1e4).
 
 VRAM. This is a big generator run on a big grid: at bs=4, 128px LR -> 512px SR,
-fp32 (which is what `JointSRUNetLightning._sr_forward`'s autocast-disabled
-island gives it), the saved-for-backward set is ~18 GiB, of which res_4x alone
-— 256 channels at 512px, ~1.07 GiB per retained tensor — is ~13 GiB. That is
-what OOMs a 24 GB L4 on rl4. Set SR4RS_GRAD_CKPT=1 to checkpoint the res_2x /
-res_4x stages (see `sr4rs_grad_ckpt_enabled`); it is off by default and
-numerically exact when on.
+in fp32 the saved-for-backward set is ~18 GiB, of which res_4x alone — 256
+channels at 512px, ~1.07 GiB per retained tensor — is ~13 GiB. That is what
+OOMed a 24 GB L4 on rl4. Two independent remedies, which compose:
+
+  * PRECISION (preferred, and what rl4 uses). This generator has no FFT, so
+    unlike SEN2SR it does NOT run inside `JointSRUNetLightning._sr_forward`'s
+    autocast-disabled island — it inherits the Trainer's bf16-mixed autocast.
+    That halves the retained set to ~9 GiB and speeds the convolutions up
+    instead of slowing them down. `pixel_norm` below keeps its reduction in
+    fp32 by hand so the big tensors stay bf16; `_sr_forward` upcasts at the
+    boundary, so everything downstream still sees fp32.
+  * ACTIVATION CHECKPOINTING. SR4RS_GRAD_CKPT=1 checkpoints the res_2x /
+    res_4x stages (see `sr4rs_grad_ckpt_enabled`), taking the retained set to
+    ~6 GiB in fp32. Off by default, numerically exact when on, and it costs one
+    extra forward of those stages — which is why it is now the fallback rather
+    than the first move.
 
 Parity check against the TF reference taps (run wherever torch exists):
     python -m sr.sr4rs_torch --model-dir <...>/SR4RS_RGBN
@@ -66,8 +76,21 @@ def sr4rs_grad_ckpt_enabled() -> bool:
 
 
 def pixel_norm(x, eps):
-    """x / sqrt(mean(x^2, channels) + eps) — TF reduces NHWC axis 3 == our 1."""
-    return x * torch.rsqrt(x.pow(2).mean(dim=1, keepdim=True) + eps)
+    """x / sqrt(mean(x^2, channels) + eps) — TF reduces NHWC axis 3 == our 1.
+
+    The statistic is computed in fp32 and the SCALE is cast back to x's dtype,
+    so under bf16 autocast the 256-channel reduction keeps full precision while
+    the output — one of this generator's ~1 GiB tensors at 512 px — stays bf16.
+    Written out rather than left to autocast on purpose: CUDA autocast promotes
+    ``pow``/``rsqrt`` to fp32, and ``bf16 * fp32 -> fp32`` would then hand every
+    PixelNorm output back in fp32 and undo most of the memory saving.
+
+    Exactly a no-op when x is already fp32 (``.float()`` and ``.to(fp32)`` both
+    return self), so the fp32 path — the TF parity check and every checkpoint
+    written to date — is bit-for-bit unchanged.
+    """
+    scale = torch.rsqrt(x.float().pow(2).mean(dim=1, keepdim=True) + eps)
+    return x * scale.to(x.dtype)
 
 
 class EffConv(nn.Module):

@@ -34,6 +34,8 @@ stays bit-for-bit comparable until the flags are set.
 """
 from __future__ import annotations
 
+import contextlib
+
 import torch
 
 from sr.sen2sr_loader import (
@@ -858,7 +860,29 @@ class JointSRUNetLightning(UNetLightning):
         # Run the (small, 572K-param) SR stage in fp32 with autocast disabled;
         # the UNet below still runs under the Trainer's mixed precision.
         # Gradients flow through the dtype casts unchanged.
-        with torch.autocast(device_type=x.device.type, enabled=False):
+        #
+        # SR4RS is the exception: it ships no FFT constraint (`resolve_sr_hc`
+        # gives it hc=off natively), so nothing in that generator needs fp32
+        # structurally, and it is far too big for the island — 11.3 M params on
+        # a 512 px grid, ~18 GiB of saved activations at bs=4, 256 channels at
+        # 512 px being ~1.07 GiB per retained tensor. It therefore inherits the
+        # Trainer's ambient precision instead: under bf16-mixed the retained set
+        # halves to ~9 GiB (which is what lets rl4 drop SR4RS_GRAD_CKPT) and the
+        # convolutions run at ~2x TF32 throughput; under precision=32 the
+        # ambient autocast is off and this is exactly the old fp32 path.
+        #
+        # The upcast at the return keeps the CONTRACT unchanged either way: this
+        # function still hands back fp32, so the adaptive-norm EMA, the drift
+        # and PSNR monitors and the linear probe all compute on fp32 tensors
+        # exactly as before. Only the generator's interior is bf16.
+        #
+        # Keyed on the CONSTRAINT, not just the upsampler: r4a mounts SEN2SR's
+        # hard constraint onto SR4RS (`TrainableSEN2SR` wraps it above), and
+        # that arm's forward does contain torch.fft. It keeps the island.
+        sr_bf16 = self.hparams.upsampler == "sr4rs" and not self._sr_hc_on
+        sr_ctx = (contextlib.nullcontext() if sr_bf16 else
+                  torch.autocast(device_type=x.device.type, enabled=False))
+        with sr_ctx:
             x32 = x.float()
             p = self.hparams.sr_pad
             if p:
@@ -871,7 +895,10 @@ class JointSRUNetLightning(UNetLightning):
             if p:
                 q = p * self.hparams.upscale
                 hr = hr[..., q:-q, q:-q]
-            return hr * self.hparams.reflectance_scale
+            # .float() BEFORE the rescale, not after: multiplying a bf16 tensor
+            # by 1e4 and upcasting the product would bake bf16's 8 mantissa bits
+            # into the raw-unit output. No-op on the fp32 arms.
+            return hr.float() * self.hparams.reflectance_scale
 
     def forward(self, x):
         """x: (B, C, P, P) raw DN at 10 m -> logits (B, classes, sP, sP)."""

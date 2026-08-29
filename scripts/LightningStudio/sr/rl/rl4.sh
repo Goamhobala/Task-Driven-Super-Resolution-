@@ -34,13 +34,24 @@
 # 11.3 M trainable params against TrainableSEN2SR's 187 K, and it is the grid,
 # not the parameter count, that does the damage.
 #
-# So the plan's own first remedy is now ON here: SR4RS_GRAD_CKPT=1 activation-
-# checkpoints the res_2x/res_4x stages, taking the retained set to ~6 GiB. It
-# is bit-exact — no dropout, no RNG in that generator, and
-# tests/test_sr4rs_torch.py pins outputs AND every gradient identical with the
-# flag on and off — so it costs one extra forward of those stages and voids no
-# between-arm contrast. If it STILL OOMs: grad-accum 2x2 (which the anorm EMA
-# then sees as half-batches). NEVER change the batch size — it is a between-arm
+# The first remedy was activation checkpointing (SR4RS_GRAD_CKPT=1), which took
+# the retained set to ~6 GiB at the cost of one extra forward of the res_2x /
+# res_4x stages — 30-50% of the step. PRECISION replaced it. SR4RS ships no FFT
+# hard constraint, so `_sr_forward` no longer runs it inside the fp32 island:
+# the generator inherits the Trainer's bf16-mixed autocast, which halves the
+# retained set to ~9 GiB (fits 24 GB with the checkpointing OFF) AND runs the
+# convolutions at ~2x TF32 throughput, with `pixel_norm` keeping its reduction
+# in fp32 and `_sr_forward` still returning fp32 so the adaptive-norm EMA, the
+# drift monitor and the probe are untouched. Hence SR4RS_GRAD_CKPT defaults to 0
+# below: the two are alternative remedies for the same OOM and this one is the
+# fast half of the pair, so paying for both is pure recompute for nothing.
+#
+# Re-read peak VRAM and h/epoch off STAGE=tune before trusting the above. If it
+# OOMs anyway, SR4RS_GRAD_CKPT=1 composes with bf16 and is bit-exact — no
+# dropout, no RNG in that generator, and tests/test_sr4rs_torch.py pins outputs
+# AND every gradient identical with the flag on and off — so it voids no
+# between-arm contrast. After that: grad-accum 2x2 (which the anorm EMA then
+# sees as half-batches). NEVER change the batch size — it is a between-arm
 # constant and `length` is fixed per epoch. (The flag is exported below.)
 set -euo pipefail
 RL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,10 +65,11 @@ UPSAMPLER="sr4rs"
 FREEZE_SR="false"
 SEN2SR_DIR="${SEN2SR_DIR:-${INSTAROAD_ROOT}/models/SR4RS_RGBN}"
 
-# Activation checkpointing on the SR4RS upsample stages — see BUDGET / VRAM
-# above. Read by `sr.sr4rs_torch.sr4rs_grad_ckpt_enabled` at model construction;
-# an env flag rather than an hparam so it stays out of the checkpoint and out of
-# a run's identity. Set SR4RS_GRAD_CKPT=0 to measure the unpatched footprint.
-export SR4RS_GRAD_CKPT="${SR4RS_GRAD_CKPT:-1}"
+# Activation checkpointing on the SR4RS upsample stages — OFF, superseded by
+# bf16; see BUDGET / VRAM above. Read by `sr.sr4rs_torch.sr4rs_grad_ckpt_enabled`
+# at model construction; an env flag rather than an hparam so it stays out of the
+# checkpoint and out of a run's identity — which is exactly why turning it back
+# on (SR4RS_GRAD_CKPT=1) if this OOMs costs no between-arm comparability.
+export SR4RS_GRAD_CKPT="${SR4RS_GRAD_CKPT:-0}"
 
 source "$LS_DIR/sr/_stages_tv.sh"
