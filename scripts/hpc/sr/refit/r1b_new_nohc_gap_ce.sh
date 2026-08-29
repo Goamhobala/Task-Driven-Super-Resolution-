@@ -56,7 +56,7 @@ source "$REPO_DIR/scripts/hpc/sr/refit/_refit_lib.sh"
 
 EXP_TAG="r1b_new"
 LOSS_ARM="gap_ce"
-SEEDS="${SEEDS:-1 2}"          # <-- the only thing you normally change
+SEEDS="${SEEDS:-666 888}"          # <-- the only thing you normally change
 
 # --- this arm's SR treatment -------------------------------------------------
 UPSAMPLER="sen2sr"

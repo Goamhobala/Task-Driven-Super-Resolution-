@@ -27,9 +27,12 @@
 # --output=slurm-%x-%j.txt, not train.sbatch's slurm-%j.txt: %x is the job name,
 # so r1a's and r1b's logs never collide. Still .txt, so Nextcloud renders it.
 #
-# THIS ARM WAS REDEFINED (2026-08-28) and has NO TUNE YET. The old r1b overlay
-# is a different operator and is not even on the path (_nohc retags the run
-# dir), so phase 1 starts at the tune — budget for it on top of the refits.
+# THIS ARM WAS REDEFINED (2026-08-28), so its tune is a NEW one — the old r1b
+# overlay is a different operator and is not even on the path (_nohc retags the
+# run dir). That tune is running at seed 42; the discovery below finds it, so
+# this pool can be queued behind it right now:
+#
+#   sbatch --dependency=afterok:<tune jobid> scripts/hpc/sr/refit/pool_r1b.sh
 #
 # 48 h is a budget, not a promise. A frozen-SR refit has no SR backward pass, so
 # it is cheaper than the r2 arms' joint fine-tuning but dearer than r0's
@@ -37,10 +40,24 @@
 # it would produce, so finished work costs seconds and a half-trained refit
 # resumes from last.ckpt.
 #
-#   TUNED_SEED=0            the tune lives at a seed other than 66
+# THE TUNED SEED IS DISCOVERED, NOT ASSUMED
+# -----------------------------------------
+# The pool globs this arm's run dirs for the best_params.yaml `sr.tune` wrote
+# and uses whichever seed has it — so it does not need to be told, and it is
+# safe to queue with `--dependency=afterok:<tune jobid>` BEFORE the tune has
+# finished: the glob runs at job start, by which time the overlay exists.
+# Two tuned seeds is an error, not a coin flip (two searches = two different
+# hyperparameter sets); pass TUNED_SEED to settle it.
+#
+# Use `afterok`, not `afterany`: if the tune dies, afterok holds this job,
+# whereas afterany would start it, find no overlay, and launch a NEW tune.
+#
+#   TUNED_SEED=42           override the discovery
+#   NEW_TUNE_SEED=42        seed to CREATE a tune at, if none exists at all
 #   STAGES="fit bench"      the tuned seed only, no refit seeds
 #   STAGES="refit"          the refit seeds only
 #   SEEDS="3 4"             override the refit script's own seed default
+#                           (must not contain the tuned seed — it is flagged)
 #   LR=<value>              skip reading it off the tuned overlay
 set -euo pipefail
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"

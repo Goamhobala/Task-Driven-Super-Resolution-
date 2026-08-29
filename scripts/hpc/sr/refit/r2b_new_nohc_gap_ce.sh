@@ -47,7 +47,7 @@ source "$REPO_DIR/scripts/hpc/sr/refit/_refit_lib.sh"
 
 EXP_TAG="r2b_new"
 LOSS_ARM="gap_ce"
-SEEDS="${SEEDS:-1 2}"          # <-- the only thing you normally change
+SEEDS="${SEEDS:-666 888}"          # <-- the only thing you normally change
 
 # --- this arm's SR treatment -------------------------------------------------
 # The bare lane: no FFT splice means no Gibbs ringing at the patch border, so

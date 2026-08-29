@@ -31,7 +31,12 @@ REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 : "${ARM:?run_arm_pool.sh needs ARM, the arm script stem (e.g. r1a_new)}"
 : "${REFIT:?run_arm_pool.sh needs REFIT, the refit script stem (e.g. r1a_new_gap_ce)}"
 LOSS_ARM="${LOSS_ARM:-gap_ce}"
-TUNED_SEED="${TUNED_SEED:-66}"     # the series convention (r0/r2a/r2b all 66)
+# TUNED_SEED is DISCOVERED below, not defaulted — see the discovery block. Set
+# it explicitly only to override that.
+TUNED_SEED="${TUNED_SEED:-}"
+# Seed a tune is CREATED at when none exists at all. Only ever used when the
+# discovery finds nothing and `tune` is in STAGES.
+NEW_TUNE_SEED="${NEW_TUNE_SEED:-66}"
 STAGES="${STAGES:-tune fit bench refit}"
 ARM_SCRIPT="$REPO_DIR/scripts/hpc/sr/${ARM}.sh"
 REFIT_SCRIPT="$REPO_DIR/scripts/hpc/sr/refit/${REFIT}.sh"
@@ -70,13 +75,83 @@ TOTAL_CPUS="${SLURM_CPUS_ON_NODE:-$(( ${SLURM_CPUS_PER_TASK:-8} * ${SLURM_NTASKS
 NUM_WORKERS=$(( TOTAL_CPUS - 1 ))
 [ "$NUM_WORKERS" -lt 1 ] && NUM_WORKERS=1
 
-# Ask the engine for the tuned seed's names rather than rebuilding the tag
-# chain here (see the PRINT_RUN_DIR block in _stages_tv.sh).
+want () { case " $STAGES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# --- WHICH SEED CARRIES THIS ARM'S TUNE? ------------------------------------
+# Discovered, not guessed. A wrong TUNED_SEED is not a loud failure: the pool
+# would find no best_params.yaml at that seed, conclude the arm is untuned, and
+# spend a fresh N_TRIALS search — hours of GPU, a second Optuna study for one
+# arm, and refit seeds seeded from the wrong lr. Nothing in the run dir names
+# would show it.
+#
+# So the seed is read off the disk: glob this arm's run dirs for the overlay
+# `sr.tune` actually wrote. That also makes this pool safe to submit with
+# `--dependency=afterok:<tune jobid>` BEFORE the tune has finished — the glob
+# runs when the job starts, by which time the overlay exists.
+#
+# The stem comes from the engine (PRINT_RUN_DIR), never from string-building
+# here, so it carries HC_TAG/LOSS_TAG/ANORM_TAG and every other tag correctly.
+_probe=$(env LOSS_ARM="$LOSS_ARM" SEED=0 PRINT_RUN_DIR=1 bash "$ARM_SCRIPT" 2>/dev/null)
+_stem=$(printf '%s\n' "$_probe" | sed -n 's/^RUN_DIR=//p')
+_stem="${_stem%_seed0}"
+[ -n "$_stem" ] || { echo "ERROR: could not resolve ${ARM}'s run dir" >&2; exit 2; }
+
+if [ -n "$TUNED_SEED" ]; then
+  echo "tuned seed: ${TUNED_SEED} (set explicitly; discovery skipped)"
+else
+  _found=()
+  for _bp in "${_stem}"_seed*/best_params.yaml; do
+    [ -f "$_bp" ] || continue
+    _d="${_bp%/best_params.yaml}"
+    _found+=("${_d##*_seed}")
+  done
+  case "${#_found[@]}" in
+  1)
+    TUNED_SEED="${_found[0]}"
+    echo "tuned seed: ${TUNED_SEED} (discovered: ${_stem}_seed${TUNED_SEED}/best_params.yaml)"
+    ;;
+  0)
+    if want tune; then
+      TUNED_SEED="$NEW_TUNE_SEED"
+      echo "NOTE: no best_params.yaml under ${_stem}_seed* — this arm has NOT been"
+      echo "  tuned. A NEW tune will be run at seed ${TUNED_SEED} (NEW_TUNE_SEED)."
+      echo "  If a tune DOES exist elsewhere, kill this job and pass TUNED_SEED."
+    else
+      echo "ERROR: no best_params.yaml under ${_stem}_seed*, and 'tune' is not in" >&2
+      echo "  STAGES='${STAGES}'. Nothing downstream can run without the overlay." >&2
+      exit 2
+    fi
+    ;;
+  *)
+    # Two searches for one arm are two different sets of hyperparameters.
+    # Picking one silently would decide the arm's identity by glob order.
+    echo "ERROR: ${#_found[@]} tuned seeds found for ${ARM}:" >&2
+    for _s in "${_found[@]}"; do echo "    seed ${_s}  ${_stem}_seed${_s}/best_params.yaml" >&2; done
+    echo "  Each is a different search, so which one seeds the refits is a" >&2
+    echo "  decision, not a default. Re-submit with TUNED_SEED=<n>." >&2
+    exit 2
+    ;;
+  esac
+fi
+
 NAMES=$(env LOSS_ARM="$LOSS_ARM" SEED="$TUNED_SEED" PRINT_RUN_DIR=1 \
             bash "$ARM_SCRIPT" 2>/dev/null)
 TUNED_DIR=$(printf '%s\n' "$NAMES" | sed -n 's/^RUN_DIR=//p')
 MODEL_NAME=$(printf '%s\n' "$NAMES" | sed -n 's/^MODEL_NAME=//p')
 [ -n "$TUNED_DIR" ] || { echo "ERROR: could not resolve ${ARM}'s run dir" >&2; exit 2; }
+
+# --- the refit seed list must not contain the tuned seed --------------------
+# run_seeds PLANTS best_params.yaml into each seed's run dir. Aimed at the tuned
+# seed that overwrites the authoritative overlay sr.tune wrote — with the same
+# numbers today, but it makes the tune's own output a derived file.
+_refit_seeds="${SEEDS:-$(sed -n 's/^SEEDS="${SEEDS:-\(.*\)}".*/\1/p' "$REFIT_SCRIPT" | head -1)}"
+case " ${_refit_seeds} " in
+*" ${TUNED_SEED} "*)
+  echo "WARN: the refit seed list ('${_refit_seeds}') contains the TUNED seed" >&2
+  echo "  ${TUNED_SEED}. Phase 2 would replant an overlay over the one sr.tune" >&2
+  echo "  wrote. Pass SEEDS= without it." >&2
+  ;;
+esac
 
 echo "=============================================================="
 echo "ARM POOL — ${ARM}   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -88,7 +163,6 @@ echo "  cpus   : ${TOTAL_CPUS} -> num_workers=${NUM_WORKERS}"
 echo "  job    : ${SLURM_JOB_NAME:-interactive} (${SLURM_JOB_ID:-no jobid})"
 echo "=============================================================="
 
-want () { case " $STAGES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 run_stage () {   # stage [KEY=VALUE ...]
   local stage="$1"; shift
   env LOSS_ARM="$LOSS_ARM" SEED="$TUNED_SEED" STAGE="$stage" \

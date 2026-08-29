@@ -26,9 +26,8 @@
 # --output=slurm-%x-%j.txt, not train.sbatch's slurm-%j.txt: %x is the job name,
 # so r1a's and r1b's logs never collide. Still .txt, so Nextcloud renders it.
 #
-# This arm is ALREADY TUNED, so phase 1 normally starts at the fit. Set
-# TUNED_SEED to wherever that tune lives (66 is the series convention, as for
-# r0/r2a/r2b) — the pool skips the tune when it finds best_params.yaml there.
+# This arm is ALREADY TUNED, so phase 1 normally starts at the fit — the pool
+# finds the overlay wherever it is and skips the tune.
 #
 # 48 h is a budget, not a promise. A frozen-SR refit has no SR backward pass, so
 # it is cheaper than the r2 arms' joint fine-tuning but dearer than r0's
@@ -36,10 +35,24 @@
 # it would produce, so finished work costs seconds and a half-trained refit
 # resumes from last.ckpt.
 #
-#   TUNED_SEED=0            the tune lives at a seed other than 66
+# THE TUNED SEED IS DISCOVERED, NOT ASSUMED
+# -----------------------------------------
+# The pool globs this arm's run dirs for the best_params.yaml `sr.tune` wrote
+# and uses whichever seed has it — so it does not need to be told, and it is
+# safe to queue with `--dependency=afterok:<tune jobid>` BEFORE the tune has
+# finished: the glob runs at job start, by which time the overlay exists.
+# Two tuned seeds is an error, not a coin flip (two searches = two different
+# hyperparameter sets); pass TUNED_SEED to settle it.
+#
+# Use `afterok`, not `afterany`: if the tune dies, afterok holds this job,
+# whereas afterany would start it, find no overlay, and launch a NEW tune.
+#
+#   TUNED_SEED=42           override the discovery
+#   NEW_TUNE_SEED=42        seed to CREATE a tune at, if none exists at all
 #   STAGES="fit bench"      the tuned seed only, no refit seeds
 #   STAGES="refit"          the refit seeds only
 #   SEEDS="3 4"             override the refit script's own seed default
+#                           (must not contain the tuned seed — it is flagged)
 #   LR=<value>              skip reading it off the tuned overlay
 set -euo pipefail
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
