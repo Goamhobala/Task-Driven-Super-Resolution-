@@ -93,6 +93,14 @@
 #                nothing-stops-it-early budget, so it is a BETWEEN-ARM CONSTANT
 #                of the protocol: change it for one arm and the comparison is
 #                void. Check the walltime — every arm now runs the full count.
+#   FIT_EARLY_STOP=1  re-add EarlyStopping to the REFIT. rl3 ONLY (whitelisted
+#                by EXP_TAG — every other arm's budget is fixed), and holdout
+#                fits only (TRAIN_SPLITS=train + FIT_VAL_LOOP=1).
+#                ES_MONITOR / ES_MODE / ES_PATIENCE / ES_MIN_DELTA configure it;
+#                ES_TAG (_es<patience>) keeps an early-stopped row out of a
+#                fixed-budget one. The budget becomes a CEILING for that arm and
+#                the cosine no longer completes — see the block for the full
+#                cost. Default 0 = every existing arm, nothing appended.
 #   TRAIN_SPLITS     "train val" (default). Set "train" to reproduce the old
 #                holdout protocol on ROSA_New without switching engines; the
 #                run dir / study / bench name then gain a _holdout tag so the
@@ -561,6 +569,109 @@ MONITOR="${MONITOR:-val_ap}"
 MON_TAG=""
 [ "$MONITOR" != "val_iou" ] && MON_TAG="_${MONITOR#val_}"
 
+# --- Early stopping on a HOLDOUT fit (default OFF) ---------------------------
+# joint_sr_trainval.yaml drops EarlyStopping on purpose: under the merged
+# protocol there is no honest val signal to stop on, and a FIXED, pre-registered
+# budget is what keeps the operating point from being data-dependent per arm
+# (the loss ablation's fairness rule). Both reasons are protocol reasons, not
+# engine reasons, so this knob re-adds the callback for the one case where
+# neither applies: a HOLDOUT fit (TRAIN_SPLITS=train) that is already running
+# the val loop (FIT_VAL_LOOP=1), where val is genuinely unseen.
+#
+# WHAT IT COSTS, stated once so no arm discovers it later:
+#   * the budget stops being a between-arm constant. An early-stopped arm and a
+#     full-budget arm did not train for the same number of epochs, so their
+#     difference is no longer "the treatment" alone. ES_TAG marks it — in the
+#     run dir, the study AND the bench model_name — for exactly that reason: an
+#     early-stopped row must never land beside a fixed-budget row of the same
+#     arm in an append-only store.
+#   * the cosine no longer completes. T_max = max_epochs, so stopping at epoch
+#     k < REFIT_EPOCHS ends the run at a non-zero lr, part-way down the
+#     schedule. Harmless for a converged 5-parameter probe; NOT harmless for an
+#     arm whose measured quantity is what the schedule was still doing.
+#   * the checkpoint is still the LAST epoch, not the best one. The overlay's
+#     ModelCheckpoint keeps `monitor: null` / `save_on_train_epoch_end`, so
+#     early stopping changes WHERE the budget ends, never how the reported
+#     checkpoint is chosen. No val-argmax selection is introduced.
+#
+# So: right for a frozen arm that provably plateaus (the rl campaign's rl3),
+# wrong for any arm whose trajectory IS the result (rl4, the lr_sr grid, every
+# joint arm) — there, a run that ends early has stopped recording the thing it
+# was launched to record. That is not left to the caller's judgement: the block
+# below WHITELISTS rl3 and refuses every other EXP_TAG, so no other arm can
+# acquire a truncated budget or an _es row by a submit-time flag.
+#
+# Set it for EVERY STAGE of an arm, like the rails: ES_TAG lands in the run dir,
+# so a tune tagged one way and a fit the other looks for best_params.yaml in a
+# directory that does not exist.
+FIT_EARLY_STOP="${FIT_EARLY_STOP:-0}"
+ES_TAG=""
+ES_ARGS_FIT=()
+if [ "$FIT_EARLY_STOP" = "1" ]; then
+  # WHITELIST: rl3 AND NOTHING ELSE.
+  # Every other arm in every series runs the fixed, pre-registered budget, and
+  # that is not a default anyone may opt out of at submit time — it is the
+  # fairness rule the R-series, the loss ablation and the rl ladder all rest on.
+  # rl3 is the single exception: a FROZEN generator with a 5-parameter probe,
+  # whose plateau is pre-registered (campaign plan §6.1), so its late epochs
+  # measure nothing. Allowing any other arm here would let one truncated budget
+  # into a comparison as a submit-time typo, and it would mint an _es row for an
+  # arm whose fixed-budget rows are what the write-up reports.
+  # Widening this list is a protocol decision: make it in the plan first, and
+  # only then here.
+  case "$EXP_TAG" in
+  rl3*) ;;
+  *)
+    echo "ERROR: FIT_EARLY_STOP=1 on EXP_TAG='${EXP_TAG}'. Early stopping is" >&2
+    echo "  allowed for rl3 ONLY — the frozen-SR4RS probe arm, whose plateau" >&2
+    echo "  before epoch 10 is pre-registered (docs/rl_lightning_campaign_plan" >&2
+    echo "  .md §6.1) and whose generator cannot drift, so its late epochs" >&2
+    echo "  measure nothing. Every other arm's budget is FIXED and identical" >&2
+    echo "  across arms; truncating one would make its difference from the" >&2
+    echo "  others 'the treatment plus a shorter run', and would put an _es row" >&2
+    echo "  in a store whose rows for that arm are fixed-budget." >&2
+    echo "  If this is a deliberate protocol change, write it into the plan and" >&2
+    echo "  widen the whitelist in ${BASH_SOURCE[0]} — not at submit time." >&2
+    exit 2
+    ;;
+  esac
+  ES_MONITOR="${ES_MONITOR:-$MONITOR}"
+  ES_MODE="${ES_MODE:-max}"
+  ES_PATIENCE="${ES_PATIENCE:-5}"
+  ES_MIN_DELTA="${ES_MIN_DELTA:-0.0}"
+  if [ "$MERGE_VAL" = "1" ]; then
+    echo "ERROR: FIT_EARLY_STOP=1 with TRAIN_SPLITS='${TRAIN_SPLITS}'. val is" >&2
+    echo "  folded into the training set under this protocol, so stopping on" >&2
+    echo "  '${ES_MONITOR}' would be stopping on a training metric. Use" >&2
+    echo "  TRAIN_SPLITS=train (which also needs FIT_VAL_LOOP=1)." >&2
+    exit 2
+  fi
+  if [ "$FIT_VAL_LOOP" != "1" ]; then
+    echo "ERROR: FIT_EARLY_STOP=1 without FIT_VAL_LOOP=1. The fit would run no" >&2
+    echo "  val loop at all (joint_sr_trainval.yaml sets limit_val_batches: 0)," >&2
+    echo "  so '${ES_MONITOR}' would never be logged and EarlyStopping(strict)" >&2
+    echo "  would abort the run at the first check." >&2
+    exit 2
+  fi
+  case "$ES_MODE" in min | max) ;; *)
+    echo "ERROR: ES_MODE must be min|max, got '${ES_MODE}'." >&2
+    exit 2
+    ;;
+  esac
+  ES_TAG="_es${ES_PATIENCE}"
+  # `+=` APPENDS to the overlay's callback list rather than replacing it, so the
+  # ModelCheckpoint / EpochSnapshotCheckpoint / LearningRateMonitor entries
+  # survive; the init_args that follow bind to the callback just appended.
+  # Verified against `sr.cli fit --print_config` (2026-08-30).
+  ES_ARGS_FIT=(
+    "--trainer.callbacks+=lightning.pytorch.callbacks.EarlyStopping"
+    "--trainer.callbacks.init_args.monitor=${ES_MONITOR}"
+    "--trainer.callbacks.init_args.mode=${ES_MODE}"
+    "--trainer.callbacks.init_args.patience=${ES_PATIENCE}"
+    "--trainer.callbacks.init_args.min_delta=${ES_MIN_DELTA}"
+  )
+fi
+
 # Loader workers per training process: split the job's CPU allocation across
 # the stage's processes (search fans out SEARCH_GPUS tuners; fit/test run one).
 # Workers spend most time blocked on the prefetch queue, so no cores are
@@ -618,9 +729,10 @@ if [ -z "${NUM_WORKERS}" ]; then
 fi
 echo "loader: num_workers=${NUM_WORKERS} (job_cpus=${JOB_CPUS}, search_gpus=${SEARCH_GPUS})"
 
-# --- Fit budget (train+val, FIXED — no early stopping) -----------------------
-# Pre-registered and identical across arms. Nothing truncates it now, so budget
-# the SLURM walltime for the full count on the SLOWEST arm (sr4rs).
+# --- Fit budget (train+val, FIXED — no early stopping by default) ------------
+# Pre-registered and identical across arms. Nothing truncates it unless an arm
+# opts into FIT_EARLY_STOP=1 above (holdout fits only, and tagged when it does),
+# so budget the SLURM walltime for the full count on the SLOWEST arm (sr4rs).
 REFIT_EPOCHS="${REFIT_EPOCHS:-100}"
 REFIT_GPUS="${REFIT_GPUS:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_joint_final}"
@@ -707,7 +819,7 @@ WANDB_CONFIG="$REPO_DIR/src/unet/configs/wandb.yaml"
 # (Resolved BEFORE the norm stats so the train+val generation below has a
 # guaranteed-writable fallback location.)
 RUNS_ROOT="${RUNS_ROOT:-${INSTAROAD_ROOT}/runs}"
-RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}_seed${SEED}"
+RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${ES_TAG}${PROTO_TAG}_seed${SEED}"
 
 # --- name query: PRINT_RUN_DIR=1 ---------------------------------------------
 # A pool driver has to know a cell's RUN_DIR and MODEL_NAME BEFORE running it,
@@ -722,7 +834,7 @@ RUN_DIR="${RUNS_ROOT}/sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${AN
 # new tag is ever added BELOW it, add it here too or this lies.
 if [ "${PRINT_RUN_DIR:-0}" = "1" ]; then
   echo "RUN_DIR=${RUN_DIR}"
-  echo "MODEL_NAME=${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}${MON_TAG}}"
+  echo "MODEL_NAME=${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${ES_TAG}${PROTO_TAG}${MON_TAG}}"
   exit 0
 fi
 
@@ -878,6 +990,11 @@ else
 fi
 echo "protocol: tune on train/val -> refit on '${TRAIN_SPLITS}' (merge_val=${MERGE_VAL}) -> report on test"
 echo "fit val loop: $([ "$FIT_VAL_LOOP" = "1" ] && echo "ON (holdout curves logged, never selected on)" || echo "off (joint_sr_trainval.yaml limit_val_batches=0)")"
+if [ "$FIT_EARLY_STOP" = "1" ]; then
+  echo "fit early stopping: ON  monitor=${ES_MONITOR} mode=${ES_MODE} patience=${ES_PATIENCE} min_delta=${ES_MIN_DELTA}  tag=${ES_TAG}  (budget is a CEILING for this arm, not a constant)"
+else
+  echo "fit early stopping: off (fixed ${REFIT_EPOCHS}-epoch budget)"
+fi
 echo "DATASET_DIR=${DATASET_DIR}  warm_start=${WARM_START_CKPT:-none}"
 echo "norm_stats=${NORM_CONFIG}  [${NORM_SOURCE}]"
 
@@ -1073,7 +1190,7 @@ fi
 if [ "$STAGE" = "tune" ]; then
   STORAGE="${STORAGE:-sqlite:///${RUN_DIR}/study.db}"
   SAMPLER_OFFSET="${SAMPLER_OFFSET:-0}"
-  STUDY_NAME="sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}${MON_TAG}_seed${SEED}"
+  STUDY_NAME="sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${ES_TAG}${PROTO_TAG}${MON_TAG}_seed${SEED}"
 
   run_tuner() { # $1=gpu id (empty = no pin)  $2=n-trials  $3=seed
     local gpu="$1" ntrials="$2" seed="$3" pin=""
@@ -1175,7 +1292,7 @@ if [ "$STAGE" = "bench" ]; then
   fi
 
   STORE_DIR="${STORE_DIR:-${INSTAROAD_ROOT}/benchmarks}" # SHARED across experiments
-  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}${MON_TAG}}"
+  MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${ES_TAG}${PROTO_TAG}${MON_TAG}}"
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
   TILE_METRICS="${TILE_METRICS:-apls}"
@@ -1334,7 +1451,11 @@ SPLIT_ARGS=(--data.train_splits "[$(
   echo "${TRAIN_SPLITS_ARR[*]}"
 )]")
 
-echo "=== REFIT on '${TRAIN_SPLITS}' (best config, FIXED ${REFIT_EPOCHS} epochs, no early stopping, ${REFIT_GPUS} GPU) ==="
+if [ "$FIT_EARLY_STOP" = "1" ]; then
+  echo "=== REFIT on '${TRAIN_SPLITS}' (best config, <=${REFIT_EPOCHS} epochs, EARLY STOPPING on ${ES_MONITOR} (${ES_MODE}, patience ${ES_PATIENCE}), ${REFIT_GPUS} GPU) ==="
+else
+  echo "=== REFIT on '${TRAIN_SPLITS}' (best config, FIXED ${REFIT_EPOCHS} epochs, no early stopping, ${REFIT_GPUS} GPU) ==="
+fi
 python -m sr.cli fit \
   --config "$BASE_CONFIG" \
   --config "$NORM_CONFIG" \
@@ -1351,6 +1472,7 @@ python -m sr.cli fit \
   --trainer.devices "$REFIT_GPUS" \
   --trainer.precision "$PRECISION" \
   ${VAL_ARGS_FIT[@]+"${VAL_ARGS_FIT[@]}"} \
+  ${ES_ARGS_FIT[@]+"${ES_ARGS_FIT[@]}"} \
   --trainer.gradient_clip_val "$CLIP_TRAINER" \
   --trainer.logger.init_args.project "$WANDB_PROJECT" \
   --seed_everything "$SEED" \
@@ -1413,7 +1535,7 @@ fi   # end SKIP_TEST gate around the held-out test
 # point (docs/ap_threshold_protocol_plan.md §1.2). The bench stage refuses to
 # run without a θ (BENCH_THRESHOLD or this sweep.json).
 SWEEP_SPLIT="${SWEEP_SPLIT:-val}"
-MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${PROTO_TAG}${MON_TAG}}"
+MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${ES_TAG}${PROTO_TAG}${MON_TAG}}"
 MASK_ARGS_SWEEP=(--mask-source "$MASK_SOURCE")
 [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_SWEEP+=(--mask-dirname "$MASK_DIRNAME")
 

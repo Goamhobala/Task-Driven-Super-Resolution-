@@ -1,6 +1,0 @@
-submit.example
-This script runs the train_both.sbatch or train.sbatch scripts with dynamic task names.
-
-bash scripts/hpc/submit.sh sr/r5_all.sh STAGE=tune SEED=1   # -J r5_all_tune_s1
-bash scripts/hpc/submit.sh sr/r6_all.sh STAGE=fit           # -J r6_all_fit_s0, auto --gres=gpu:1
-bash scripts/hpc/submit.sh --both sr/r7a_all.sh             # train_both, -J r7a_all_both_s0
