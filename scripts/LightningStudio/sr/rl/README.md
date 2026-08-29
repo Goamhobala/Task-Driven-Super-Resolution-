@@ -89,6 +89,14 @@ command line.
   Consequences, all wanted: a `_holdout` tag keeps rl rows away from R-series
   rows; θ* is swept on val, which under this protocol is genuinely unseen; test
   stays the single report split.
+
+  `TRAIN_SPLITS=train` is **not sufficient on its own** — `joint_sr_trainval.yaml`
+  is layered last at the fit stage and sets `limit_val_batches: 0`
+  unconditionally, which would give a holdout *split* with no holdout *curve*.
+  `FIT_VAL_LOOP=1` (added to both engines, default off) restores the loop for
+  holdout fits only, and restores no selection with it: no EarlyStopping, and
+  the checkpoint is still the end of the fixed 30-epoch budget
+  (`monitor: null`, `save_on_train_epoch_end`). The val loop only logs.
 * **The "tune" stage is not tuning.** One trial, one epoch, every band pinned
   (`LR_MIN == LR_MAX`, `POS_WEIGHT_MIN == POS_WEIGHT_MAX`, `LR_SR_MIN == LR_SR_MAX`).
   Optuna's log-uniform on a degenerate band suggests the constant, which lands
@@ -125,6 +133,33 @@ command line.
 * **λ = 2.4789710497080004**, copied from `sr_r0_new_wbce_holdout_seed0`'s
   overlay — a wbce tune at `batch_size=4` under this same holdout protocol.
   Never re-searched.
+
+## A band exit never ends a run
+
+`STD_BAND_ACTION=warn` plus rails at `[0.01x, 100x]`. Two independent layers,
+both deliberate:
+
+* the rails make the check almost impossible to trip (production is `0.5x/4.0x`);
+* if it trips anyway, the `warn` branch prints once, logs `adapt_band_exit=1`
+  every epoch thereafter, and **returns** — training continues to the end of the
+  budget. `joint_sr.yaml`'s own fit-stage default is `warn` for the same reason
+  (the 2026-08-19 `r4b_new` kill at epoch 13 of 100, on a decelerating trend
+  that crossed the bound by 0.004, is what set it).
+
+`sr.tune` is the one place that defaults to `raise`, so `_rl_common.sh` passes
+`--std-band-action warn` to that stage too — with `lr_sr` pinned, a pruned trial
+would remove its rung from the record rather than record a bad result.
+
+Nothing else aborts a fit on drift either: the trainval callback list has no
+`EarlyStopping`, so a NaN loss does not stop the run — it just produces NaN
+metrics from that step on. That is the expected endpoint at the top rung and it
+is **data**: record the step, add no machinery. The envelope is then read post
+hoc from the logged `adapt_std_b*` curves at the step each band crosses the
+nominal `0.5x`/`4.0x`, which retains the trajectory *after* the crossing — 
+strictly more information than the raise gave.
+
+Do not reach for `adaptive_norm_check_every=0` to quieten it: that silences the
+warn stream and the variance-floor diagnostic too, i.e. deletes the measurement.
 
 ## Store disjointness
 

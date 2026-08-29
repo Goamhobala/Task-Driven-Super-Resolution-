@@ -22,19 +22,47 @@ I/O domain: reflectance (DN x 1e-4) in AND out — the TF graph's mul_3/mul_4
 DN<->scaled conversions are deliberately outside this module, which makes it
 contract-compatible with `JointSRUNetLightning.forward` (x/1e4 -> sr -> x1e4).
 
+VRAM. This is a big generator run on a big grid: at bs=4, 128px LR -> 512px SR,
+fp32 (which is what `JointSRUNetLightning._sr_forward`'s autocast-disabled
+island gives it), the saved-for-backward set is ~18 GiB, of which res_4x alone
+— 256 channels at 512px, ~1.07 GiB per retained tensor — is ~13 GiB. That is
+what OOMs a 24 GB L4 on rl4. Set SR4RS_GRAD_CKPT=1 to checkpoint the res_2x /
+res_4x stages (see `sr4rs_grad_ckpt_enabled`); it is off by default and
+numerically exact when on.
+
 Parity check against the TF reference taps (run wherever torch exists):
     python -m sr.sr4rs_torch --model-dir <...>/SR4RS_RGBN
 """
 from __future__ import annotations
 
+import os
+from functools import partial
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 SR4RS_SCALE = 4
 SR4RS_BANDS = 4
+
+_CKPT_ENV = "SR4RS_GRAD_CKPT"
+
+
+def sr4rs_grad_ckpt_enabled() -> bool:
+    """Whether to activation-checkpoint the res_2x / res_4x stages. OFF by default.
+
+    Opt in with ``SR4RS_GRAD_CKPT=1``. An env flag rather than an hparam on
+    purpose: it changes no tensor in the checkpoint and no number in the loss,
+    so it must not become part of a run's identity — the rl series' between-arm
+    contrasts stay valid whether or not an arm was run with it.
+
+    It is exact, not approximate: this generator has no dropout and no RNG, so
+    the recomputed forward reproduces the stored one bit-for-bit. The cost is
+    one extra forward pass of each checkpointed stage.
+    """
+    return os.environ.get(_CKPT_ENV, "0").strip().lower() not in ("", "0", "false", "no")
 
 
 def pixel_norm(x, eps):
@@ -43,20 +71,37 @@ def pixel_norm(x, eps):
 
 
 class EffConv(nn.Module):
-    """Plain conv with TF-'SAME' padding (asymmetric for even kernels; all
-    SR4RS kernels are odd, so symmetric F.pad matches TF exactly here)."""
+    """Plain conv with TF-'SAME' padding FUSED into the convolution.
+
+    For an odd kernel at stride 1, TF 'SAME' is exactly symmetric zero-padding
+    by k//2, which is what ``F.conv2d(..., padding=k//2)`` does — so no
+    separate ``F.pad`` is needed and the result is unchanged. Every SR4RS
+    kernel is odd (1, 3, 5, 9); an EVEN kernel would need ASYMMETRIC padding
+    (smaller pad first), which conv2d's scalar `padding=` cannot express, so it
+    is rejected loudly here instead of being silently shifted half a pixel.
+
+    Why fuse: a separate ``F.pad`` materialises a padded COPY of the input, and
+    it is that copy — not the input — that autograd saves for the conv's
+    backward, so the padding ring is carried for the whole backward pass and
+    both tensors are live while the pad runs. Fused, the conv saves the
+    already-live unpadded input instead.
+    """
 
     def __init__(self, w, b=None):
         super().__init__()
         self.weight = nn.Parameter(w)
         self.bias = nn.Parameter(b) if b is not None else None
-        k = w.shape[-1]
-        self.pad = (k // 2,) * 4 if k > 1 else None
+        kh, kw = int(w.shape[-2]), int(w.shape[-1])
+        if kh % 2 == 0 or kw % 2 == 0:
+            raise ValueError(
+                f"EffConv got an even kernel {(kh, kw)}. TF 'SAME' pads even "
+                "kernels asymmetrically ((k-1)//2 before, k//2 after) and "
+                "conv2d's symmetric `padding=` cannot express that. All SR4RS "
+                "kernels are odd, so this means the weights are not SR4RS's.")
+        self.padding = (kh // 2, kw // 2)
 
     def forward(self, x):
-        if self.pad:
-            x = F.pad(x, self.pad)  # zero-pad == TF SAME (odd kernels, stride 1)
-        return F.conv2d(x, self.weight, self.bias)
+        return F.conv2d(x, self.weight, self.bias, padding=self.padding)
 
 
 class FusedUpsample(nn.Module):
@@ -103,13 +148,25 @@ class FusedUpsample(nn.Module):
             # TF SAME puts the SMALLER pad first: ((k-1)//2 before, k//2 after).
             # Identical for the shipped odd 3x3 blur; ordered correctly anyway
             # so an even blur kernel could never silently shift the output.
+            #
+            # NOT fused into the conv (unlike EffConv): the input here is a
+            # non-contiguous crop of the conv_transpose output, so conv2d would
+            # copy it anyway AND keep the larger uncropped base alive. The
+            # explicit pad produces one contiguous tensor and lets the base go.
             y = F.pad(y, ((k - 1) // 2, k // 2, (k - 1) // 2, k // 2))
         return F.conv2d(y, self.blur, groups=out_c)
 
 
 class SR4RSBlock(nn.Module):
     """res_2x / res_4x: upsample -> blur -> LReLU -> PN -> 3 convs, each
-    followed by LReLU -> PN. Returns (features, head_output)."""
+    followed by LReLU -> PN. `forward` returns (features, head_output).
+
+    Activation checkpointing (SR4RS_GRAD_CKPT=1) is applied PER STAGE, not to
+    the block as a whole. One segment per block would save nothing: backward
+    walks res_4x first, so recomputing it materialises its full ~13 GiB while
+    everything upstream is still held — the same peak as not checkpointing at
+    all. Four segments cap the recompute transient at one stage's worth.
+    """
 
     def __init__(self, t, scope, alpha, eps):
         super().__init__()
@@ -120,12 +177,28 @@ class SR4RSBlock(nn.Module):
             EffConv(t[f"gen/{scope}/{c}/weight"], t[f"gen/{scope}/{c}/bias"])
             for c in ("conv1", "conv2", "conv3"))
         self.head = EffConv(t[f"gen/{scope}/output/weight"], t[f"gen/{scope}/output/bias"])
+        self.grad_ckpt = sr4rs_grad_ckpt_enabled()
+
+    def _up_stage(self, x):
+        return pixel_norm(F.leaky_relu(self.up(x), self.alpha), self.eps)
+
+    def _conv_stage(self, i, x):
+        return pixel_norm(F.leaky_relu(self.convs[i](x), self.alpha), self.eps)
+
+    def features(self, x):
+        """Block features, without the 1x1 head."""
+        stages = [self._up_stage]
+        stages += [partial(self._conv_stage, i) for i in range(len(self.convs))]
+        use_ckpt = self.grad_ckpt and torch.is_grad_enabled()
+        for fn in stages:
+            # use_reentrant=False so params-only grad still works and so the
+            # recompute participates properly in the autograd graph.
+            x = checkpoint(fn, x, use_reentrant=False) if use_ckpt else fn(x)
+        return x
 
     def forward(self, x):
-        x = pixel_norm(F.leaky_relu(self.up(x), self.alpha), self.eps)
-        for conv in self.convs:
-            x = pixel_norm(F.leaky_relu(conv(x), self.alpha), self.eps)
-        return x, self.head(x)
+        f = self.features(x)
+        return f, self.head(f)
 
 
 class SR4RSGenerator(nn.Module):
@@ -152,20 +225,38 @@ class SR4RSGenerator(nn.Module):
         self.res2x = SR4RSBlock(t, "res_2x", a, e)
         self.res4x = SR4RSBlock(t, "res_4x", a, e)
 
-    def features(self, x):
-        """All intermediate taps (mirrors extract_sr4rs.py's reference names)."""
-        out = {}
+    def _trunk(self, x, out=None):
+        """stem -> 16 ResBlocks -> res_1x conv + long skip. Returns r1.
+
+        The ONE implementation of the LR path: `forward` and `features` both
+        go through it, so the parity-verified taps cannot drift away from what
+        training actually runs. `out`, when given, collects the reference taps.
+        """
         e = F.leaky_relu(self.stem(x), self.alpha)
-        out["stem"] = e
+        if out is not None:
+            out["stem"] = e
         h = e
         for i, (c1, c2) in enumerate(self.blocks):
             y = pixel_norm(F.leaky_relu(c1(h), self.alpha), self.eps)
             y = pixel_norm(c2(y), self.eps)
             h = y + h
-            if i == 0:
+            if out is not None and i == 0:
                 out["resblock0"] = h
         r1 = pixel_norm(self.res1x_conv(h), self.eps) + e
-        out["res_1x_add"] = r1
+        if out is not None:
+            out["res_1x_add"] = r1
+        return r1
+
+    def features(self, x):
+        """All intermediate taps (mirrors extract_sr4rs.py's reference names).
+
+        DIAGNOSTIC ONLY — `verify` and the viz scripts. It deliberately runs the
+        res_2x upsample twice (once bare, for the `res_2x_blur` tap, once inside
+        the block) and computes the out_1x/out_2x heads that nothing consumes;
+        `forward` does none of that. Call it under `torch.no_grad`.
+        """
+        out = {}
+        r1 = self._trunk(x, out)
         out["out_1x"] = self.res1x_head(r1)
         out["res_2x_blur"] = self.res2x.up(r1)
         f2, out["out_2x"] = self.res2x(r1)
@@ -174,7 +265,14 @@ class SR4RSGenerator(nn.Module):
         return out
 
     def forward(self, x):
-        return self.features(x)["out_4x"]
+        """The training path: out_4x only, with nothing computed that it does
+        not need. (Was `features(x)["out_4x"]`, which additionally ran the
+        res_2x upsample a second time, built two unused heads, and pinned the
+        whole tap dict — and everything autograd had saved for it — alive for
+        the duration of res_4x.)"""
+        r1 = self._trunk(x)
+        f2 = self.res2x.features(r1)
+        return self.res4x.head(self.res4x.features(f2))
 
 
 def load_trainable_sr4rs(model_dir) -> SR4RSGenerator:
@@ -197,7 +295,12 @@ def verify(model_dir, atol=1e-4):
     ref = np.load(Path(model_dir) / "gen_reference.npz")
     model = load_trainable_sr4rs(model_dir).eval()
     with torch.no_grad():
-        got = model.features(torch.as_tensor(ref["input"]))
+        x = torch.as_tensor(ref["input"])
+        got = model.features(x)
+        # `forward` is a separate, leaner code path from `features` — assert it
+        # is the SAME function, or the parity above certifies code training
+        # never runs.
+        fwd = model(x)
     ok = True
     for k in ("stem", "resblock0", "res_1x_add", "res_2x_blur", "res_2x_feat",
               "out_1x", "out_2x", "out_4x"):
@@ -207,6 +310,10 @@ def verify(model_dir, atol=1e-4):
         status = "OK " if d <= atol else "FAIL"
         ok &= d <= atol
         print(f"  {status} {k:12s} max|dt-tf| = {d:.3e}")
+    d = float((fwd - got["out_4x"]).abs().max())
+    exact = bool(torch.equal(fwd, got["out_4x"]))
+    ok &= d == 0.0
+    print(f"  {'OK ' if exact else 'FAIL'} forward==features  max|d| = {d:.3e}")
     print("PARITY PASSED" if ok else "PARITY FAILED — fix before training!")
     return ok
 
