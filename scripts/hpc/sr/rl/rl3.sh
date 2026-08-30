@@ -74,10 +74,6 @@ UPSAMPLER="sr4rs"
 FREEZE_SR="true"
 SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SR4RS_RGBN}"
 
-# The one place this arm departs from its Studio twin (see EARLY STOPPING).
-# Set for EVERY stage: ES_TAG is in the run dir, so a tune tagged one way and a
-# fit the other would look for best_params.yaml in a directory that does not
-# exist.
 # ONE JOB, NOT TWO: the fit is followed by the test split, the θ* sweep and the
 # bench, in this allocation. Nothing between them needs a queue slot, and the
 # bench is minutes against the fit's hours — two submissions only bought a
@@ -114,6 +110,11 @@ fit | bench) ;;
   ;;
 esac
 echo "[rl] stage=${STAGE}  chain_bench=${CHAIN_BENCH}"
+
+# The one place this arm departs from its Studio twin (see EARLY STOPPING).
+# Set for EVERY stage: ES_TAG is in the run dir, so a tune tagged one way and a
+# fit the other would look for best_params.yaml in a directory that does not
+# exist.
 
 FIT_EARLY_STOP="${FIT_EARLY_STOP:-1}"
 ES_PATIENCE="${ES_PATIENCE:-5}"
