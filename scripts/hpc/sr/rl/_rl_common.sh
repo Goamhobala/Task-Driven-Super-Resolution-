@@ -148,7 +148,12 @@ SEARCH_GPUS="${SEARCH_GPUS:-1}"
 REFIT_GPUS="${REFIT_GPUS:-1}"
 
 SEED="${SEED:-0}"
-WANDB_PROJECT="${WANDB_PROJECT:-sr_s2rosa_rl_campaign}"
+# The campaign's W&B project — the one the Studio lanes report into, so the
+# cluster SR4RS row lands beside them rather than in a project of its own.
+# (The Studio `_rl_common.sh` still names sr_s2rosa_rl_campaign; if that is
+# stale rather than deliberate, change it there too — this is the value the
+# runs actually live under.)
+WANDB_PROJECT="${WANDB_PROJECT:-instaroad_rl_lightning}"
 
 # --- Early stopping: PER ARM on this platform, and only here ----------------
 # The Studio lanes run the fixed 30-epoch budget on all five arms. On the

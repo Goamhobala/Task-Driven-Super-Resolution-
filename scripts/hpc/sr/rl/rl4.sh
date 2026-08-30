@@ -12,8 +12,8 @@
 # this arm carries its own best_params.yaml (see THE OVERLAY below) and the
 # engine plants it; the fit then chains into test -> θ* sweep -> bench.
 #
-#   sbatch --gres=gpu:1 --cpus-per-task=8 --time=24:00:00 \
-#          scripts/hpc/train.sbatch --SCRIPT=sr/rl/rl4.sh LRSR=1e-3
+#   sbatch --gres=gpu:1 --cpus-per-task=8 --time=24:00:00 --job-name=rl4e-3 \
+#          train.sbatch --SCRIPT=sr/rl/rl4.sh LRSR=1e-3
 #
 # Budget the walltime for BOTH stages — a job that dies at the wall clock after
 # training loses the bench with it (re-run it alone with STAGE=bench).
@@ -102,6 +102,33 @@ SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SR4RS_RGBN}"
 #   STAGE=bench    re-bench an existing run dir on its own (no chaining then).
 STAGE="${STAGE:-fit}"
 CHAIN_BENCH="${CHAIN_BENCH:-1}"
+# There is no tune stage here, so a STAGE this arm cannot honour is refused
+# LOUDLY instead of costing an epoch. Two ways one arrives without being typed
+# on the sbatch line, both silent before this guard existed:
+#   * SLURM exports the SUBMITTING shell's environment by default (--export=ALL),
+#     so a leftover `export STAGE=tune` in the login shell reaches the job and
+#     beats the ${STAGE:-fit} default above;
+#   * an older checkout of this arm, where STAGE had no default and the engine's
+#     own default (tune) applied — check `git log -1` on the cluster if you see
+#     this after a pull.
+# Either way the job would run a 1x1 Optuna pass, write an overlay this arm
+# already carries, and exit — an epoch of SR4RS for nothing.
+case "$STAGE" in
+fit | bench) ;;
+*)
+  echo "ERROR: STAGE='${STAGE}' — this arm has no such stage." >&2
+  echo "  It searches NOTHING: the head lr, the loss, λ, the batch size (and the" >&2
+  echo "  rung's lr_sr) are pinned, and it carries its own best_params.yaml, so" >&2
+  echo "  STAGE=tune would spend an epoch producing a file that already exists." >&2
+  echo "  Submit with NO STAGE at all (fit -> test -> θ* sweep -> bench), or" >&2
+  echo "  STAGE=bench to re-bench a finished run dir." >&2
+  echo "  If you did not pass STAGE, it came from your shell: SLURM exports the" >&2
+  echo "  submitting environment. Check with 'echo \$STAGE' on the login node," >&2
+  echo "  then 'unset STAGE' (or submit with --export=NONE)." >&2
+  exit 2
+  ;;
+esac
+echo "[rl] stage=${STAGE}  chain_bench=${CHAIN_BENCH}"
 
 FIT_EARLY_STOP="${FIT_EARLY_STOP:-0}"
 
