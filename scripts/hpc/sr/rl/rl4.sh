@@ -8,9 +8,10 @@
 # ladder, same tags. No early stopping here (see below), so its rows carry no
 # _es tag and DO merge with the Studio's rl4 rows for the same rung.
 #
+# NO TUNE STAGE: the rung is a pin, not a search, so this arm carries its own
+# best_params.yaml (see THE OVERLAY below) and the engine plants it.
+#
 #   S=sr/rl/rl4.sh
-#   sbatch --gres=gpu:1 --cpus-per-task=8 --time=02:00:00 \
-#          scripts/hpc/train.sbatch --SCRIPT=$S STAGE=tune  LRSR=1e-3
 #   sbatch --gres=gpu:1 --cpus-per-task=8 --time=24:00:00 \
 #          scripts/hpc/train.sbatch --SCRIPT=$S STAGE=fit   LRSR=1e-3
 #   sbatch --gres=gpu:1 --cpus-per-task=8 --time=04:00:00 \
@@ -49,8 +50,14 @@
 # rl3 early-stops, so the frozen comparator is a stopped-at-plateau run — check
 # rl3's val_ap curve actually plateaued before reading the difference.
 #
-# BUDGET / VRAM. Run STAGE=tune (1 trial x 1 epoch) first and read h/epoch and
-# peak VRAM off it (plan §4 gate 1). Measured on an L4 (saved-for-backward set,
+# BUDGET / VRAM. Gate 1 (plan §4) now reads off the fit's own first epoch —
+# check h/epoch and peak VRAM there and `scancel` if the walltime was wrong. For
+# a throwaway probe that cannot touch this rung's run dir or its rows:
+#   sbatch ... --SCRIPT=$S STAGE=fit LRSR=1e-3 EXP_TAG=rl4_probe \
+#              REFIT_EPOCHS=1 SR_HOLD_EPOCHS=0 SKIP_TEST=1
+# (SR_HOLD_EPOCHS=0 so the probe's single epoch is a JOINT one — inside the hold
+# the generator gets no gradients and the measurement would be rl3's.)
+# Measured on an L4 (saved-for-backward set,
 # bs=4, 128px LR -> 512px SR): ~18 GiB in the fp32 island, ~13 GiB of it res_4x
 # alone — 256 channels at 512 px is ~1.07 GiB PER retained tensor. SR4RS ships
 # no FFT hard constraint, so `_sr_forward` does not run it in the fp32 island:
@@ -92,5 +99,88 @@ FIT_EARLY_STOP="${FIT_EARLY_STOP:-0}"
 # checkpoint and out of a run's identity — which is exactly why turning it back
 # on (SR4RS_GRAD_CKPT=1) if this OOMs costs no between-arm comparability.
 export SR4RS_GRAD_CKPT="${SR4RS_GRAD_CKPT:-0}"
+
+# --- THE OVERLAY, PLANTED (no tune stage) ------------------------------------
+# This arm searches NOTHING: the head lr, the loss, λ, the batch size and this
+# rung's lr_sr are pinned constants (_rl_common.sh + _rl_rung.sh). Its "tune"
+# would have been one trial of one epoch whose only product was this file of
+# values it was handed, so the file is written directly and STAGE=tune is
+# skipped entirely. The engine plants it into RUN_DIR at the fit/bench stages.
+#
+# THIS MUST STAY BYTE-EQUIVALENT TO WHAT sr.tune WOULD HAVE WRITTEN.
+# `sr.tune.write_best_overlay` owns the schema; this heredoc is a second author,
+# which is a drift hazard — so it is pinned by a test rather than by eye:
+# tests/test_rl_campaign_hpc.py::test_the_planted_overlay_is_what_a_tune_would_have_written
+# rebuilds it through that function with these constants and compares, for every
+# rung. If you change a constant above, run that test.
+#
+# What each key is doing here (the rest is belt — the engine re-passes it as
+# --model.* AFTER the config layers, so those keys cannot drift):
+#   lr, lr_sr, pos_weight, batch_size, precision   NOT in the fit belt. The
+#       overlay is the only place they come from — drop one and the fit silently
+#       takes joint_sr.yaml's default instead. lr_sr is THE treatment here.
+#   sr_hold_epochs: 10.0                           the hard hold. It IS in the
+#       belt, but it is written anyway: an overlay replayed on its own (a bench,
+#       a viz, a resumed run) must not be able to adapt the generator from step
+#       0 when the run it describes held it for ten epochs.
+#   encoder_name/encoder_weights: null             head=linear builds no U-Net.
+#
+# The rung is substituted in, not hard-coded: __LR_SR__ below is replaced with
+# LRSR normalised to a YAML float. `1e-3` is NOT a float to PyYAML (its 1.1
+# resolver needs a dot AND a signed exponent), so an un-normalised rung would
+# reach the model as the STRING "1e-3" — hence %.10e, which is exact for every
+# rung on the ladder and always parses.
+LR_SR_YAML=$(awk -v v="$LRSR" 'BEGIN { printf "%.10e", v }' </dev/null)
+
+read -r -d '' BEST_PARAMS <<'YAML' || true
+# Planted by scripts/hpc/sr/rl/rl4.sh — this arm searches nothing (no tune stage).
+# Equivalent to sr.tune.write_best_overlay's output for the pinned constants;
+# pinned by tests/test_rl_campaign_hpc.py.
+model:
+  encoder_name: null
+  encoder_weights: null
+  upsampler: sr4rs
+  freeze_sr: false
+  sr_pad: 0
+  lr: 0.003
+  sr_hc: 'off'
+  head: linear
+  clip_sr: 1.0
+  loss_arm: wbce
+  pstar: bce
+  gap_r: 4
+  gap_k: 60.0
+  tl_ell: 5
+  tl_theta: 0.375
+  gap_theta: 0.55836
+  tversky_alpha: 0.7
+  cl_alpha: 0.3
+  cl_iters: 5
+  sr_w: 1.0
+  sr_radius: 1
+  warmup_start: 30
+  warmup_ramp: 10
+  mix_w: 0.6075946831862098
+  pos_weight: 2.4789710497080004
+  lr_sr: __LR_SR__
+  lr_schedule: cosine
+  sr_warmup_epochs: 1.0
+  sr_hold_epochs: 10.0
+  l2sp_lambda: 0.0
+  adaptive_norm: true
+  adaptive_norm_momentum: 0.01
+  norm_recalibrate: post
+  std_band_raise_lo: 0.01
+  std_band_raise_hi: 100.0
+data:
+  batch_size: 4
+  mask_source: raster
+  mask_dirname: mask_new_2pt5
+trainer:
+  precision: bf16-mixed
+YAML
+# Quoted heredoc + placeholder, as the refit scripts do: nothing in the block
+# can be eaten by a stray $ in a later edit.
+BEST_PARAMS="${BEST_PARAMS/__LR_SR__/$LR_SR_YAML}"
 
 source "$RL_DIR/../_stages_tv.sh"

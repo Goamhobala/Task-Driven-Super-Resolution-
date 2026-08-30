@@ -37,10 +37,18 @@
 HEAD="${HEAD:-linear}"
 MONITOR="${MONITOR:-val_ap}"
 
-# --- NO TUNING ANYWHERE (plan §1) -------------------------------------------
-# One trial of one epoch: it writes best_params.yaml (which STAGE=fit requires)
-# and it IS the plan's §4 gate-1 timing/VRAM pass. NOT N_TRIALS=0 — that is the
-# rescue idiom and needs an existing COMPLETE trial to re-emit.
+# --- NO TUNING ANYWHERE, AND NO TUNE STAGE EITHER (plan §1) -----------------
+# The Studio arms run a 1x1 "tune" whose only product is best_params.yaml — a
+# file of constants they were handed. Nothing is searched, so on this platform
+# the arms carry that overlay themselves (a heredoc in rl3.sh / rl4.sh, planted
+# by the engine at the fit/bench stages) and STAGE=tune is never submitted.
+#
+# The three values below therefore configure a stage these arms do not run. They
+# are kept, unchanged from the Studio file, for two reasons: the parity test
+# compares the two files' constants, and STAGE=tune remains available for a
+# diagnostic re-search — in which case it would be a real 1x1 pass, and its
+# study would overwrite the planted overlay (the engine plants nothing at the
+# tune stage, so the two can never be confused).
 N_TRIALS="${N_TRIALS:-1}"
 TUNE_EPOCHS="${TUNE_EPOCHS:-1}"
 PATIENCE="${PATIENCE:-5}"   # the TUNE stage's stopper; inert at 1 epoch

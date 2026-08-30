@@ -46,16 +46,20 @@
 # port locally first (`python -m sr.sr4rs_torch`) — there is no TF on the
 # cluster.
 #
+# NO TUNE STAGE. This arm searches nothing, so it carries its own
+# best_params.yaml (see THE OVERLAY below) and the engine plants it. Two stages:
+#
 #   S=sr/rl/rl3.sh
-#   sbatch --gres=gpu:1 --cpus-per-task=8 --time=02:00:00 \
-#          scripts/hpc/train.sbatch --SCRIPT=$S STAGE=tune    # 1x1: pin + timing
 #   sbatch --gres=gpu:1 --cpus-per-task=8 --time=24:00:00 \
 #          scripts/hpc/train.sbatch --SCRIPT=$S STAGE=fit
 #   sbatch --gres=gpu:1 --cpus-per-task=8 --time=04:00:00 \
 #          scripts/hpc/train.sbatch --SCRIPT=$S STAGE=bench
 #
-# Read h/epoch and peak VRAM off STAGE=tune (one trial, one epoch — the plan's
-# §4 gate-1 measurement) before committing the fit's walltime.
+# The plan's §4 gate-1 measurement (h/epoch, peak VRAM at bs=4) now comes off
+# the fit itself: read the first epoch out of the log and `scancel` if the
+# walltime was wrong. For a throwaway probe that cannot touch this arm's run dir
+# or its rows:
+#   sbatch ... --SCRIPT=$S STAGE=fit EXP_TAG=rl3_probe REFIT_EPOCHS=1 SKIP_TEST=1
 set -euo pipefail
 USER_NAME="${USER:-$(whoami)}"
 RL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,5 +79,74 @@ FIT_EARLY_STOP="${FIT_EARLY_STOP:-1}"
 ES_PATIENCE="${ES_PATIENCE:-5}"
 ES_MONITOR="${ES_MONITOR:-$MONITOR}"   # val_ap — never val_iou@0.5 (probe doc §5.1)
 ES_MODE="${ES_MODE:-max}"
+
+# --- THE OVERLAY, PLANTED (no tune stage) ------------------------------------
+# This arm searches NOTHING: the head lr, the loss, λ, the batch size are
+# pinned constants (_rl_common.sh). Its "tune" would have been one trial of
+# one epoch whose only product was this file of values it was handed, so the
+# file is written directly and STAGE=tune is skipped entirely. The engine plants
+# it into RUN_DIR at the fit/bench stages.
+#
+# THIS MUST STAY BYTE-EQUIVALENT TO WHAT sr.tune WOULD HAVE WRITTEN.
+# `sr.tune.write_best_overlay` owns the schema; this heredoc is a second author,
+# which is a drift hazard — so it is pinned by a test rather than by eye:
+# tests/test_rl_campaign_hpc.py::test_the_planted_overlay_is_what_a_tune_would_have_written
+# rebuilds it through that function with these constants and compares. If you
+# change a constant above, run that test; if it fails, the overlay is stale.
+#
+# What each key is doing here (the rest is belt — the engine re-passes it as
+# --model.* AFTER the config layers, so those keys cannot drift):
+#   lr, pos_weight, batch_size, precision   NOT in the fit belt. The overlay is
+#       the only place they come from — drop one and the fit silently takes
+#       joint_sr.yaml's default instead.
+#   encoder_name/encoder_weights: null            head=linear builds no U-Net;
+#       writing resnet34/imagenet would let this run be read back as an encoder
+#       ablation of a network that was never constructed.
+#   sr_hold_epochs is absent: a frozen arm has no SR group to hold.
+read -r -d '' BEST_PARAMS <<'YAML' || true
+# Planted by scripts/hpc/sr/rl/rl3.sh — this arm searches nothing (no tune stage).
+# Equivalent to sr.tune.write_best_overlay's output for the pinned constants;
+# pinned by tests/test_rl_campaign_hpc.py.
+model:
+  encoder_name: null
+  encoder_weights: null
+  upsampler: sr4rs
+  freeze_sr: true
+  sr_pad: 0
+  lr: 0.003
+  sr_hc: 'off'
+  head: linear
+  clip_sr: 1.0
+  loss_arm: wbce
+  pstar: bce
+  gap_r: 4
+  gap_k: 60.0
+  tl_ell: 5
+  tl_theta: 0.375
+  gap_theta: 0.55836
+  tversky_alpha: 0.7
+  cl_alpha: 0.3
+  cl_iters: 5
+  sr_w: 1.0
+  sr_radius: 1
+  warmup_start: 30
+  warmup_ramp: 10
+  mix_w: 0.6075946831862098
+  pos_weight: 2.4789710497080004
+  lr_schedule: cosine
+  sr_warmup_epochs: 1.0
+  l2sp_lambda: 0.0
+  adaptive_norm: true
+  adaptive_norm_momentum: 0.01
+  norm_recalibrate: post
+  std_band_raise_lo: 0.01
+  std_band_raise_hi: 100.0
+data:
+  batch_size: 4
+  mask_source: raster
+  mask_dirname: mask_new_2pt5
+trainer:
+  precision: bf16-mixed
+YAML
 
 source "$RL_DIR/../_stages_tv.sh"

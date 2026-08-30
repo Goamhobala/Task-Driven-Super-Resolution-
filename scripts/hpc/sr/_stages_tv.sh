@@ -79,6 +79,11 @@
 #                nothing-stops-it-early budget, so it is a BETWEEN-ARM CONSTANT
 #                of the protocol: change it for one arm and the comparison is
 #                void. Check the walltime — every arm now runs the full count.
+#   BEST_PARAMS      overlay TEXT for an arm that searches nothing: planted as
+#                <run dir>/best_params.yaml at the fit/bench stages, so
+#                STAGE=tune is not required at all. Must match what
+#                sr.tune.write_best_overlay would have written for those pinned
+#                constants; pin that with a test, not by eye.
 #   FIT_EARLY_STOP=1  re-add EarlyStopping to the REFIT. rl3 ONLY (whitelisted
 #                by EXP_TAG — every other arm's budget is fixed), and holdout
 #                fits only (TRAIN_SPLITS=train + FIT_VAL_LOOP=1).
@@ -816,6 +821,47 @@ if [ "${PRINT_RUN_DIR:-0}" = "1" ]; then
 fi
 
 mkdir -p "$RUN_DIR"
+
+# --- Planted overlay: an arm that carries its own best_params.yaml -----------
+# Normally STAGE=tune writes best_params.yaml and STAGE=fit consumes it. An arm
+# that searches NOTHING has no reason to pay for that: the rl campaign pins the
+# head lr, the loss, λ, the batch size and (per rung) lr_sr, so its "tune" was a
+# 1-trial 1-epoch pass whose only product was a file of constants it was handed.
+# Such an arm can instead set BEST_PARAMS to the overlay text and skip the stage
+# entirely — the same idiom the seed-refit scripts use
+# (scripts/hpc/sr/refit/_refit_lib.sh), one level earlier.
+#
+# WHAT THE ARM OWES: an overlay byte-equivalent to what sr.tune would have
+# written for those constants — `sr.tune.write_best_overlay` is the schema's
+# owner and a hand-written copy is a second author. Pin it with a test
+# (tests/test_rl_campaign_hpc.py compares each arm's heredoc against
+# write_best_overlay's output for the same pinned params) rather than by reading.
+#
+# NOT PLANTED AT STAGE=tune: a search writes its own overlay, and quietly
+# planting one first would leave a file the study is about to overwrite — a
+# tune that ran and a tune that did not would be indistinguishable afterwards.
+if [ -n "${BEST_PARAMS:-}" ] && [ "$STAGE" != "tune" ]; then
+  _PLANT="${RUN_DIR}/best_params.yaml"
+  if [ -f "$_PLANT" ] && ! printf '%s\n' "$BEST_PARAMS" | cmp -s - "$_PLANT"; then
+    # A different overlay is already here. If weights were trained under it,
+    # replacing it silently would make the run dir describe a config that did
+    # not produce its checkpoints — the one thing an overlay exists to prevent.
+    if [ -f "${RUN_DIR}/checkpoints/unet_s2rosa_jointsr_final.ckpt" ] \
+       || [ -f "${RUN_DIR}/checkpoints/last.ckpt" ]; then
+      echo "ERROR: ${_PLANT} differs from this arm's planted overlay, and this" >&2
+      echo "  run dir already holds checkpoints — they were trained under the" >&2
+      echo "  file on disk, not under the heredoc in the arm script." >&2
+      echo "  Diff them, then either restore the arm's constants or start a new" >&2
+      echo "  run dir (EXP_TAG=... / SEED=...). OVERWRITE_PARAMS=1 replaces it" >&2
+      echo "  anyway, which orphans those checkpoints from their config." >&2
+      if [ "${OVERWRITE_PARAMS:-0}" != "1" ]; then exit 2; fi
+    else
+      echo "NOTE: replacing ${_PLANT} (no checkpoints trained under it yet)."
+    fi
+  fi
+  printf '%s\n' "$BEST_PARAMS" > "$_PLANT"
+  echo "planted overlay: ${_PLANT} (this arm searches nothing; STAGE=tune not required)"
+fi
 
 # §4.7 stats provenance under the train+val refit: norm_stats.yaml is computed
 # on the TRAIN split, but the refit trains on train+val. NORM_TV=1 switches the
