@@ -105,7 +105,7 @@ export WARMUP_RAMP="10"
 # note the tuned seed and its best val_ap in the header the way r2b does. The
 # whole point of baking it in is that the config a refit used is readable in the
 # file that ran it, with no lookup and no drift.
-LR="${LR:-}"
+LR="${LR:-0.0002174048635726199}"
 if [ -z "$LR" ]; then
   echo "ERROR: r1b_new_nohc_gap_ce.sh has no tuned lr baked in yet." >&2
   echo "  This arm was redefined (bare generator); the OLD r1b tune is a" >&2
