@@ -8,14 +8,15 @@
 # ladder, same tags. No early stopping here (see below), so its rows carry no
 # _es tag and DO merge with the Studio's rl4 rows for the same rung.
 #
-# NO TUNE STAGE: the rung is a pin, not a search, so this arm carries its own
-# best_params.yaml (see THE OVERLAY below) and the engine plants it.
+# ONE SUBMISSION PER RUNG, START TO FINISH: the rung is a pin, not a search, so
+# this arm carries its own best_params.yaml (see THE OVERLAY below) and the
+# engine plants it; the fit then chains into test -> θ* sweep -> bench.
 #
-#   S=sr/rl/rl4.sh
 #   sbatch --gres=gpu:1 --cpus-per-task=8 --time=24:00:00 \
-#          scripts/hpc/train.sbatch --SCRIPT=$S STAGE=fit   LRSR=1e-3
-#   sbatch --gres=gpu:1 --cpus-per-task=8 --time=04:00:00 \
-#          scripts/hpc/train.sbatch --SCRIPT=$S STAGE=bench LRSR=1e-3
+#          scripts/hpc/train.sbatch --SCRIPT=sr/rl/rl4.sh LRSR=1e-3
+#
+# Budget the walltime for BOTH stages — a job that dies at the wall clock after
+# training loses the bench with it (re-run it alone with STAGE=bench).
 #
 # Same single-run hold-then-ramp shape as rl2 (10 held epochs, 20 joint), same
 # ladder, same everything except the generator — see the Studio's rl2.sh for the
@@ -53,10 +54,11 @@
 # BUDGET / VRAM. Gate 1 (plan §4) now reads off the fit's own first epoch —
 # check h/epoch and peak VRAM there and `scancel` if the walltime was wrong. For
 # a throwaway probe that cannot touch this rung's run dir or its rows:
-#   sbatch ... --SCRIPT=$S STAGE=fit LRSR=1e-3 EXP_TAG=rl4_probe \
+#   sbatch ... --SCRIPT=sr/rl/rl4.sh LRSR=1e-3 EXP_TAG=rl4_probe \
 #              REFIT_EPOCHS=1 SR_HOLD_EPOCHS=0 SKIP_TEST=1
 # (SR_HOLD_EPOCHS=0 so the probe's single epoch is a JOINT one — inside the hold
-# the generator gets no gradients and the measurement would be rl3's.)
+# the generator gets no gradients and the measurement would be rl3's. SKIP_TEST=1
+# also stops the chain, so a probe never benches or touches test.)
 # Measured on an L4 (saved-for-backward set,
 # bs=4, 128px LR -> 512px SR): ~18 GiB in the fp32 island, ~13 GiB of it res_4x
 # alone — 256 channels at 512 px is ~1.07 GiB PER retained tensor. SR4RS ships
@@ -91,6 +93,16 @@ SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SR4RS_RGBN}"
 # Belt only — the brace is in the engine, which whitelists rl3 and REFUSES
 # FIT_EARLY_STOP=1 on any other EXP_TAG, this one included. A submit-time typo
 # cannot truncate this arm's budget or mint it an _es row.
+# ONE JOB, NOT TWO: the fit is followed by the test split, the θ* sweep and the
+# bench, in this allocation. Nothing between them needs a queue slot, and the
+# bench is minutes against the fit's hours — two submissions only bought a
+# second wait. STAGE defaults to `fit` for the same reason: there is no tune to
+# be the natural first stage (see THE OVERLAY below).
+#   CHAIN_BENCH=0  stop after the fit + sweep and bench separately later.
+#   STAGE=bench    re-bench an existing run dir on its own (no chaining then).
+STAGE="${STAGE:-fit}"
+CHAIN_BENCH="${CHAIN_BENCH:-1}"
+
 FIT_EARLY_STOP="${FIT_EARLY_STOP:-0}"
 
 # Activation checkpointing on the SR4RS upsample stages — OFF, superseded by

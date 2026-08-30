@@ -31,9 +31,9 @@
 # with the tuned seed's row automatically under `report`.
 #
 #   cd scripts/hpc
-#   sbatch --job-name=refit-r1b_new_nohc_gap_ce --time=24:00:00 \
-#          --gres=gpu:1 --cpus-per-task=8 \
-#          train.sbatch --SCRIPT=sr/refit/r1b_new_nohc_gap_ce.sh
+  # sbatch --job-name=refit-r1b_new_nohc_gap_ce --time=24:00:00 \
+  #        --gres=gpu:1 --cpus-per-task=8 \
+  #        train.sbatch --SCRIPT=sr/refit/r1b_new_nohc_gap_ce.sh
 #
 # CHANGE THE SEEDS AND NOTHING ELSE:
 #   sbatch ... train.sbatch --SCRIPT=sr/refit/r1b_new_nohc_gap_ce.sh   # SEEDS defaults below

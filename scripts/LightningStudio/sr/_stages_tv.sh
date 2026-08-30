@@ -93,6 +93,10 @@
 #                nothing-stops-it-early budget, so it is a BETWEEN-ARM CONSTANT
 #                of the protocol: change it for one arm and the comparison is
 #                void. Check the walltime — every arm now runs the full count.
+#   CHAIN_BENCH=1    at the END of a fit, re-enter the arm at STAGE=bench in the
+#                same allocation, so ONE submission is fit -> test -> theta*
+#                sweep -> bench. Skipped (with a note) under SKIP_TEST=1, whose
+#                point is that test stays unseen. Budget walltime for both.
 #   BEST_PARAMS      overlay TEXT for an arm that searches nothing: planted as
 #                <run dir>/best_params.yaml at the fit/bench stages, so
 #                STAGE=tune is not required at all. Must match what
@@ -195,6 +199,13 @@ fi
 
 STAGE="${STAGE:-tune}"
 SEED="${SEED:-0}"
+# The ARM script that sourced this engine, as an absolute path. Resolved HERE,
+# at the top, because the fit stage `cd`s into RUN_DIR and a relative $0 would
+# stop resolving after that. Used by CHAIN_BENCH (bottom of the file) to re-enter
+# this same arm at STAGE=bench, the way train_both.sbatch re-enters it — a fresh
+# process, so the bench resolves every variable exactly as a standalone bench
+# would, with nothing leaking out of the fit.
+ARM_SCRIPT="${ARM_SCRIPT:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")}"
 # 0 was a DDP-era guard (GDAL handles + forked ranks). Search runs one
 # single-GPU process per GPU and the refit is single-GPU, and the datasets
 # open rasters lazily inside __getitem__, so forked loader workers are safe.
@@ -1633,4 +1644,20 @@ python -m benchmarking.cli sweep \
   "${MASK_ARGS_SWEEP[@]}"
 
 echo "=== DONE ===  outputs in $RUN_DIR"
+
+# --- fit -> bench in ONE allocation (CHAIN_BENCH=1) --------------------------
+# >>> chain-bench (extracted verbatim by tests/test_rl_campaign_hpc.py)
+if [ "${CHAIN_BENCH:-0}" = "1" ] && [ "${SKIP_TEST:-0}" != "1" ]; then
+  echo "=== CHAIN_BENCH=1: continuing into STAGE=bench in this allocation ==="
+  # exec, not a call: the fit is finished, and re-entering the ARM (not this
+  # engine) means the bench stage re-derives RUN_DIR, MODEL_NAME, the treatment
+  # and theta* from the arm's own settings — identical to a standalone
+  # `STAGE=bench` submission, with nothing carried over from the fit.
+  exec env STAGE=bench bash "$ARM_SCRIPT"
+fi
+# <<< chain-bench
+if [ "${CHAIN_BENCH:-0}" = "1" ]; then
+  echo "NOTE: CHAIN_BENCH=1 but SKIP_TEST=1 — not benching. The bench reads the"
+  echo "  test split, which is the split SKIP_TEST exists to keep unseen."
+fi
 echo "Bench: bash scripts/LightningStudio/run.sh sr/${EXP_TAG}.sh STAGE=bench SEED=${SEED}${LOSS_ARM:+ LOSS_ARM=${LOSS_ARM}}"

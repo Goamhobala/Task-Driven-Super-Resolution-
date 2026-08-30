@@ -4,6 +4,11 @@
 #
 #   HC=off LRSRS="1e-4 1e-5" bash run_pool.sh
 #
+# STAGES defaults to "tune fit bench" — seed 0 of each cell. Add `refit` to run
+# a cell's REPLICATE SEEDS through its generated, overlay-baked refit script:
+#
+#   HC=off LRSRS="1e-4" STAGES=refit SEEDS="1 2" bash run_pool.sh
+#
 # Normally you do not call this directly: pool_r2a.sh / pool_r2b.sh carry the
 # lane, the cell list and the SBATCH headers.
 #
@@ -43,6 +48,25 @@ REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 SEED="${SEED:-0}"                 # §2: seed 0 for all eight cells first
 STAGES="${STAGES:-tune fit bench}"
 CELL_SCRIPT="$REPO_DIR/scripts/hpc/sr/r2grid_new.sh"
+
+# --- the fourth, OPT-IN stage: replicate seeds ------------------------------
+# `refit` is NOT in the default STAGES, and should not be. §2 and §10: seed 0
+# for every cell first, additional seeds ONLY for a cell that ends up carrying
+# a QUANTITATIVE sentence. The grid already replicates along the lr_sr axis —
+# four runs per lane with a dose-response between them — and §4 forbids leaning
+# on between-cell metric differences at n=1 regardless, so seeds buy an error
+# bar on one number, not the mechanism claim.
+#
+# It runs a DIFFERENT script per cell: grid/refit/r2grid_<lane>_ls<rate>.sh,
+# which carries that cell's tuned overlay BAKED IN. It has to. A seed-N run dir
+# has never been tuned and never will be (RUN_DIR carries the seed), so the
+# overlay must be planted; and re-tuning per seed would hand each seed a
+# different lr, which is a different arm, not a replicate. Generate those
+# scripts from the synced run dirs with
+#   python scripts/local/make_grid_refit_scripts.py
+# SEEDS is passed through; each script's own default applies when unset.
+SEEDS="${SEEDS:-}"
+REFIT_DIR="$REPO_DIR/scripts/hpc/sr/grid/refit"
 
 # last.ckpt is KEPT here, unlike the loss refit pool which deletes it after a
 # successful bench. Grid cells are expected to collapse or die numerically (§3),
@@ -205,6 +229,31 @@ for LRSR in "${LRSR_ARR[@]}"; do
       else
         echo "[cell ${LRSR}] <<< BENCH FAILED (rc=$?) — continuing" >&2
         cell_status="BENCH FAILED"
+      fi
+    fi
+  fi
+
+  # --- 4. REFIT: replicate seeds of this cell (opt-in) -----------------------
+  # Delegated to the cell's generated refit script, which plants its baked
+  # overlay per seed and runs fit + bench through _refit_lib.sh's own guards —
+  # the same guards used above, so a completed seed costs seconds here too.
+  if want refit; then
+    _cell_refit="${REFIT_DIR}/r2grid_${HC}_ls$(printf '%s' "$LRSR" | awk '{
+      split(sprintf("%.1e", $0), a, "e"); m = a[1]; sub(/\.0$/, "", m)
+      printf "%se%d", m, a[2] + 0 }').sh"
+    if [ ! -f "$_cell_refit" ]; then
+      echo "[cell ${LRSR}] no refit script at ${_cell_refit}" >&2
+      echo "               generate it: python scripts/local/make_grid_refit_scripts.py" >&2
+      cell_status="NO REFIT SCRIPT"
+    else
+      echo "[cell ${LRSR}] >>> REFIT seeds${SEEDS:+ (${SEEDS})}  ($(date -u +%H:%M:%SZ))"
+      if env ${SEEDS:+SEEDS="$SEEDS"} STORE_DIR="$STORE_DIR" \
+             NUM_WORKERS="$NUM_WORKERS" REFIT_EPOCHS="$REFIT_EPOCHS" \
+             KEEP_LAST="$KEEP_LAST" bash "$_cell_refit"; then
+        echo "[cell ${LRSR}] <<< REFIT seeds ok"
+      else
+        echo "[cell ${LRSR}] <<< REFIT seeds FAILED (rc=$?) — continuing" >&2
+        cell_status="REFIT FAILED"
       fi
     fi
   fi

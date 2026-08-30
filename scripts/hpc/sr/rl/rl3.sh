@@ -46,20 +46,23 @@
 # port locally first (`python -m sr.sr4rs_torch`) — there is no TF on the
 # cluster.
 #
-# NO TUNE STAGE. This arm searches nothing, so it carries its own
-# best_params.yaml (see THE OVERLAY below) and the engine plants it. Two stages:
+# ONE SUBMISSION, START TO FINISH. This arm searches nothing, so it carries its
+# own best_params.yaml (see THE OVERLAY below) and the engine plants it; the fit
+# then chains straight into test -> θ* sweep -> bench (CHAIN_BENCH=1):
 #
-#   S=sr/rl/rl3.sh
 #   sbatch --gres=gpu:1 --cpus-per-task=8 --time=24:00:00 \
-#          scripts/hpc/train.sbatch --SCRIPT=$S STAGE=fit
-#   sbatch --gres=gpu:1 --cpus-per-task=8 --time=04:00:00 \
-#          scripts/hpc/train.sbatch --SCRIPT=$S STAGE=bench
+#          scripts/hpc/train.sbatch --SCRIPT=sr/rl/rl3.sh
+#
+# Budget the walltime for BOTH — the bench is minutes next to the fit's hours,
+# but a job that dies at the wall clock after training loses the bench with it
+# (re-run it alone with STAGE=bench; the checkpoint is on disk).
 #
 # The plan's §4 gate-1 measurement (h/epoch, peak VRAM at bs=4) now comes off
 # the fit itself: read the first epoch out of the log and `scancel` if the
 # walltime was wrong. For a throwaway probe that cannot touch this arm's run dir
 # or its rows:
-#   sbatch ... --SCRIPT=$S STAGE=fit EXP_TAG=rl3_probe REFIT_EPOCHS=1 SKIP_TEST=1
+#   sbatch ... --SCRIPT=sr/rl/rl3.sh EXP_TAG=rl3_probe REFIT_EPOCHS=1 SKIP_TEST=1
+# (SKIP_TEST=1 also stops the chain, so a probe never benches or touches test.)
 set -euo pipefail
 USER_NAME="${USER:-$(whoami)}"
 RL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,6 +78,16 @@ SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SR4RS_RGBN}"
 # Set for EVERY stage: ES_TAG is in the run dir, so a tune tagged one way and a
 # fit the other would look for best_params.yaml in a directory that does not
 # exist.
+# ONE JOB, NOT TWO: the fit is followed by the test split, the θ* sweep and the
+# bench, in this allocation. Nothing between them needs a queue slot, and the
+# bench is minutes against the fit's hours — two submissions only bought a
+# second wait. STAGE defaults to `fit` for the same reason: there is no tune to
+# be the natural first stage (see THE OVERLAY below).
+#   CHAIN_BENCH=0  stop after the fit + sweep and bench separately later.
+#   STAGE=bench    re-bench an existing run dir on its own (no chaining then).
+STAGE="${STAGE:-fit}"
+CHAIN_BENCH="${CHAIN_BENCH:-1}"
+
 FIT_EARLY_STOP="${FIT_EARLY_STOP:-1}"
 ES_PATIENCE="${ES_PATIENCE:-5}"
 ES_MONITOR="${ES_MONITOR:-$MONITOR}"   # val_ap — never val_iou@0.5 (probe doc §5.1)

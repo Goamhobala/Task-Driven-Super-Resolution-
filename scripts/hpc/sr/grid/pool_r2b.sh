@@ -45,7 +45,14 @@
 #
 #   LRSRS="1e-4"           only that cell
 #   STAGES="tune"          all four tunes first, fits later
-#   SEED=1                 a replicate seed for a cell that carries a sentence
+#   STAGES=refit SEEDS="1 2"
+#                          replicate seeds for a cell that carries a
+#                          quantitative sentence (§2), through
+#                          grid/refit/r2grid_off_ls<rate>.sh — which plants that
+#                          cell's BAKED overlay per seed. Do NOT reach for
+#                          SEED=1 with the default stages instead: that would
+#                          re-tune the cell and hand the seed its own lr, which
+#                          is a different arm, not a replicate.
 set -euo pipefail
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 
