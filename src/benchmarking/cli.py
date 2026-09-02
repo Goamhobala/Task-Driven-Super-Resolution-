@@ -208,18 +208,29 @@ def _md_table(headers, rows) -> str:
 
 def _bench_summary(store_dir, run_id: str, split: str) -> dict:
     """Flat ``bench_<split>/…`` summary of one benchmark run: chip-level pixel
-    means (at the run's θ), chip- and tile-level APLS means (NaN-skipping),
-    plus θ and the store run_id for cross-reference. Pure — no wandb here, so
-    it tests without one."""
+    means (at the run's θ), buffered P/R/F1 at every recorded tolerance, chip-
+    and tile-level APLS means (NaN-skipping), plus θ and the store run_id for
+    cross-reference. Pure — no wandb here, so it tests without one.
+
+    These are the θ*-scored numbers, and they are the ones to report: the bench
+    stage resolves θ from the post-refit sweep over SEEN data (train+val), so
+    ``bench_test/f1`` is the operating-point score. The training loop's own
+    ``test_f1``/``test_iou`` curves are θ = 0.5 and are not comparable with
+    them."""
     from benchmarking.store import load_chips, load_runs, load_tiles
 
     prefix = f"bench_{split}/"
     chips = load_chips(store_dir)
     chips = chips[chips["run_id"] == run_id]
     summary = {}
-    for m in ("iou", "f1", "precision", "recall"):
+    for m in ("iou", "f1", "precision", "recall", "ap"):
         if m in chips.columns:
-            summary[prefix + m] = float(chips[m].mean())   # pandas mean skips NaN
+            summary[prefix + m] = float(chips[m].mean())
+    # Buffered P/R/F1 at whatever tolerances this run recorded (buffered_f1_r1
+    # ... buffered_f1_r5 by default, plus the unsuffixed single-radius columns
+    # of older runs). Sorted so the wandb summary lists them in a stable order.
+    for m in sorted(c for c in chips.columns if c.startswith("buffered_")):
+        summary[prefix + m] = float(chips[m].mean())   # pandas mean skips NaN
     for m in ("apls", "cldice"):
         if m in chips.columns:
             summary[prefix + m + "_chip"] = float(chips[m].mean())
@@ -239,12 +250,35 @@ def _bench_summary(store_dir, run_id: str, split: str) -> dict:
     return summary
 
 
+def _push_summary_to_wandb(info: dict, run_id: str, store_dir, split: str):
+    """Resume the wandb run described by ``info`` and update its SUMMARY with
+    this benchmark run's metrics.
+
+    ``info`` is ``{id, project, entity, name}``. The summary is what makes the
+    reported number visible in wandb at all: the training loop's own test
+    metrics are scored at θ = 0.5, while these are scored at the θ* the
+    post-refit sweep chose on seen (train+val) data, which is the operating
+    point the protocol reports."""
+    import os
+
+    summary = _bench_summary(store_dir, run_id, split)
+
+    import wandb
+
+    run = wandb.init(project=info.get("project"), entity=info.get("entity"),
+                     id=info["id"], resume="allow",
+                     mode=os.environ.get("WANDB_MODE") or None)
+    run.summary.update(summary)
+    run.finish()
+    typer.echo(f"wandb: pushed {len(summary)} bench metrics onto run "
+               f"{info.get('name') or info['id']}")
+
+
 def _push_bench_to_wandb(meta_path: Path, run_id: str, store_dir, split: str):
     """Resume the FIT stage's wandb run (id recorded in train_meta.json by
     unet.train_ablation) and update its summary with the benchmark metrics —
     this is how val APLS reaches the wandb table alongside train/val curves."""
     import json
-    import os
 
     meta = yaml.safe_load(Path(meta_path).read_text()) if str(meta_path).endswith(
         (".yaml", ".yml")) else json.loads(Path(meta_path).read_text())
@@ -265,17 +299,7 @@ def _push_bench_to_wandb(meta_path: Path, run_id: str, store_dir, split: str):
         typer.secho("WARN: no wandb run id found (fit ran with wandb disabled?) "
                     "— skipping wandb push", fg=typer.colors.YELLOW, err=True)
         return
-    summary = _bench_summary(store_dir, run_id, split)
-
-    import wandb
-
-    run = wandb.init(project=info.get("project"), entity=info.get("entity"),
-                     id=info["id"], resume="allow",
-                     mode=os.environ.get("WANDB_MODE") or None)
-    run.summary.update(summary)
-    run.finish()
-    typer.echo(f"wandb: pushed {len(summary)} bench metrics onto run "
-               f"{info.get('name') or info['id']}")
+    _push_summary_to_wandb(info, run_id, store_dir, split)
 
 
 def _find_checkpoint(run_dir: Path) -> Optional[Path]:
@@ -348,8 +372,11 @@ def run_eval(
     stratum: Annotated[Optional[str], typer.Option(help="Score only this stratum, e.g. Urban | PeriUrban | Rural (case/dash-insensitive)")] = None,
     stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
     ap_bins: Annotated[Optional[int], typer.Option(help="Add per-chip Average Precision (AUPRC) scored from the probability map over this many thresholds spanning [0,1] (101 = 0.01 resolution). Unlike an AP derived from a theta sweep, coverage is complete by construction. Step-wise sum, per Davis & Goadrich.")] = None,
-    buffer_px: Annotated[Optional[str], typer.Option(help="Buffered precision/recall/F1 tolerance(s) in px: '3', or a comma list '1,2,3,4,5' for a tolerance sweep (columns gain an _r<N> suffix). Several radii share one distance transform, so the sweep is nearly free. 3 px = 7.5 m at 2.5 m GSD.")] = None,
+    buffer_px: Annotated[Optional[str], typer.Option(help="Buffered precision/recall/F1 tolerance(s) in px: '3', or a comma list '1,2,3,4,5' for a tolerance sweep (columns gain an _r<N> suffix). Several radii share one distance transform, so the sweep is nearly free. 3 px = 7.5 m at 2.5 m GSD. DEFAULT: the full 1..5 sweep — pass '' to switch it off.")] = "1,2,3,4,5",
     wandb_meta: Annotated[Optional[Path], typer.Option(help="train_meta.json with a `wandb` block: resume that run and push the bench metrics (incl. APLS) to its summary")] = None,
+    wandb_run_id: Annotated[Optional[str], typer.Option(help="Resume THIS wandb run id and push the bench metrics to its summary. For pipelines with no train_meta.json (the SR engine): read the id off <run dir>/wandb/latest-run. Ignored when --wandb-meta is given.")] = None,
+    wandb_project: Annotated[Optional[str], typer.Option(help="Project for --wandb-run-id (default: $WANDB_PROJECT)")] = None,
+    wandb_run_name: Annotated[Optional[str], typer.Option(help="Cosmetic: run name printed in the push confirmation")] = None,
 ):
     """Score a checkpoint over the split's footprint chips -> the sharded store.
 
@@ -372,6 +399,14 @@ def run_eval(
     )
     if wandb_meta is not None:
         _push_bench_to_wandb(wandb_meta, run_id, store_dir, split)
+    elif wandb_run_id:
+        import os
+
+        _push_summary_to_wandb(
+            {"id": wandb_run_id,
+             "project": wandb_project or os.environ.get("WANDB_PROJECT"),
+             "entity": None, "name": wandb_run_name},
+            run_id, store_dir, split)
 
 
 @app.command(name="sweep")
@@ -491,6 +526,7 @@ def run_eval_dir(
     max_tiles: Annotated[Optional[int], typer.Option(help="Score only the first N tiles per model (quick local smoke)")] = None,
     stratum: Annotated[Optional[str], typer.Option(help="Score only this stratum, e.g. Urban | PeriUrban | Rural")] = None,
     stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
+    buffer_px: Annotated[Optional[str], typer.Option(help="Buffered precision/recall/F1 tolerance(s) in px, applied to every checkpoint (default: the 1..5 sweep, as in `eval`). Pass '' to switch it off.")] = "1,2,3,4,5",
     skip_existing: Annotated[bool, typer.Option(help="Skip a (model_name, seed) already in the store")] = True,
     report: Annotated[bool, typer.Option(help="Run `report` over the store when all evals finish")] = True,
     out: Annotated[Optional[Path], typer.Option(help="Write the final report to .md or .csv")] = None,
@@ -559,6 +595,7 @@ def run_eval_dir(
             config_yaml_path=s["config_yaml"], tile_metrics=tile_metrics,
             device=device, threshold=s["threshold"], max_tiles=max_tiles,
             stratum=stratum, stratum_col=stratum_col,
+            buffer_px=_parse_radii(buffer_px),
         )
 
     if report:

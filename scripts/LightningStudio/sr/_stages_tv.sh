@@ -93,10 +93,15 @@
 #                nothing-stops-it-early budget, so it is a BETWEEN-ARM CONSTANT
 #                of the protocol: change it for one arm and the comparison is
 #                void. Check the walltime — every arm now runs the full count.
-#   CHAIN_BENCH=1    at the END of a fit, re-enter the arm at STAGE=bench in the
+#   CHAIN_BENCH      at the END of a fit, re-enter the arm at STAGE=bench in the
 #                same allocation, so ONE submission is fit -> test -> theta*
-#                sweep -> bench. Skipped (with a note) under SKIP_TEST=1, whose
-#                point is that test stays unseen. Budget walltime for both.
+#                sweep -> bench. DEFAULT 1 (changed 2026-09-02): a fit whose
+#                score never reached the store is an unfinished run, and the
+#                bench takes minutes next to the fit's hours. Skipped (with a
+#                note) under SKIP_TEST=1, whose point is that test stays unseen.
+#                BUDGET THE WALLTIME FOR BOTH — a job killed at the wall after
+#                training loses the bench with it (re-run it alone with
+#                STAGE=bench; nothing is recomputed). CHAIN_BENCH=0 opts out.
 #   BEST_PARAMS      overlay TEXT for an arm that searches nothing: planted as
 #                <run dir>/best_params.yaml at the fit/bench stages, so
 #                STAGE=tune is not required at all. Must match what
@@ -125,8 +130,9 @@
 # STAGE=tune   Optuna on train/val (unchanged). CHAIN_FIT=1 continues into fit
 #              in the same allocation. Early stop: `touch <run dir>/STOP`.
 #              Rescue a killed search: rerun with N_TRIALS=0.
-# STAGE=fit    Refit on train+val for REFIT_EPOCHS on ONE GPU, then test.
-#              RESUME_FIT=1 continues from last.ckpt.
+# STAGE=fit    Refit on train+val for REFIT_EPOCHS on ONE GPU, then test, then
+#              the theta* sweep, then (CHAIN_BENCH, default 1) the bench — one
+#              submission end to end. RESUME_FIT=1 continues from last.ckpt.
 # STAGE=bench  Score unet_s2rosa_jointsr_final.ckpt into the shared store.
 #
 # Replication contract: only SEED, STAGE and the loss block are meant to vary.
@@ -1356,7 +1362,16 @@ if [ "$STAGE" = "bench" ]; then
   # Per-chip extras, empty = off. Set them so a seed-N bench carries the SAME
   # columns as the seed-0 rows it will be averaged with — a ragged store makes
   # cross_seed_ci drop whichever metric a seed happens to lack.
-  BUFFER_PX="${BUFFER_PX:-}"          # e.g. "1,2,3,4,5"
+  # Buffered P/R/F1 tolerance sweep. ON by default at 1..5 px (2.5-25 m at
+  # 2.5 m GSD): all five radii share one distance transform per chip, so the
+  # sweep costs barely more than a single radius, and the fit stage's test
+  # sensitivity sweep already records exactly these tolerances — a bench row
+  # without them cannot be read against its own arm's curve. Set BUFFER_PX=""
+  # to switch it off. NB rows benched BEFORE this became the default have no
+  # buffered_* columns, so an arm whose seeds straddle the change is ragged:
+  # re-bench the older seeds (scripts/local/rebench_all.py) rather than
+  # reporting a buffered metric averaged over whichever seeds happen to have it.
+  BUFFER_PX="${BUFFER_PX:-1,2,3,4,5}"
   AP_BINS="${AP_BINS:-}"              # e.g. 101
 
   # val tiles are TRAINING tiles under this protocol — scoring on them would be
@@ -1399,6 +1414,28 @@ if [ "$STAGE" = "bench" ]; then
   fi
   echo "bench θ = ${THETA}  [${THETA_SRC}]"
 
+  # --- push the bench row onto the FIT's wandb run --------------------------
+  # Without this the only test numbers in wandb are the training loop's, which
+  # are scored at θ=0.5 — not the operating point this protocol reports. The
+  # bench row is scored at θ* (swept post-refit on SEEN train+val data), so
+  # pushing it into the same run's summary puts the reported number where the
+  # curves are. Summary keys are bench_<split>/* — they never collide with the
+  # logged curves. The SR pipeline writes no train_meta.json, so the run id
+  # comes off the refit's own wandb dir, exactly as the test stage resolves it.
+  WANDB_BENCH_ARGS=()
+  if [ "${WANDB_MODE:-online}" != "disabled" ] && [ "${BENCH_WANDB:-1}" = "1" ]; then
+    if _LATEST=$(readlink -f "${RUN_DIR}/wandb/latest-run" 2>/dev/null) && [ -n "$_LATEST" ]; then
+      WANDB_BENCH_ARGS=(--wandb-run-id "${_LATEST##*-}" \
+                        --wandb-project "$WANDB_PROJECT" \
+                        --wandb-run-name "$MODEL_NAME")
+      echo "bench -> wandb run ${_LATEST##*-} (project ${WANDB_PROJECT})"
+    else
+      echo "WARN: no ${RUN_DIR}/wandb/latest-run — bench metrics will not reach wandb." >&2
+      echo "  (The store row is still written; push it later with benchmarking.cli" >&2
+      echo "   eval --wandb-run-id, or read it with \`report\`.)" >&2
+    fi
+  fi
+
   echo "=== BENCH (ckpt=$(basename "$CKPT"), model_name=${MODEL_NAME}, seed=${SEED}, split=${BENCH_SPLIT}, θ=${THETA}, gt=${MASK_SOURCE}, tile_metrics=${TILE_METRICS:-none}) ==="
   python -m benchmarking.cli eval \
     --dataset-dir "$DATASET_DIR" \
@@ -1415,6 +1452,7 @@ if [ "$STAGE" = "bench" ]; then
     ${METRIC_ARGS[@]+"${METRIC_ARGS[@]}"} \
     ${BUFFER_PX:+--buffer-px "$BUFFER_PX"} \
     ${AP_BINS:+--ap-bins "$AP_BINS"} \
+    ${WANDB_BENCH_ARGS[@]+"${WANDB_BENCH_ARGS[@]}"} \
     ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"} \
     "${MASK_ARGS_BENCH[@]}"
 
@@ -1647,7 +1685,7 @@ echo "=== DONE ===  outputs in $RUN_DIR"
 
 # --- fit -> bench in ONE allocation (CHAIN_BENCH=1) --------------------------
 # >>> chain-bench (extracted verbatim by tests/test_rl_campaign_hpc.py)
-if [ "${CHAIN_BENCH:-0}" = "1" ] && [ "${SKIP_TEST:-0}" != "1" ]; then
+if [ "${CHAIN_BENCH:-1}" = "1" ] && [ "${SKIP_TEST:-0}" != "1" ]; then
   echo "=== CHAIN_BENCH=1: continuing into STAGE=bench in this allocation ==="
   # exec, not a call: the fit is finished, and re-entering the ARM (not this
   # engine) means the bench stage re-derives RUN_DIR, MODEL_NAME, the treatment
@@ -1656,8 +1694,8 @@ if [ "${CHAIN_BENCH:-0}" = "1" ] && [ "${SKIP_TEST:-0}" != "1" ]; then
   exec env STAGE=bench bash "$ARM_SCRIPT"
 fi
 # <<< chain-bench
-if [ "${CHAIN_BENCH:-0}" = "1" ]; then
-  echo "NOTE: CHAIN_BENCH=1 but SKIP_TEST=1 — not benching. The bench reads the"
-  echo "  test split, which is the split SKIP_TEST exists to keep unseen."
+if [ "${CHAIN_BENCH:-1}" = "1" ]; then
+  echo "NOTE: SKIP_TEST=1, so the fit did NOT chain into the bench. The bench"
+  echo "  reads the test split, which is the split SKIP_TEST exists to keep unseen."
 fi
 echo "Bench: bash scripts/LightningStudio/run.sh sr/${EXP_TAG}.sh STAGE=bench SEED=${SEED}${LOSS_ARM:+ LOSS_ARM=${LOSS_ARM}}"
