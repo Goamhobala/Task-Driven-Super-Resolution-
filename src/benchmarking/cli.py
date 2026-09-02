@@ -642,6 +642,7 @@ def report(
     stratum: Annotated[Optional[str], typer.Option(help="Report only this stratum, e.g. Urban | PeriUrban | Rural. Slices the existing store — no re-inference.")] = None,
     stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
     by_stratum: Annotated[bool, typer.Option(help="Report every stratum in turn (overrides --stratum)")] = False,
+    macro_unit: Annotated[str, typer.Option(help="tile | chip. Unit the MACRO summary averages over. 'tile' averages the 9 sampled tiles (chips inside a tile are correlated, so a chip mean overstates the evidence); 'chip' is the old behaviour.")] = "tile",
     tile_agg: Annotated[str, typer.Option(help="macro | micro. With --pair-on tile, whether a tile's score is the mean of its chip scores (macro, matches the old chip-level pairing) or derived from its pooled counts (micro). They can differ in sign.")] = "macro",
     pair_on: Annotated[str, typer.Option(help="chip | tile. Unit the PAIRWISE stats pair on. 'tile' collapses to the sampled tile (9 of them) before pairing, so spatially correlated chips inside one tile stop counting as independent evidence. Per-model summaries are unaffected.")] = "chip",
 ):
@@ -658,11 +659,11 @@ def report(
             typer.secho(f"\n{'#' * 70}\n# stratum: {s}\n{'#' * 70}", fg=typer.colors.CYAN)
             _run_report(store_dir, metrics, aggregation, n_boot,
                         _stratum_out(out, s), stratum=s, stratum_col=stratum_col,
-                        pair_on=pair_on, tile_agg=tile_agg)
+                        pair_on=pair_on, tile_agg=tile_agg, macro_unit=macro_unit)
         return
     _run_report(store_dir, metrics, aggregation, n_boot, out,
                 stratum=stratum, stratum_col=stratum_col, pair_on=pair_on,
-                tile_agg=tile_agg)
+                tile_agg=tile_agg, macro_unit=macro_unit)
 
 
 def _store_strata(store_dir, stratum_col: Optional[str]) -> list[str]:
@@ -701,6 +702,39 @@ def _region_key(df):
     return src.astype(str).str.replace(_SUBTILE_RE, "", regex=True)
 
 
+def _tile_macro_frame(df, metric, tile_agg="macro", can_micro=False):
+    """Per-(model, seed, TILE) values, so a macro mean averages 9 tiles rather
+    than ~760 chips.
+
+    Chips inside a tile share land cover, season and acquisition, so a
+    chip-weighted macro is an average over strongly correlated units: it looks
+    like n=760 evidence when the design only randomised 9 things. Collapsing
+    first makes the summary column agree with the paired test beside it, which
+    already pairs on tiles.
+
+    `tile_agg` picks what a TILE's score is, and it is a real choice:
+      micro  pool tp/fp/fn over the tile's chips, then derive the metric. The
+             tile is scored as one image, which is usually what "this tile's F1"
+             is taken to mean, and small/empty chips stop being able to swing it.
+      macro  unweighted mean of the tile's chip scores.
+    No re-benching is needed for either -- both are recoverable from the counts
+    the store already holds.
+
+    Seeds are kept separate: cross_seed_ci still needs one value per seed to
+    form its mean +/- std across seeds.
+    """
+    from benchmarking.stats import _micro_metric_from_counts
+
+    d = df.assign(_region=_region_key(df))
+    keys = ["model_name", "seed", "_region"]
+    if can_micro and tile_agg == "micro":
+        return (d.groupby(keys, sort=False)
+                 .apply(lambda g: _micro_metric_from_counts(g, metric),
+                        include_groups=False)
+                 .rename(metric).reset_index())
+    return d.groupby(keys, as_index=False, sort=False)[metric].mean()
+
+
 def _collapse_to_region(df, metric, can_micro, tile_agg="macro"):
     """Seed-averaged per-TILE values, ready for the paired stats.
 
@@ -734,7 +768,8 @@ def _collapse_to_region(df, metric, can_micro, tile_agg="macro"):
 
 
 def _run_report(store_dir, metrics, aggregation, n_boot, out,
-                stratum=None, stratum_col=None, pair_on="chip", tile_agg="macro"):
+                stratum=None, stratum_col=None, pair_on="chip", tile_agg="macro",
+                macro_unit="tile"):
     """Shared body of the ``report`` command; also chained from ``eval-dir``."""
     import numpy as np
     import pandas as pd
@@ -786,12 +821,17 @@ def _run_report(store_dir, metrics, aggregation, n_boot, out,
 
         summaries = []
         for agg in aggs:
+            u = "tile" if (agg == "macro" and macro_unit == "tile") else unit
+            n_u = (df.pipe(lambda x: _region_key(x).nunique())
+                   if u == "tile" else n_units)
             typer.echo(f"\n== per-model {met} (mean +/- std across seeds, {agg}, "
-                       f"per-{unit}){label}  n_{unit}s={n_units} ==")
+                       f"per-{u}){label}  n_{u}s={n_u} ==")
             summary_rows = []
+            src = (_tile_macro_frame(df, met, tile_agg, can_micro)
+                   if agg == "macro" and macro_unit == "tile" else df)
             for m in models:
                 try:
-                    o = cross_seed_ci(df, {"model_name": m}, metric=met, aggregation=agg)
+                    o = cross_seed_ci(src, {"model_name": m}, metric=met, aggregation=agg)
                     typer.echo(f"  {m:24} {o['mean']:.4f} +/- {o['std']:.4f}  (n_seeds={o['n_seeds']})")
                     summary_rows.append([m, f"{o['mean']:.4f}", f"{o['std']:.4f}", o["n_seeds"]])
                     csv_rows.append({"metric": met, "model": m, "aggregation": agg,
@@ -839,7 +879,8 @@ def _run_report(store_dir, metrics, aggregation, n_boot, out,
                                   f"{wil['p_value']:.3g}", sig.strip() or ""])
 
         for agg, summary_rows in summaries:
-            md_parts.append(f"## {met} ({agg}, per-{unit}){label}\n\n"
+            u = "tile" if (agg == "macro" and macro_unit == "tile") else unit
+            md_parts.append(f"## {met} ({agg}, per-{u}){label}\n\n"
                             + _md_table(["model", "mean", "std", "n_seeds"], summary_rows))
         # ONE pairwise block per metric regardless of aggregation: it pairs
         # SEED-AVERAGED PER-CHIP values, which are neither micro nor macro, so
