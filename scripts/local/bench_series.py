@@ -138,7 +138,11 @@ def one(d: Path, model: str, seed: int, ck: Path, args):
                # FileNotFoundError for model.safetensor.
                "--sen2sr-dir", args.sen2sr_dir,
                "--threshold", str(theta), "--device", args.device,
-               "--buffer-px", args.buffer_px, "--ap-bins", str(args.ap_bins)]
+               "--buffer-px", args.buffer_px, "--ap-bins", str(args.ap_bins),
+               # Chips per forward pass. The ONLY safe OOM lever: --cell-m is
+               # the protocol footprint (2560 m) and changing it would make the
+               # rows incomparable with every other arm in the store.
+               "--batch-size", str(args.batch_size)]
         cfg = d / "best_params.yaml"
         if cfg.is_file():
             cmd += ["--config-yaml", str(cfg)]
@@ -162,6 +166,9 @@ def main(argv=None) -> int:
     p.add_argument("--jobs", type=int, default=3)
     p.add_argument("--buffer-px", default="1,2,3,4,5")
     p.add_argument("--ap-bins", type=int, default=101)
+    p.add_argument("--batch-size", type=int, default=8,
+                   help="chips per forward pass; lower it (4, 2, 1) on OOM. Does "
+                        "NOT affect the scores, only peak memory.")
     p.add_argument("--select-on", default="iou_mean")
     p.add_argument("--sen2sr-dir",
                    default="/Volumes/MAC_KIOXIA/InstaRoadPrototype/models/SEN2SRLite_RGBN",
