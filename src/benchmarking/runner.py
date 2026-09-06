@@ -35,9 +35,12 @@ Writes the sharded store (``runs/ chips/ tiles/`` — see ``benchmarking.store``
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,9 +54,20 @@ from rasterio.windows import Window
 from benchmarking import strata
 from benchmarking.confusion_matrix import confusion_counts, pixel_metrics_from_counts
 from benchmarking.store import append_chips, append_run, append_tiles
-from benchmarking.tile_metrics import resolve_tile_metrics
+from benchmarking.tile_metrics import resolve_tile_metrics, run_tile_metrics
 
 CELL_M_DEFAULT = 2560.0  # 256 px @ 10 m; 1024 px @ 2.5 m
+
+# Tile-metric fan-out. APLS/clDice are pure CPU and dominate a bench (~85% of
+# wall clock on the rl series), so running them inline leaves the GPU idle for
+# most of the run. Default: leave two cores for the inference loop and the
+# dataloader. BENCH_TILE_METRIC_WORKERS overrides; 0 or 1 keeps the old inline
+# path, which the equivalence tests and any debugger want.
+_TM_WORKERS_ENV = "BENCH_TILE_METRIC_WORKERS"
+# Ceiling on plugin jobs in flight, as a multiple of the worker count. Each
+# queued job pins its tile's stitched prediction + GT (a few MB at 2.5 m), so
+# an unbounded queue would grow to the whole split.
+_TM_QUEUE_FACTOR = 2
 
 MODEL_FAMILIES = ("unet", "sr")
 
@@ -349,6 +363,70 @@ def _accumulate(rows, out):
         rows.extend(out)
 
 
+# --------------------------------------------------------------------------- #
+# tile-metric fan-out
+# --------------------------------------------------------------------------- #
+class _Done:
+    """Future-shaped wrapper around an already-computed result, so the inline
+    path shares the drain loop below instead of duplicating the merge."""
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value):
+        self._value = value
+
+    def result(self):
+        return self._value
+
+
+def _tile_metric_workers(plugins, requested) -> int:
+    """Processes to fan the tile-metric plugins out over; 0 means run inline.
+
+    Explicit argument wins, then ``$BENCH_TILE_METRIC_WORKERS``, then all but
+    two cores (the inference loop and its dataloader want one each). With no
+    plugins there is nothing to fan out, and a single worker would only add
+    pickling to the inline path — both collapse to 0.
+    """
+    if not plugins:
+        return 0
+    if requested is None:
+        requested = os.environ.get(_TM_WORKERS_ENV)
+    n = (int(requested) if requested not in (None, "")
+         else max(1, (os.cpu_count() or 2) - 2))
+    return n if n > 1 else 0
+
+
+@contextlib.contextmanager
+def _tile_metric_pool(n_workers: int):
+    """Worker pool for the tile metrics, or None when they run inline.
+
+    No initializer, and the payload lives in ``benchmarking.tile_metrics``
+    rather than here: under spawn a worker imports the payload's module, and
+    importing this one would cost every worker a torch import.
+    """
+    if n_workers < 2:
+        yield None
+        return
+    with ProcessPoolExecutor(max_workers=n_workers) as ex:
+        yield ex
+
+
+def _drain_tile_metrics(pending, chip_rows, tile_rows, keep: int) -> None:
+    """Merge finished tile-metric jobs, oldest first, until ``keep`` remain.
+
+    FIFO rather than as-completed: chip and tile rows then land in split order
+    however the workers interleave, so a pooled run's store is row-for-row what
+    the inline path would have written.
+    """
+    while len(pending) > keep:
+        tile_id, rows, fut = pending.pop(0)
+        tile_extra, per_chip = fut.result()
+        tile_rows.append({"tile_id": tile_id, **tile_extra})
+        for r in rows:
+            r.update(per_chip.get(r["chip_id"], {}))
+        _accumulate(chip_rows, rows)
+
+
 def _rows_at_threshold(metas, probs, target, masks, threshold, ms_per_chip,
                        canvases, scale, buffer_px=None, gt_dists=None, aps=None):
     """Score one same-sized batch at ONE θ -> rows; optionally stitch the
@@ -532,7 +610,8 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
              config_yaml_path=None, exp_tag="", label_source="",
              tile_metrics=(), check="first", device=None, threshold=None,
              max_tiles=None, sweep_thresholds=None,
-             stratum=None, stratum_col=None, buffer_px=None, ap_bins=None):
+             stratum=None, stratum_col=None, buffer_px=None, ap_bins=None,
+             tile_metric_workers=None):
     """Score a checkpoint over the split's footprint chips -> the sharded store.
 
     ``check`` runs the tp+fn-vs-mask invariant on the ``first`` tile (default),
@@ -556,6 +635,12 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
     run row, so a stratified run is self-describing. To slice a store that was
     already scored over the whole split, use ``benchmarking.cli report
     --stratum`` instead; it needs no re-inference. See ``benchmarking.strata``.
+
+    ``tile_metric_workers`` fans the (pure-CPU, GPU-idling) tile-metric plugins
+    out over that many processes, overlapped with inference; ``None`` takes
+    ``$BENCH_TILE_METRIC_WORKERS`` or all-but-two cores, and 0/1 runs them
+    inline. Results are merged in split order either way, so the store does not
+    depend on it.
     """
     if model not in MODEL_FAMILIES:
         raise ValueError(f"unsupported model family {model!r} (choose from {MODEL_FAMILIES})")
@@ -636,7 +721,15 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
 
     chip_rows, tile_rows = _new_rows(sweep_thresholds), []
     chip_px_used = None
-    with torch.inference_mode():
+    # (tile_id, chip rows, plugin future) awaiting their tile metrics, oldest
+    # first. Draining in submission order keeps the store's row order — and so
+    # every downstream mean — identical to the inline path.
+    pending: list[tuple[str, list, object]] = []
+    n_tm_workers = _tile_metric_workers(plugins, tile_metric_workers)
+    with torch.inference_mode(), _tile_metric_pool(n_tm_workers) as tm_pool:
+        if tm_pool is not None:
+            print(f"tile metrics {tuple(tile_metrics)} on {n_tm_workers} worker "
+                  f"process(es), overlapped with inference")
         for i, (_, row) in enumerate(df.iterrows()):
             # tile_id = the tile's unique stem (e.g. "Mtubatuba_r0_c2"), NOT
             # zone_name — many tiles share a zone and chip_id derives from
@@ -666,26 +759,27 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
                         f"tile mask has {gt_road_px} road px. Grid/window/GT bug."
                     )
 
-            if plugins:
-                pred_full, gt_full = canvases
-                s = pred.scale
-                grid_gt = [  # the footprint cells in GT pixels, for per-chip plugin values
-                    (f"{tile_id}_r{ri}_c{ci}", ri, ci, s * r0, s * c0, s * h, s * w)
-                    for ri, ci, r0, c0, h, w in _grid(
-                        gt_full.shape[0] // s, gt_full.shape[1] // s, chip_px_used)
-                ]
-                tile_extra, per_chip = {}, {}
-                for plugin in plugins:
-                    res = plugin(pred_full, gt_full, transform=gt_tf,
-                                 tile_id=tile_id, grid=grid_gt)
-                    tile_extra.update(res.tile)
-                    for cid, vals in (res.chips or {}).items():
-                        per_chip.setdefault(cid, {}).update(vals)
-                tile_rows.append({"tile_id": tile_id, **tile_extra})
-                for r in rows:
-                    r.update(per_chip.get(r["chip_id"], {}))
+            if not plugins:
+                _accumulate(chip_rows, rows)
+                continue
 
-            _accumulate(chip_rows, rows)
+            pred_full, gt_full = canvases
+            s = pred.scale
+            grid_gt = [  # the footprint cells in GT pixels, for per-chip plugin values
+                (f"{tile_id}_r{ri}_c{ci}", ri, ci, s * r0, s * c0, s * h, s * w)
+                for ri, ci, r0, c0, h, w in _grid(
+                    gt_full.shape[0] // s, gt_full.shape[1] // s, chip_px_used)
+            ]
+            args = (tile_metrics, pred_full, gt_full, gt_tf, tile_id, grid_gt)
+            pending.append((tile_id, rows, tm_pool.submit(run_tile_metrics, *args)
+                            if tm_pool is not None else _Done(run_tile_metrics(*args))))
+            # Inline (keep=0) this merges immediately, exactly as before. Pooled,
+            # it blocks only once the queue is full — the canvases of every
+            # queued tile stay resident, so the depth is what bounds memory.
+            _drain_tile_metrics(pending, chip_rows, tile_rows,
+                                keep=n_tm_workers * _TM_QUEUE_FACTOR)
+
+        _drain_tile_metrics(pending, chip_rows, tile_rows, keep=0)
 
     if sweep_thresholds is not None:
         # A sweep picks an operating point; it is not a benchmark run, so it

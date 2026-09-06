@@ -68,6 +68,28 @@ def resolve_tile_metrics(names: Sequence[str]):
         ) from None
 
 
+def run_tile_metrics(names: Sequence[str], pred_bin: np.ndarray, gt_mask: np.ndarray,
+                     transform, tile_id: str, grid):
+    """Run every named plugin over one stitched tile -> (tile cols, per-chip cols).
+
+    The runner's whole per-tile plugin step, lifted out as a top-level function
+    so it can be the payload of a ``ProcessPoolExecutor``. Plugin work is pure
+    CPU (skeletonize + graph search) and used to run inline between forward
+    passes, leaving the GPU idle for the ~85% of a bench that APLS costs;
+    fanning it out needs a picklable callable that lives in a module the
+    workers can import CHEAPLY. That is why it belongs here rather than in
+    ``benchmarking.runner``: importing the runner drags in torch, which under
+    spawn would cost every worker seconds of start-up and hundreds of MB.
+    """
+    tile_extra, per_chip = {}, {}
+    for plugin in resolve_tile_metrics(names):
+        res = plugin(pred_bin, gt_mask, transform=transform, tile_id=tile_id, grid=grid)
+        tile_extra.update(res.tile)
+        for cid, vals in (res.chips or {}).items():
+            per_chip.setdefault(cid, {}).update(vals)
+    return tile_extra, per_chip
+
+
 @register("apls")
 def apls(pred_bin: np.ndarray, gt_mask: np.ndarray, *, transform, tile_id: str,
          grid) -> TileMetricResult:

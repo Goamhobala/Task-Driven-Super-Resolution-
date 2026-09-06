@@ -373,6 +373,7 @@ def run_eval(
     stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
     ap_bins: Annotated[Optional[int], typer.Option(help="Add per-chip Average Precision (AUPRC) scored from the probability map over this many thresholds spanning [0,1] (101 = 0.01 resolution). Unlike an AP derived from a theta sweep, coverage is complete by construction. Step-wise sum, per Davis & Goadrich.")] = None,
     buffer_px: Annotated[Optional[str], typer.Option(help="Buffered precision/recall/F1 tolerance(s) in px: '3', or a comma list '1,2,3,4,5' for a tolerance sweep (columns gain an _r<N> suffix). Several radii share one distance transform, so the sweep is nearly free. 3 px = 7.5 m at 2.5 m GSD. DEFAULT: the full 1..5 sweep — pass '' to switch it off.")] = "1,2,3,4,5",
+    tile_metric_workers: Annotated[Optional[int], typer.Option(help="Fan the tile metrics (APLS/clDice — pure CPU, and ~85% of a bench with APLS on) out over this many processes, overlapped with inference. Default: $BENCH_TILE_METRIC_WORKERS, else all but two cores. 0 or 1 runs them inline. The store is identical either way — rows are merged in split order.")] = None,
     wandb_meta: Annotated[Optional[Path], typer.Option(help="train_meta.json with a `wandb` block: resume that run and push the bench metrics (incl. APLS) to its summary")] = None,
     wandb_run_id: Annotated[Optional[str], typer.Option(help="Resume THIS wandb run id and push the bench metrics to its summary. For pipelines with no train_meta.json (the SR engine): read the id off <run dir>/wandb/latest-run. Ignored when --wandb-meta is given.")] = None,
     wandb_project: Annotated[Optional[str], typer.Option(help="Project for --wandb-run-id (default: $WANDB_PROJECT)")] = None,
@@ -396,6 +397,7 @@ def run_eval(
         threshold=threshold, max_tiles=max_tiles,
         stratum=stratum, stratum_col=stratum_col,
         buffer_px=_parse_radii(buffer_px), ap_bins=ap_bins,
+        tile_metric_workers=tile_metric_workers,
     )
     if wandb_meta is not None:
         _push_bench_to_wandb(wandb_meta, run_id, store_dir, split)

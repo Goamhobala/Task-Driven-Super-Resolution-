@@ -3,7 +3,7 @@ name = "instaroadprototype"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "matplotlib>=3.10.8",
     "mkdocs>=1.6.1",
@@ -164,9 +164,15 @@ instageo = { git = "https://github.com/kelviy/InstaGeo-E2E-Geospatial-ML.git" }
 terratorch = { git = "https://github.com/terrastackai/terratorch.git" }
 # segment-anything = { git = "https://github.com/facebookresearch/segment-anything.git" }
 
-# Linux uses torch CUDA index. Mac fall back to default PyPI
-torch = [ { index = "pytorch-cu128", marker = "sys_platform == 'linux'" } ]
-torchvision = [ { index = "pytorch-cu128", marker = "sys_platform == 'linux'" } ]
+# Linux/Windows use torch CUDA index. Mac falls back to default PyPI
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'win32'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
@@ -176,7 +182,8 @@ explicit = true
 [tool.uv]
 environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",  # Apple Silicon Mac
-    "sys_platform == 'darwin' and platform_machine == 'x86_64'"   # Intel Mac
+    "sys_platform == 'win32'",                                    # Windows
+    "sys_platform == 'linux'",                                    # Linux
 ]
 
 # mamba-ssm (and its optional causal-conv1d companion) `import torch` in setup.py

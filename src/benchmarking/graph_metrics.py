@@ -41,7 +41,11 @@ GSD-aware defaults (metres, converted to pixels via the transform):
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
+from scipy.sparse import coo_matrix
+from scipy.sparse import csgraph
 
 SNAP_DIST_M = 30.0
 CONTROL_DELTA_M = 500.0
@@ -50,17 +54,66 @@ MAX_NODES = 200
 _EPS_M = 1e-9
 
 _OFFSETS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
+_SQRT2 = math.sqrt(2.0)
+
+# byte -> the _OFFSETS entries its set bits select, i.e. exactly the neighbour
+# list `_neighbour_bits` encodes. _OFFSETS is in sorted (row, col) order, so
+# these tuples come out sorted too — the chain walk's tie-break ("first
+# neighbour that is not `prev`") depends on that ordering.
+_BIT_NBRS = tuple(
+    tuple((dr, dc) for k, (dr, dc) in enumerate(_OFFSETS) if b >> k & 1)
+    for b in range(256)
+)
 
 
 # --------------------------------------------------------------------------- #
 # mask -> graph (skeleton chain tracing)
 # --------------------------------------------------------------------------- #
+def _neighbour_bits(skel: np.ndarray) -> np.ndarray:
+    """(H, W) uint8 in which bit k is set iff the pixel AND its ``_OFFSETS[k]``
+    neighbour are both skeleton (0 off the skeleton).
+
+    Same information the tracer used to build as ``{pixel: [neighbours]}``, but
+    as eight shifted array-ORs instead of one dict entry and eight set lookups
+    per skeleton pixel — that dict was ~26% of ``mask_to_graph``. ``_BIT_NBRS``
+    decodes a byte back into the identically ordered neighbour list.
+    """
+    h, w = skel.shape
+    pad = np.zeros((h + 2, w + 2), dtype=np.uint8)
+    pad[1:-1, 1:-1] = skel
+    bits = np.zeros((h, w), dtype=np.uint8)
+    for k, (dr, dc) in enumerate(_OFFSETS):
+        bits |= pad[1 + dr:1 + dr + h, 1 + dc:1 + dc + w] << k
+    bits[~skel] = 0
+    return bits
+
+
 def _polyline_len_m(pts: np.ndarray, px_m: float) -> float:
     """Length of an (N,2) pixel polyline in metres."""
     if len(pts) < 2:
         return 0.0
     d = np.diff(np.asarray(pts, dtype=float), axis=0)
     return float(np.hypot(d[:, 0], d[:, 1]).sum()) * px_m
+
+
+def _chain_len_m(chain: list[tuple[int, int]], px_m: float) -> float:
+    """Length of a TRACED chain in metres — the pixel-step special case.
+
+    Every step of a traced chain moves to an 8-neighbour, so it is either
+    orthogonal (1 px) or diagonal (sqrt 2 px) and the length is two multiplies
+    over the step counts. Traced chains average only a handful of pixels, where
+    `_polyline_len_m`'s four numpy calls are almost entirely call overhead —
+    this walks the raw tuple list instead and skips building the array. Summing
+    two exact constants also rounds slightly better than accumulating hypots,
+    so lengths can differ from the old path in the last ulp.
+    """
+    diag = 0
+    pr, pc = chain[0]
+    for r, c in chain[1:]:
+        if r != pr and c != pc:
+            diag += 1
+        pr, pc = r, c
+    return (diag * _SQRT2 + (len(chain) - 1 - diag)) * px_m
 
 
 def _add_chain(G, chain: list[tuple[int, int]], px_m: float) -> None:
@@ -71,10 +124,10 @@ def _add_chain(G, chain: list[tuple[int, int]], px_m: float) -> None:
     keep the SHORTER one (exactly what any shortest path would use).
     """
     u, v = chain[0], chain[-1]
-    pts = np.asarray(chain, dtype=float)
-    length = max(_polyline_len_m(pts, px_m), _EPS_M)
+    length = max(_chain_len_m(chain, px_m), _EPS_M)
     if G.has_edge(u, v) and u != v and G[u][v]["length"] <= length:
-        return
+        return                            # rejected: never build its polyline
+    pts = np.asarray(chain, dtype=float)
     G.add_node(u, o=np.asarray(u, dtype=float))
     G.add_node(v, o=np.asarray(v, dtype=float))
     G.add_edge(u, v, pts=pts, length=length)
@@ -101,23 +154,26 @@ def mask_to_graph(mask: np.ndarray, px_m: float, min_spur_m: float = MIN_SPUR_M)
     if not mask.any():
         return G
     skel = skeletonize(mask)
-    coords = {(int(r), int(c)) for r, c in zip(*np.nonzero(skel))}
-    if not coords:
+    if not skel.any():
         return G
 
-    def nbrs(p):
-        r, c = p
-        return [(r + dr, c + dc) for dr, dc in _OFFSETS if (r + dr, c + dc) in coords]
-
-    neighbours = {p: nbrs(p) for p in coords}
-    node_px = {p for p, ns in neighbours.items() if len(ns) != 2}
+    # Neighbourhoods as a bit-plane rather than a dict of lists: `bits[r, c]`
+    # decodes through `_BIT_NBRS` to the same offset-ordered neighbour list, and
+    # `deg` is its popcount. np.nonzero yields row-major order, which for
+    # (row, col) pixel ids IS sorted order — the traversal order the old
+    # `sorted(node_px)` / `sorted(neighbours[p])` established.
+    bits = _neighbour_bits(skel)
+    deg = np.bitwise_count(bits)
+    is_node = skel & (deg != 2)
 
     stepped: set[tuple[tuple[int, int], tuple[int, int]]] = set()
     chained: set[tuple[int, int]] = set()
 
     # chains between junction/endpoint pixels
-    for p in sorted(node_px):
-        for q in sorted(neighbours[p]):
+    for pr, pc in zip(*np.nonzero(is_node)):
+        p = (int(pr), int(pc))
+        for dr, dc in _BIT_NBRS[bits[p]]:
+            q = (p[0] + dr, p[1] + dc)
             if (p, q) in stepped:
                 continue
             chain = [p]
@@ -127,32 +183,44 @@ def mask_to_graph(mask: np.ndarray, px_m: float, min_spur_m: float = MIN_SPUR_M)
                 stepped.add((cur, prev))
                 chain.append(cur)
                 chained.add(cur)
-                if cur in node_px:
+                if is_node[cur]:
                     break
-                nxt = [t for t in neighbours[cur] if t != prev]
-                if not nxt:  # safety: degree-2 bookkeeping can't fail, but be robust
+                nxt = None
+                for dr2, dc2 in _BIT_NBRS[bits[cur]]:
+                    t = (cur[0] + dr2, cur[1] + dc2)
+                    if t != prev:
+                        nxt = t
+                        break
+                if nxt is None:  # safety: degree-2 bookkeeping can't fail, but be robust
                     break
-                prev, cur = cur, nxt[0]
+                prev, cur = cur, nxt
             if len(chain) >= 2:
                 _add_chain(G, chain, px_m)
 
     # pure cycles (rings with every pixel at degree 2 -> never reached above)
-    remaining = sorted(p for p in coords if len(neighbours[p]) == 2 and p not in chained
-                       and p not in node_px)
-    seen = set(chained) | node_px
-    for p0 in remaining:
+    # Only degree-2 pixels can start one, so junction/endpoint pixels need no
+    # exclusion here; `seen` grows as rings are walked, exactly as before.
+    seen = chained
+    for pr, pc in zip(*np.nonzero(skel & (deg == 2))):
+        p0 = (int(pr), int(pc))
         if p0 in seen:
             continue
         chain = [p0]
         seen.add(p0)
-        prev, cur = p0, sorted(neighbours[p0])[0]
+        prev, cur = p0, (p0[0] + _BIT_NBRS[bits[p0]][0][0],
+                         p0[1] + _BIT_NBRS[bits[p0]][0][1])
         while cur != p0:
             chain.append(cur)
             seen.add(cur)
-            nxt = [t for t in neighbours[cur] if t != prev]
-            if not nxt:
+            nxt = None
+            for dr2, dc2 in _BIT_NBRS[bits[cur]]:
+                t = (cur[0] + dr2, cur[1] + dc2)
+                if t != prev:
+                    nxt = t
+                    break
+            if nxt is None:
                 break
-            prev, cur = cur, nxt[0]
+            prev, cur = cur, nxt
         chain.append(p0)  # close the loop
         if len(chain) >= 3:
             _add_chain(G, chain, px_m)
@@ -240,6 +308,18 @@ def _inject_controls(G, delta_m: float):
     return G2
 
 
+def _csr_lengths(G):
+    """(node -> row index, CSR weight matrix) for a graph's ``length`` edges."""
+    nodes = list(G.nodes)
+    idx = {n: i for i, n in enumerate(nodes)}
+    r, c, w = [], [], []
+    for u, v, d in G.edges(data=True):
+        if u == v:
+            continue                      # self-loops cannot shorten any path
+        r.append(idx[u]); c.append(idx[v]); w.append(float(d["length"]))
+    return idx, coo_matrix((w, (r, c)), shape=(len(nodes), len(nodes))).tocsr()
+
+
 # --------------------------------------------------------------------------- #
 # directional APLS
 # --------------------------------------------------------------------------- #
@@ -292,30 +372,49 @@ def _directional_apls(G_src, G_tgt, snap_dist_m: float, control_delta_m: float,
         if ref is None:
             snapped[c] = None
 
-    # pairwise path-length comparison
-    penalty_sum, n_pairs = 0.0, 0
-    for ai, a in enumerate(controls[:-1]):
-        len_src = nx.single_source_dijkstra_path_length(Gs, a, weight="length")
-        ta = snapped[a]
-        len_tgt = (nx.single_source_dijkstra_path_length(Gt, ta, weight="length")
-                   if ta is not None else {})
-        for b in controls[ai + 1:]:
-            L_s = len_src.get(b)
-            if L_s is None or L_s <= 0:
-                continue  # APLS counts only pairs with a path in the source
-            n_pairs += 1
-            tb = snapped[b]
-            if ta is None or tb is None:
-                penalty_sum += 1.0
-                continue
-            L_t = len_tgt.get(tb)
-            if L_t is None:
-                penalty_sum += 1.0  # both snapped but disconnected in target
-                continue
-            penalty_sum += min(1.0, abs(L_s - L_t) / L_s)
+    # pairwise path-length comparison.
+    #
+    # Identical maths to the obvious per-source networkx loop, but every
+    # source's Dijkstra is batched into one scipy.sparse.csgraph call, which
+    # stays in C instead of paying per-node Python overhead. Measured 4-5x on
+    # dense tiles and 13-17x on fragmented (noisy-prediction) ones, matching
+    # the networkx result to <=2.2e-16 over the tiles benched so far.
+    A = controls[:-1]
+    if not A:
+        return None
+    si, Ms = _csr_lengths(Gs)
+    ti, Mt = _csr_lengths(Gt)
+    d_src = csgraph.dijkstra(Ms, directed=False, indices=[si[a] for a in A])
+    rows_with_t = [k for k, a in enumerate(A) if snapped[a] is not None]
+    d_tgt = (csgraph.dijkstra(Mt, directed=False,
+                              indices=[ti[snapped[A[k]]] for k in rows_with_t])
+             if rows_with_t else None)
+    trow = {k: n for n, k in enumerate(rows_with_t)}
+
+    terms, n_pairs = [], 0
+    for ai, a in enumerate(A):
+        rest = controls[ai + 1:]
+        L_s = d_src[ai][[si[b] for b in rest]]
+        ok = np.isfinite(L_s) & (L_s > 0)  # only pairs with a path in the source
+        if not ok.any():
+            continue
+        n_pairs += int(ok.sum())
+        if ai not in trow:                 # source control never snapped
+            terms.append(float(ok.sum()))
+            continue
+        row = d_tgt[trow[ai]]
+        L_t = np.array([row[ti[snapped[b]]] if snapped[b] is not None else np.inf
+                        for b in rest])
+        sel_s, sel_t = L_s[ok], L_t[ok]
+        bad = ~np.isfinite(sel_t)          # unsnapped, or disconnected in target
+        terms.append(float(bad.sum()))
+        good = ~bad
+        if good.any():
+            terms.append(float(np.minimum(
+                1.0, np.abs(sel_s[good] - sel_t[good]) / sel_s[good]).sum()))
     if n_pairs == 0:
         return None
-    return float(np.clip(1.0 - penalty_sum / n_pairs, 0.0, 1.0))
+    return float(np.clip(1.0 - math.fsum(terms) / n_pairs, 0.0, 1.0))
 
 
 # --------------------------------------------------------------------------- #
