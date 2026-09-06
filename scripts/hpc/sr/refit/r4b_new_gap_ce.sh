@@ -78,6 +78,12 @@ SR_HC="native"
 # these are the only record of how far it drifted. Keep them.
 SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-2}"
 
+USER_NAME="${USER_NAME:-${USER:-yhxjin001}}"
+# SR4RS weights live in their OWN model dir. Without this the engine falls back
+# to _stages_tv.sh's default (SEN2SRLite_RGBN), which holds no gen_weights.
+# safetensors and the fit dies at the pre-flight check. Matches sr/{r3b,r4a,r4b}_new.sh.
+export SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SR4RS_RGBN}"
+
 # RUN_TAG must reproduce _stages_tv.sh's RUN_DIR exactly, or the seed lands in a
 # directory that does not group with the tuned seed:
 #   sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${PROTO_TAG}

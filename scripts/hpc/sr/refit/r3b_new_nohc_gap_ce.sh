@@ -22,9 +22,9 @@
 # the tuned seed's row automatically under `report`.
 #
 #   cd scripts/hpc
-#   sbatch --job-name=refit-r3b_new_nohc_gap_ce --time=24:00:00 \
-#          --gres=gpu:1 --cpus-per-task=8 \
-#          train.sbatch --SCRIPT=sr/refit/r3b_new_nohc_gap_ce.sh
+  # sbatch --job-name=refit-r3b_new_nohc_gap_ce --time=48:00:00 \
+  #        --gres=gpu:1 --cpus-per-task=8 \
+  #        train.sbatch --SCRIPT=sr/refit/r3b_new_nohc_gap_ce.sh
 #
 # CHANGE THE SEEDS AND NOTHING ELSE:
 #   sbatch ... train.sbatch --SCRIPT=sr/refit/r3b_new_nohc_gap_ce.sh  # SEEDS below
@@ -53,7 +53,7 @@ source "$REPO_DIR/scripts/hpc/sr/refit/_refit_lib.sh"
 
 EXP_TAG="r3b_new"
 LOSS_ARM="gap_ce"
-SEEDS="${SEEDS:-666 888}"          # <-- the only thing you normally change
+SEEDS="${SEEDS:-222 444}"          # <-- the only thing you normally change
 
 # --- this arm's SR treatment -------------------------------------------------
 # FROZEN, unlike r2b: the generator is a fixed feature extractor and only the
@@ -67,6 +67,12 @@ SR_HC="off"
 # SR snapshots are pointless with a frozen generator: every epoch's weights are
 # byte-identical to the last. 0 = off. Override only if you have a reason.
 SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-0}"
+
+USER_NAME="${USER_NAME:-${USER:-yhxjin001}}"
+# SR4RS weights live in their OWN model dir. Without this the engine falls back
+# to _stages_tv.sh's default (SEN2SRLite_RGBN), which holds no gen_weights.
+# safetensors and the fit dies at the pre-flight check. Matches sr/{r3b,r4a,r4b}_new.sh.
+export SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SR4RS_RGBN}"
 
 # RUN_TAG must reproduce _stages_tv.sh's RUN_DIR exactly, or the seed lands in a
 # directory that does not group with the tuned seed:
