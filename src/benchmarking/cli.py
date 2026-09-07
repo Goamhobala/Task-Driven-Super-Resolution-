@@ -671,6 +671,49 @@ def variance(
     typer.echo(f"  per-seed: {[round(v, 4) for v in out['per_seed_values']]}")
 
 
+@app.command(name="gt-eligibility")
+def run_gt_eligibility(
+    dataset_dir: Annotated[Path, typer.Option(help="Dataset root (holds splits/<split>.csv)")],
+    out: Annotated[Path, typer.Option(help="Write the lookup here (.parquet or .csv)")],
+    split: Annotated[str, typer.Option(help="Split to walk")] = "test",
+    model: Annotated[str, typer.Option(help="unet | sr — picks the mask reader and GT resolution, exactly as `eval` does")] = "sr",
+    cell_m: Annotated[Optional[float], typer.Option(help="Footprint cell size in metres (default: the runner's 2560)")] = None,
+    chip_px: Annotated[Optional[int], typer.Option(help="Explicit chip size in native px, overriding --cell-m")] = None,
+    mask_source: Annotated[Optional[str], typer.Option(help="sr: graph | raster (default graph)")] = None,
+    mask_dirname: Annotated[Optional[str], typer.Option(help="sr raster masks dir (default mask_osm_2pt5)")] = None,
+    scale: Annotated[Optional[int], typer.Option(help="GT upscale factor (default 4 for sr, 1 for unet)")] = None,
+    max_tiles: Annotated[Optional[int], typer.Option(help="First N tiles only (smoke test)")] = None,
+    workers: Annotated[int, typer.Option(help="Fan tiles out over this many processes (pure CPU, no GPU, no checkpoint)")] = 0,
+):
+    """Which chips and tiles have a GROUND-TRUTH road graph -> eligibility lookup.
+
+    APLS and clDice are undefined without a reference network, and their empty
+    conventions make that undefinedness arm-dependent: a unit with no GT graph
+    scores NaN for an arm that predicts nothing and 0.0 for an arm that predicts
+    something, so the paired statistics drop it from the contrasts against the
+    silent arm and keep it everywhere else. Deciding eligibility from the GT
+    alone removes that channel and fixes n across every arm and contrast.
+
+    This reads no checkpoint and runs no inference — it walks the split's masks
+    on the same footprint grid the bench uses. Feed the result to
+    ``report --eligible-chips``; an existing store re-aggregates under the filter
+    with no forward pass re-run. Rebuild the lookup whenever the labels change.
+    """
+    from benchmarking.gt_eligibility import gt_eligibility
+
+    df = gt_eligibility(dataset_dir, split, model=model, cell_m=cell_m,
+                        chip_px=chip_px, mask_source=mask_source,
+                        mask_dirname=mask_dirname, scale=scale,
+                        max_tiles=max_tiles, workers=workers)
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if out.suffix == ".csv":
+        df.to_csv(out, index=False)
+    else:
+        df.to_parquet(out, index=False)
+    typer.secho(f"wrote {out}  ({len(df)} rows)", fg=typer.colors.GREEN)
+
+
 @app.command()
 def report(
     store_dir: Annotated[Path, typer.Option(help="Sharded store dir")],
@@ -684,6 +727,8 @@ def report(
     macro_unit: Annotated[str, typer.Option(help="tile | chip. Unit the MACRO summary averages over. 'tile' averages the 9 sampled tiles (chips inside a tile are correlated, so a chip mean overstates the evidence); 'chip' is the old behaviour.")] = "tile",
     tile_agg: Annotated[str, typer.Option(help="macro | micro. With --pair-on tile, whether a tile's score is the mean of its chip scores (macro, matches the old chip-level pairing) or derived from its pooled counts (micro). They can differ in sign.")] = "macro",
     pair_on: Annotated[str, typer.Option(help="chip | tile. Unit the PAIRWISE stats pair on. 'tile' collapses to the sampled tile (9 of them) before pairing, so spatially correlated chips inside one tile stop counting as independent evidence. Per-model summaries are unaffected.")] = "chip",
+    eligible_chips: Annotated[Optional[Path], typer.Option(help="Eligibility lookup from `benchmarking gt-eligibility`: drop units whose GROUND TRUTH has no road graph. Those units score NaN for an arm that predicts nothing and 0.0 for one that predicts something, so they leave the contrasts against well-behaved arms and make n arm-dependent. Filtering them fixes n across arms; the GT is arm-independent, so no re-inference is needed.")] = None,
+    eligibility_scope: Annotated[str, typer.Option(help="graph | all. Which metrics --eligible-chips filters. 'graph' (default) touches only apls/cldice and leaves pixel metrics on the population they have always been reported over. 'all' filters every metric — pixel F1 carries the identical asymmetry, so 'graph' leaves metrics in one table averaged over different chip sets.")] = "graph",
 ):
     """Per-model cross-seed mean +/- std + all pairwise comparisons, per metric.
 
@@ -693,16 +738,21 @@ def report(
     re-running inference.
     """
     metrics = list(metric or ("iou", "f1"))
+    if eligibility_scope not in ("graph", "all"):
+        raise typer.BadParameter("--eligibility-scope must be graph|all")
     if by_stratum:
         for s in _store_strata(store_dir, stratum_col):
             typer.secho(f"\n{'#' * 70}\n# stratum: {s}\n{'#' * 70}", fg=typer.colors.CYAN)
             _run_report(store_dir, metrics, aggregation, n_boot,
                         _stratum_out(out, s), stratum=s, stratum_col=stratum_col,
-                        pair_on=pair_on, tile_agg=tile_agg, macro_unit=macro_unit)
+                        pair_on=pair_on, tile_agg=tile_agg, macro_unit=macro_unit,
+                        eligible_chips=eligible_chips,
+                        eligibility_scope=eligibility_scope)
         return
     _run_report(store_dir, metrics, aggregation, n_boot, out,
                 stratum=stratum, stratum_col=stratum_col, pair_on=pair_on,
-                tile_agg=tile_agg, macro_unit=macro_unit)
+                tile_agg=tile_agg, macro_unit=macro_unit,
+                eligible_chips=eligible_chips, eligibility_scope=eligibility_scope)
 
 
 def _store_strata(store_dir, stratum_col: Optional[str]) -> list[str]:
@@ -808,10 +858,14 @@ def _collapse_to_region(df, metric, can_micro, tile_agg="macro"):
 
 def _run_report(store_dir, metrics, aggregation, n_boot, out,
                 stratum=None, stratum_col=None, pair_on="chip", tile_agg="macro",
-                macro_unit="tile"):
+                macro_unit="tile", eligible_chips=None, eligibility_scope="graph"):
     """Shared body of the ``report`` command; also chained from ``eval-dir``."""
     import numpy as np
     import pandas as pd
+
+    from benchmarking.gt_eligibility import apply_eligibility, load_eligibility
+
+    elig = load_eligibility(eligible_chips) if eligible_chips is not None else None
 
     from benchmarking.stats import (
         _MICRO_DERIVABLE,
@@ -828,6 +882,13 @@ def _run_report(store_dir, metrics, aggregation, n_boot, out,
         df, resolved = _apply_stratum(df, store_dir, stratum, stratum_col)
         if resolved:
             label = f" [stratum={resolved}]"
+        # Before anything is counted or averaged: a unit whose GT has no road
+        # graph is not an evaluation unit for these metrics, and leaving it in
+        # is what makes n depend on which arm is being scored.
+        df, note = apply_eligibility(df, elig, met, unit=unit,
+                                     scope=eligibility_scope)
+        if note:
+            typer.secho(f"  {met}: {note}", fg=typer.colors.YELLOW)
         models = sorted(df["model_name"].unique())
         if len(models) > 1:
             # Report only warns (force=True): it summarises whatever exists.

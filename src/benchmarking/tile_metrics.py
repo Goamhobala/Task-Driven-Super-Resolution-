@@ -114,11 +114,20 @@ def apls(pred_bin: np.ndarray, gt_mask: np.ndarray, *, transform, tile_id: str,
     the runner's import path unless APLS is requested)."""
     from benchmarking.graph_metrics import apls_tile
 
+    def one(pred, gt):
+        v = apls_tile(pred, gt, transform=transform)
+        # gt_graph_edges rides along so the chip rows carry their own
+        # eligibility: the metric is undefined without a reference network, and
+        # a chip with none scores NaN for a silent arm but 0.0 for a
+        # hallucinating one, which makes n depend on which arms are compared.
+        # See benchmarking.gt_eligibility; for stores benched before this
+        # column, the same numbers come from the standalone GT pass there.
+        return {"apls": v["apls"], "gt_graph_edges": v["gt_graph_edges"]}
+
     tile = apls_tile(pred_bin, gt_mask, transform=transform)
     chips = {
-        chip_id: {"apls": apls_tile(pred_bin[r0:r0 + h, c0:c0 + w],
-                                    gt_mask[r0:r0 + h, c0:c0 + w],
-                                    transform=transform)["apls"]}
+        chip_id: one(pred_bin[r0:r0 + h, c0:c0 + w],
+                     gt_mask[r0:r0 + h, c0:c0 + w])
         for chip_id, ri, ci, r0, c0, h, w in (grid or [])
     }
     return TileMetricResult(tile=tile, chips=chips or None)
