@@ -62,7 +62,7 @@ export LRSR="1e-06"
 EXPECTED_RUN_TAG="sr_r2grid_on_ls1e-6_gap_ce_anorm_recalpost_rails"
 
 SEEDS="${SEEDS:-1 2}"
-STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}"
+STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks_newdata}"
 REFIT_EPOCHS="${REFIT_EPOCHS:-100}"
 
 # Replicate seeds exist for the NUMBER; the snapshot strips come from seed 0.

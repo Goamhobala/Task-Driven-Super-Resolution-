@@ -103,7 +103,7 @@ if ! python -c "import torch, benchmarking.store" 2>/dev/null; then
   exit 2
 fi
 
-STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}"
+STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks_newdata}"
 REFIT_EPOCHS="${REFIT_EPOCHS:-100}"
 
 # One cell at a time, so the whole allocation is this cell's. One core is left
