@@ -96,6 +96,8 @@ TILE_METRICS="${TILE_METRICS:-apls,cldice}"  # comma-separated tile-metric plugi
                                       # (benchmarking.tile_metrics); '' disables.
                                       # apls + cldice = the protocol composite's
                                       # connectivity metrics (Decision A/B/C).
+BUFFER_PX="${BUFFER_PX:-1,2,3,4,5}"   # buffered P/R/F1 tolerance sweep; '' disables
+AP_BINS="${AP_BINS:-101}"             # per-chip AP (AUPRC), macro-only; '' disables
 
 WANDB_PROJECT="${WANDB_PROJECT:-instaroad-loss-ablation}"
 WANDB_MODE="${WANDB_MODE:-online}"
@@ -273,12 +275,15 @@ if [ "$STAGE" = "bench" ]; then
     --exp-tag "loss_${EXP_TAG}" \
     --label-source "$LABEL_SOURCE" \
     ${METRIC_ARGS[@]+"${METRIC_ARGS[@]}"} \
+    ${BUFFER_PX:+--buffer-px "$BUFFER_PX"} \
+    ${AP_BINS:+--ap-bins "$AP_BINS"} \
     ${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"} \
     ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"} \
     ${MASK_ARGS[@]+"${MASK_ARGS[@]}"}
 
   echo "=== BENCH DONE ===  store: ${STORE_DIR}"
-  echo "Decision: python -m benchmarking.cli report --store-dir ${STORE_DIR} --metric f1 --metric iou --metric apls --metric cldice"
+  echo "Decision: python -m benchmarking.cli report --store-dir ${STORE_DIR} \\"
+  echo "            --metric f1 --metric iou --metric ap --metric cldice --metric apls --aggregation both"
   echo "          python scripts/phase_a_report.py --runs /scratch/${USER_NAME}/InstaRoad/runs"
   exit 0
 fi

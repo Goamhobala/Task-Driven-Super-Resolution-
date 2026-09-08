@@ -1333,7 +1333,10 @@ if [ "$STAGE" = "bench" ]; then
   MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${ES_TAG}${PROTO_TAG}${MON_TAG}}"
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
-  TILE_METRICS="${TILE_METRICS:-apls}"
+  # apls + cldice by default: both are topology metrics with only a MACRO
+  # form, and a store missing either cannot be reported against arms that
+  # have it. Set TILE_METRICS="apls" (or "") to narrow.
+  TILE_METRICS="${TILE_METRICS:-apls,cldice}"
   # Per-chip extras, empty = off. Set them so a seed-N bench carries the SAME
   # columns as the seed-0 rows it will be averaged with — a ragged store makes
   # cross_seed_ci drop whichever metric a seed happens to lack.
@@ -1347,7 +1350,10 @@ if [ "$STAGE" = "bench" ]; then
   # re-bench the older seeds (scripts/local/rebench_all.py) rather than
   # reporting a buffered metric averaged over whichever seeds happen to have it.
   BUFFER_PX="${BUFFER_PX:-1,2,3,4,5}"
-  AP_BINS="${AP_BINS:-}"              # e.g. 101
+  # Per-chip AP (AUPRC) over a 101-bin probability grid, ON by default: it is
+  # the threshold-free companion to the theta*-conditional F1/IoU, reported
+  # macro (mean of the per-chip values). Set AP_BINS="" to switch it off.
+  AP_BINS="${AP_BINS:-101}"
 
   # val tiles are TRAINING tiles under this protocol — scoring on them would be
   # a train-set number sitting in the same store as honest test numbers.
@@ -1432,7 +1438,8 @@ if [ "$STAGE" = "bench" ]; then
     "${MASK_ARGS_BENCH[@]}"
 
   echo "=== BENCH DONE ===  store: ${STORE_DIR}"
-  echo "Report: python -m benchmarking.cli report --store-dir ${STORE_DIR}"
+  echo "Report: python -m benchmarking.cli report --store-dir ${STORE_DIR} \\"
+  echo "          --metric f1 --metric iou --metric ap --metric cldice --metric apls --aggregation both"
   exit 0
 fi
 

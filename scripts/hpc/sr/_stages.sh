@@ -410,9 +410,13 @@ if [ "$STAGE" = "bench" ]; then
   MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}}"  # {family}_{exp}[_{loss}][_noreg]: what the stats pair/group on
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"      # cdngi | overture | osm
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
-  TILE_METRICS="${TILE_METRICS:-apls}"           # comma-separated plugins; '' disables.
+  TILE_METRICS="${TILE_METRICS:-apls,cldice}"    # comma-separated plugins; '' disables.
                                                  # apls is the resolution-robust
-                                                 # cross-family comparison metric.
+                                                 # cross-family comparison metric;
+                                                 # cldice is its connectivity
+                                                 # companion. Both are MACRO-only.
+  BUFFER_PX="${BUFFER_PX:-1,2,3,4,5}"            # buffered P/R/F1 tolerance sweep; '' disables
+  AP_BINS="${AP_BINS:-101}"                      # per-chip AP (AUPRC) bins; '' disables
 
   CONFIG_ARGS=()
   [ -f "${RUN_DIR}/best_params.yaml" ] && CONFIG_ARGS=(--config-yaml "${RUN_DIR}/best_params.yaml")
@@ -437,11 +441,14 @@ if [ "$STAGE" = "bench" ]; then
     --exp-tag "$EXP_TAG" \
     --label-source "$LABEL_SOURCE" \
     ${METRIC_ARGS[@]+"${METRIC_ARGS[@]}"} \
+    ${BUFFER_PX:+--buffer-px "$BUFFER_PX"} \
+    ${AP_BINS:+--ap-bins "$AP_BINS"} \
     ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"} \
     "${MASK_ARGS_BENCH[@]}"
 
   echo "=== BENCH DONE ===  store: ${STORE_DIR}"
-  echo "Report: python -m benchmarking.cli report --store-dir ${STORE_DIR}"
+  echo "Report: python -m benchmarking.cli report --store-dir ${STORE_DIR} \\"
+  echo "          --metric f1 --metric iou --metric ap --metric cldice --metric apls --aggregation both"
   exit 0
 fi
 
