@@ -13,8 +13,15 @@ THE FILENAMES ARE THE INTERFACE. The staged dir is flat:
     <RUN_TAG>_seed<N>.sweep.json
     <RUN_TAG>_seed<N>.best_params.yaml
 
-and model_name (``<RUN_TAG>_ap``), seed and exp_tag are parsed back out of the
-name. Renaming a file silently re-labels the row it produces.
+and model_name (``<RUN_TAG>_ap``) and seed are parsed back out of the name.
+Renaming a file silently re-labels the row it produces.
+
+``manifest.json`` beside them, when present, is AUTHORITATIVE for model_name /
+seed / exp_tag -- it was built by reading the arms' existing store rows, so the
+new rows group with the old ones by construction. exp_tag in particular does
+not follow one pattern (``r1b_new`` for the R series, ``r2grid_off_ls1e-4`` for
+the grid), and a regex that guesses it would quietly file an arm under a tag
+nothing else uses.
 
     python rebench_rseries.py --runs-dir ... --store-dir ... --dataset-dir ...
     python rebench_rseries.py ... --arms r4b r3a --dry-run
@@ -125,6 +132,11 @@ def main(argv=None) -> int:
 
     from benchmarking.runner import evaluate
 
+    man_path = a.runs_dir / "manifest.json"
+    manifest = json.loads(man_path.read_text()) if man_path.is_file() else {}
+    if manifest:
+        print(f"manifest: {len(manifest)} entries ({man_path.name})")
+
     ckpts = sorted(a.runs_dir.glob("*.ckpt"))
     if not ckpts:
         raise SystemExit(f"ERROR: no *.ckpt under {a.runs_dir}")
@@ -160,8 +172,20 @@ def main(argv=None) -> int:
             continue
         ups = upsampler_of(cfg)
         sub = SR_DIRS[ups]
-        plan.append(dict(tag=tag, ckpt=ck, model=f"{run_tag}_ap", seed=seed,
-                         exp_tag=re.sub(r"^sr_(r[0-9]+[ab]?_new).*", r"\1", run_tag),
+        entry = manifest.get(tag)
+        if entry:
+            model, seed_m, exp_tag = entry["model_name"], int(entry["seed"]), entry["exp_tag"]
+            if seed_m != seed:
+                raise SystemExit(f"ERROR: {tag}: manifest seed {seed_m} != filename seed {seed}")
+        else:
+            model = f"{run_tag}_ap"
+            exp_tag = re.sub(r"^sr_(r[0-9]+[ab]?_new).*", r"\1", run_tag)
+            if exp_tag == run_tag:      # the regex did not bite -- do not invent one
+                raise SystemExit(
+                    f"ERROR: {tag} is absent from manifest.json and its exp_tag "
+                    "cannot be derived from the name. Re-stage so the manifest "
+                    "covers it rather than letting it land under a wrong tag.")
+        plan.append(dict(tag=tag, ckpt=ck, model=model, seed=seed, exp_tag=exp_tag,
                          theta=theta, ups=ups, cfg=cfg,
                          sen2sr_dir=(a.models_root / sub) if sub else None))
 
@@ -171,7 +195,8 @@ def main(argv=None) -> int:
     print(f"  dataset: {a.dataset_dir}   split={a.split}")
     print(f"  metrics: tile={tile_metrics} ap_bins={a.ap_bins} buffer={a.buffer_px}\n")
     for j in plan:
-        print(f"  {j['model']:<48} seed={j['seed']:<5} ups={j['ups']:<8} theta={j['theta']}")
+        print(f"  {j['model']:<58} seed={j['seed']:<4} ups={j['ups']:<8} "
+              f"exp={j['exp_tag']:<20} theta={j['theta']}")
     if a.dry_run:
         return 0
 
