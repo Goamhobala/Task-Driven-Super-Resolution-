@@ -89,7 +89,10 @@ PYEOF
 run_seeds () {
   local user_name="${USER:-$(whoami)}"
   local runs_root="${RUNS_ROOT:-/scratch/${user_name}/InstaRoad/runs}"
-  local store_dir="${STORE_DIR:-/scratch/${user_name}/InstaRoad/benchmarks}"
+  # benchmarks_newdata: the TEST split was relabelled in place (181 -> 174
+  # tiles, 92 survivors changed) and nothing in the runs table separates the
+  # two label sets, so old and new rows must never share a store.
+  local store_dir="${STORE_DIR:-/scratch/${user_name}/InstaRoad/benchmarks_newdata}"
   local epochs="${REFIT_EPOCHS:-100}"
   local seed run_dir
 

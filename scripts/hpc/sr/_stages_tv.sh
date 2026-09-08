@@ -1329,7 +1329,16 @@ if [ "$STAGE" = "bench" ]; then
     fi
   fi
 
-  STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks}" # SHARED across experiments
+  # benchmarks_newdata, NOT benchmarks: the ROSA_New TEST split was manually
+  # relabelled in place on 2026-09-07 (7 tiles dropped, 181 -> 174, and 92 of
+  # the survivors changed). Rows scored before and after are DIFFERENT
+  # QUANTITIES, and nothing in the runs table separates them -- dataset_dir,
+  # mask_dirname, mask_source, gt_res_m and cell_m are all identical because
+  # the dataset path was reused, so `report` would average the two label sets
+  # into one mean without complaint. The old store stays readable at
+  # .../benchmarks; the pre-relabelling rows are still valid among themselves.
+  # Train and val were untouched, so fits, tunes and theta* all still stand.
+  STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks_newdata}" # SHARED across experiments
   MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${ES_TAG}${PROTO_TAG}${MON_TAG}}"
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"
