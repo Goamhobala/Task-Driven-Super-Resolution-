@@ -371,7 +371,7 @@ if [ "$STAGE" = "bench" ]; then
     fi
   fi
 
-  STORE_DIR="${STORE_DIR:-${INSTAROAD_ROOT}/benchmarks}"   # SHARED across experiments
+  STORE_DIR="${STORE_DIR:-${INSTAROAD_ROOT}/benchmarks_corrected}"   # SHARED across experiments
   MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${LOSS_TAG}${REG_TAG}}"  # {family}_{exp}[_{loss}][_noreg]: what the stats pair/group on
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"      # cdngi | overture | osm
   BENCH_SPLIT="${BENCH_SPLIT:-test}"

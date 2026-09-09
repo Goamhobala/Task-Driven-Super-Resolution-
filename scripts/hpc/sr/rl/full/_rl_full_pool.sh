@@ -23,7 +23,7 @@ TUNE_SEED="${TUNE_SEED:-0}"
 SEEDS="${SEEDS:-444 666 888}"
 STAGES="${STAGES:-tune refit}"
 REFIT_EPOCHS="${REFIT_EPOCHS:-100}"
-STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks_newdata}"
+STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks_corrected}"
 
 names_for () {   # seed -> RUN_DIR / MODEL_NAME, from the engine, never rebuilt
   env SEED="$1" PRINT_RUN_DIR=1 bash "$ARM_SCRIPT" 2>/dev/null
@@ -101,7 +101,9 @@ for SEED in $SEEDS; do
     run_arm bench "$SEED" MODEL_NAME="$MODEL_NAME" || \
       echo "### BENCH FAILED — continuing" >&2
   fi
-  [ "${KEEP_LAST:-0}" = "1" ] || rm -f "${RUN_DIR}/checkpoints/last.ckpt"
+  # Kept by default, same reasoning as _refit_lib.sh: last.ckpt is the resume
+  # point and a 100-epoch joint fit does not fit one allocation.
+  [ "${KEEP_LAST:-1}" = "1" ] || rm -f "${RUN_DIR}/checkpoints/last.ckpt"
 done
 
 echo

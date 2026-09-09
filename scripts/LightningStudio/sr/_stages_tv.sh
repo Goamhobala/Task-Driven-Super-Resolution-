@@ -1167,7 +1167,16 @@ if [ "${MASK_SOURCE}" = "raster" ]; then
   fi
 fi
 
-source "$VENV_DIR/bin/activate"
+# A container image installs deps into the SYSTEM python and has no venv, so a
+# missing activate is expected there, not an error (scripts/modal/README.md and
+# pilot_modal.sh both document VENV_DIR=/nonexistent as the supported idiom).
+# Guarded rather than removed: on the cluster a missing venv IS a mistake worth
+# seeing, hence the warning.
+if [ -f "$VENV_DIR/bin/activate" ]; then
+  source "$VENV_DIR/bin/activate"
+else
+  echo "WARN: no venv at ${VENV_DIR} - using the ambient python ($(command -v python3))" >&2
+fi
 export PYTHONPATH="$REPO_DIR/src:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
@@ -1354,7 +1363,7 @@ if [ "$STAGE" = "bench" ]; then
     fi
   fi
 
-  STORE_DIR="${STORE_DIR:-${INSTAROAD_ROOT}/benchmarks}" # SHARED across experiments
+  STORE_DIR="${STORE_DIR:-${INSTAROAD_ROOT}/benchmarks_corrected}" # SHARED across experiments
   MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${ES_TAG}${PROTO_TAG}${MON_TAG}}"
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"

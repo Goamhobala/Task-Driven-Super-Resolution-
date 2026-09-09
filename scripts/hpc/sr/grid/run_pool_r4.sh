@@ -43,7 +43,7 @@ LR="${LR:-0.0002}"                      # pinned; see r4grid_new.sh
 # the honest way to handle the wall clock is to RESUBMIT (the fit resumes from
 # last.ckpt and loses nothing).
 FIT_EPOCHS="${FIT_EPOCHS:-${REFIT_EPOCHS:-100}}"
-STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks_newdata}"
+STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks_corrected}"
 # Grid cells are EXPECTED to collapse or die numerically, and a dead cell you
 # cannot resume or re-inspect is one you re-run from zero.
 KEEP_LAST="${KEEP_LAST:-1}"

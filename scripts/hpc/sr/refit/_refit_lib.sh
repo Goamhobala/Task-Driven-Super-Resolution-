@@ -89,10 +89,13 @@ PYEOF
 run_seeds () {
   local user_name="${USER:-$(whoami)}"
   local runs_root="${RUNS_ROOT:-/scratch/${user_name}/InstaRoad/runs}"
-  # benchmarks_newdata: the TEST split was relabelled in place (181 -> 174
-  # tiles, 92 survivors changed) and nothing in the runs table separates the
-  # two label sets, so old and new rows must never share a store.
-  local store_dir="${STORE_DIR:-/scratch/${user_name}/InstaRoad/benchmarks_newdata}"
+  # benchmarks_corrected: the TEST labels have been through THREE generations
+  # at the same path AND under the same mask_dirname (the original, the
+  # 2026-09-07 relabelling, then the corrected set that replaced it in place).
+  # Nothing in the runs table separates them -- dataset_dir, mask_dirname,
+  # mask_source, gt_res_m and cell_m are identical across all three -- so the
+  # STORE DIRECTORY is the only thing that does, and the store has no dedupe.
+  local store_dir="${STORE_DIR:-/scratch/${user_name}/InstaRoad/benchmarks_corrected}"
   local epochs="${REFIT_EPOCHS:-100}"
   local seed run_dir
 
@@ -162,8 +165,21 @@ run_seeds () {
           bash "$REPO_DIR/scripts/hpc/sr/refit/_refit_arm.sh"
     fi
 
-    # last.ckpt holds the same weights as the final ckpt once the fit completed.
-    [ "${KEEP_LAST:-0}" = "1" ] || rm -f "${run_dir}/checkpoints/last.ckpt"
+    # last.ckpt is KEPT BY DEFAULT. It is the only resume point, and an r4 fit
+    # is ~2 days against a 48 h wall clock -- losing it costs days, while the
+    # ~400 MB it holds is recovered many times over by the prune below dropping
+    # the epoch snapshots. KEEP_LAST=0 to delete it once the seed is benched.
+    [ "${KEEP_LAST:-1}" = "1" ] || rm -f "${run_dir}/checkpoints/last.ckpt"
+
+    # Only NOW, with the bench row safely in the store, is the training state
+    # disposable. Strips *_final.ckpt to inference-only (~66% smaller) and drops
+    # the epoch snapshots; last.ckpt, if KEEP_LAST kept it, is left COMPLETE so
+    # a resume still works. PRUNE_CKPTS=0 to keep everything.
+    if [ "${PRUNE_CKPTS:-1}" = "1" ] && [ -d "${run_dir}/checkpoints" ]; then
+      python "$REPO_DIR/scripts/local/ckpt_slim.py" prune \
+        --run-dir "$run_dir" --drop-epoch-snapshots --apply || \
+        echo "### ckpt prune failed (non-fatal) — checkpoints left as they are" >&2
+    fi
   done
 
   echo "=== ${RUN_TAG}: seeds ${SEEDS} done ==="

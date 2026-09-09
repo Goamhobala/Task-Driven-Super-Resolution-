@@ -69,7 +69,7 @@ if ! python -c "import torch, benchmarking.store" 2>/dev/null; then
   exit 2
 fi
 
-STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks_newdata}"
+STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks_corrected}"
 REFIT_EPOCHS="${REFIT_EPOCHS:-100}"
 TOTAL_CPUS="${SLURM_CPUS_ON_NODE:-$(( ${SLURM_CPUS_PER_TASK:-8} * ${SLURM_NTASKS:-1} ))}"
 NUM_WORKERS=$(( TOTAL_CPUS - 1 ))
