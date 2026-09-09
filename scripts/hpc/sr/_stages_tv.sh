@@ -1329,16 +1329,19 @@ if [ "$STAGE" = "bench" ]; then
     fi
   fi
 
-  # benchmarks_newdata, NOT benchmarks: the ROSA_New TEST split was manually
-  # relabelled in place on 2026-09-07 (7 tiles dropped, 181 -> 174, and 92 of
-  # the survivors changed). Rows scored before and after are DIFFERENT
-  # QUANTITIES, and nothing in the runs table separates them -- dataset_dir,
-  # mask_dirname, mask_source, gt_res_m and cell_m are all identical because
-  # the dataset path was reused, so `report` would average the two label sets
-  # into one mean without complaint. The old store stays readable at
-  # .../benchmarks; the pre-relabelling rows are still valid among themselves.
-  # Train and val were untouched, so fits, tunes and theta* all still stand.
-  STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks_newdata}" # SHARED across experiments
+  # benchmarks_corrected, NOT benchmarks or benchmarks_newdata. The ROSA_New
+  # TEST labels have now been through THREE generations at the same path and
+  # under the same mask_dirname: the original, a manual relabelling (2026-09-07,
+  # 7 tiles dropped and 92 of the survivors changed), and the corrected set that
+  # replaced it. Rows from different generations are DIFFERENT QUANTITIES, and
+  # NOTHING in the runs table separates them -- dataset_dir, mask_dirname,
+  # mask_source, gt_res_m and cell_m are identical across all three, so `report`
+  # would average them into one mean without complaint and the store has no
+  # dedupe. THE STORE DIRECTORY IS THE ONLY THING KEEPING THEM APART: one row
+  # written to the wrong one is unrecoverable. Earlier generations stay readable
+  # at .../benchmarks and .../benchmarks_newdata, each valid among itself.
+  # Train and val were never relabelled, so fits, tunes and theta* all stand.
+  STORE_DIR="${STORE_DIR:-/scratch/${USER_NAME}/InstaRoad/benchmarks_corrected}" # SHARED across experiments
   MODEL_NAME="${MODEL_NAME:-sr_${EXP_TAG}${HC_TAG}${HEAD_TAG}${LOSS_TAG}${REG_TAG}${ANORM_TAG}${RAILS_TAG}${ES_TAG}${PROTO_TAG}${MON_TAG}}"
   LABEL_SOURCE="${LABEL_SOURCE:-${LABELS}}"
   BENCH_SPLIT="${BENCH_SPLIT:-test}"

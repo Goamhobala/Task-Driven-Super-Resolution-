@@ -65,7 +65,7 @@ ROOT="${ROOT:-/scratch/${USER_NAME}/InstaRoad}"
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 VENV_DIR="${VENV_DIR:-${ROOT}/.venv}"
 RUNS_DIR="${RUNS_DIR:-${ROOT}/runs/rgrid_rebench}"
-STORE_DIR="${STORE_DIR:-${ROOT}/benchmarks_newdata}"
+STORE_DIR="${STORE_DIR:-${ROOT}/benchmarks_corrected}"
 DATASET_DIR="${DATASET_DIR:-${ROOT}/ROSA_New}"
 MODELS_ROOT="${MODELS_ROOT:-${ROOT}/models}"
 

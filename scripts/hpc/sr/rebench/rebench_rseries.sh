@@ -39,11 +39,24 @@
 # Re-sweeping would only reproduce it at full cost, so there is no resweep path.
 #
 # INPUT: a flat staged dir of <RUN_TAG>_seed<N>.{ckpt,sweep.json,
-# best_params.yaml}. The NAMES ARE THE INTERFACE -- model_name, seed and exp_tag
-# are parsed out of them. Do not rename the files.
+# best_params.yaml} plus a manifest.json. The NAMES ARE THE INTERFACE -- do not
+# rename the files -- and manifest.json is authoritative for model_name / seed /
+# exp_tag, having been built from the arms' existing store rows so the new rows
+# group with the old ones.
 #
+# COVERS 28 RUNS: the 20 R-series (r0/r1a/r1b/r2a/r2b report seeds + r3a, r3b,
+# r4a, r4b) and the 8 r2grid rails arms ({on,off} x ls1e-{4,5,6,7}, seed 0).
+#
+#   MASK_DIRNAME=...  mask dir to score against (default mask_new_2pt5)
 #   RUNS_DIR / STORE_DIR / DATASET_DIR / VENV_DIR   paths
-#   ARMS="r4b r3a"    only these arms (substring match)
+#
+# RUNS_DIR accepts EITHER layout: the flat staged folder
+# (<TAG>.ckpt + <TAG>.sweep.json + <TAG>.best_params.yaml), or a directory of
+# run dirs (<TAG>/checkpoints/*jointsr_final.ckpt). The second form means seeds
+# already fitted on the cluster need no staging or upload at all -- point
+# RUNS_DIR at /scratch/$USER/InstaRoad/runs and it picks them up in place.
+#   ARMS="r4b r3a"    only these arms (substring match); ARMS=r2grid for the
+#                     grid alone, ARMS=_new for the R series alone
 #   DRY_RUN=1         print the plan and exit
 #   BATCH_SIZE=8      lower on OOM; does NOT change the scores
 set -euo pipefail
@@ -52,10 +65,16 @@ USER_NAME="${USER_NAME:-${USER:-yhxjin001}}"
 ROOT="${ROOT:-/scratch/${USER_NAME}/InstaRoad}"
 REPO_DIR="${REPO_DIR:-$HOME/InstaRoad/InstaRoadPrototype}"
 VENV_DIR="${VENV_DIR:-${ROOT}/.venv}"
-RUNS_DIR="${RUNS_DIR:-${ROOT}/runs/rseries_rebench}"
-STORE_DIR="${STORE_DIR:-${ROOT}/benchmarks_newdata}"
+RUNS_DIR="${RUNS_DIR:-${ROOT}/runs/rebench_upload}"
+STORE_DIR="${STORE_DIR:-${ROOT}/benchmarks_corrected}"
 DATASET_DIR="${DATASET_DIR:-${ROOT}/ROSA_New}"
 MODELS_ROOT="${MODELS_ROOT:-${ROOT}/models}"
+# The corrected test masks were copied OVER mask_new_2pt5, so the dir name is
+# unchanged and there is nothing in a bench row that distinguishes the three
+# label generations this path has now held. The mask_dirname guard below cannot
+# fire, so THE FRESH STORE IS THE ONLY THING KEEPING THEM APART -- do not point
+# STORE_DIR at benchmarks_corrected or benchmarks.
+MASK_DIRNAME="${MASK_DIRNAME:-mask_new_2pt5}"
 
 [ -d "$RUNS_DIR" ]  || { echo "ERROR: no staged dir at $RUNS_DIR" >&2; exit 1; }
 [ -x "$VENV_DIR/bin/python" ] || {
@@ -73,6 +92,7 @@ exec "$VENV_DIR/bin/python" "$REPO_DIR/scripts/hpc/sr/rebench/rebench_rseries.py
   --dataset-dir "$DATASET_DIR" \
   --models-root "$MODELS_ROOT" \
   --split "${SPLIT:-test}" \
+  --mask-dirname "$MASK_DIRNAME" \
   --batch-size "${BATCH_SIZE:-8}" \
   --buffer-px "${BUFFER_PX:-1,2,3,4,5}" \
   --ap-bins "${AP_BINS:-101}" \

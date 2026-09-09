@@ -76,32 +76,31 @@ def upsampler_of(cfg: Path) -> str:
     return ups
 
 
-def guard_store(store_dir: Path) -> None:
-    """Refuse to append new-label rows to a store holding old-label ones.
+def guard_store(store_dir: Path, mask_dirname: str) -> None:
+    """Refuse to mix LABEL GENERATIONS in one store.
 
-    Nothing in the runs table distinguishes them -- dataset_dir, mask_dirname,
-    mask_source, gt_res_m and cell_m are all identical across the relabelling,
-    because the dataset path was reused. The only tell is the tile count: the
-    old test split had 181, the relabelled one has 174. The store is
-    append-only with no dedupe, so one stray append blends both label sets into
-    every cross-model mean, unrecoverably.
+    The test labels have now been through three generations at the SAME
+    dataset path -- the original, the friends' relabelling, and the corrected
+    set -- and dataset_dir / mask_source / gt_res_m / cell_m are identical
+    across all three. The ONLY thing in the runs table that separates them is
+    mask_dirname, so that is what this checks. Rows scored against different
+    mask dirs are different quantities; `report` would average them into one
+    mean without complaint, and the store is append-only with no dedupe, so a
+    single stray append is unrecoverable.
     """
     runs_dir = store_dir / "runs"
     if not runs_dir.is_dir() or not any(runs_dir.glob("*.parquet")):
         return
-    # ONE dataset scan of a single column, not one read per shard: a mature
-    # store is hundreds of files, and opening them individually is minutes on a
-    # slow filesystem -- too slow for a check that must never be the reason
-    # someone reaches for a way to skip it.
     import pyarrow.dataset as ds
 
-    counts = set(ds.dataset(str(runs_dir), format="parquet")
-                 .to_table(columns=["n_tiles"]).column("n_tiles").to_pylist())
-    if 181 in counts:
+    have = set(ds.dataset(str(runs_dir), format="parquet")
+               .to_table(columns=["mask_dirname"]).column("mask_dirname").to_pylist())
+    other = {m for m in have if m and m != mask_dirname}
+    if other:
         raise SystemExit(
-            f"ERROR: {store_dir} already holds 181-tile (old-label) rows "
-            f"(tile counts present: {sorted(counts)}).\n"
-            "  Mixing label sets corrupts every mean. Use a fresh --store-dir.")
+            f"ERROR: {store_dir} already holds rows scored against {sorted(other)}, "
+            f"but this run uses {mask_dirname!r}.\n"
+            "  Different label generations are different quantities. Use a fresh --store-dir.")
 
 
 def already_done(store_dir: Path, model: str, seed: int, split: str) -> bool:
@@ -137,11 +136,25 @@ def main(argv=None) -> int:
     if manifest:
         print(f"manifest: {len(manifest)} entries ({man_path.name})")
 
-    ckpts = sorted(a.runs_dir.glob("*.ckpt"))
-    if not ckpts:
-        raise SystemExit(f"ERROR: no *.ckpt under {a.runs_dir}")
+    # Two layouts, both accepted:
+    #   flat    <dir>/<TAG>.ckpt + <TAG>.sweep.json + <TAG>.best_params.yaml
+    #   rundirs <dir>/<TAG>/checkpoints/*jointsr_final.ckpt + sweep.json + best_params.yaml
+    # The rundirs form is what /scratch/.../runs already looks like, so seeds
+    # that were fitted on the cluster need no staging or re-upload at all.
+    sources = []          # (tag, ckpt, sweep, cfg)
+    for ck in sorted(a.runs_dir.glob("*.ckpt")):
+        t = ck.stem
+        sources.append((t, ck, a.runs_dir / f"{t}.sweep.json",
+                        a.runs_dir / f"{t}.best_params.yaml"))
+    for d in sorted(a.runs_dir.glob("*/")):
+        cks = sorted(d.glob("checkpoints/*jointsr_final.ckpt"))
+        if cks:
+            sources.append((d.name, cks[0], d / "sweep.json", d / "best_params.yaml"))
+    if not sources:
+        raise SystemExit(f"ERROR: no checkpoints found under {a.runs_dir} "
+                         "(looked for *.ckpt and */checkpoints/*jointsr_final.ckpt)")
     if not a.dry_run:
-        guard_store(a.store_dir)
+        guard_store(a.store_dir, a.mask_dirname)
 
     tile_metrics = tuple(x for x in a.tile_metrics.split(",") if x)
     buffer_px = [float(x) for x in a.buffer_px.split(",") if x] or None
@@ -149,8 +162,7 @@ def main(argv=None) -> int:
         buffer_px = buffer_px[0]
 
     plan = []
-    for ck in ckpts:
-        tag = ck.stem
+    for tag, ck, sweep, cfg in sources:
         m = re.match(r"(.+)_seed(\d+)$", tag)
         if not m:
             print(f"SKIP {tag}: name does not end in _seed<N>")
@@ -158,7 +170,6 @@ def main(argv=None) -> int:
         run_tag, seed = m.group(1), int(m.group(2))
         if a.arms and not any(x in tag for x in a.arms):
             continue
-        sweep, cfg = a.runs_dir / f"{tag}.sweep.json", a.runs_dir / f"{tag}.best_params.yaml"
         if not sweep.is_file():
             print(f"SKIP {tag}: no sweep.json")
             continue
@@ -192,7 +203,7 @@ def main(argv=None) -> int:
     print("=== R-SERIES RE-BENCH (no typer) ===")
     print(f"  runs   : {a.runs_dir}  ({len(plan)} to bench)")
     print(f"  store  : {a.store_dir}")
-    print(f"  dataset: {a.dataset_dir}   split={a.split}")
+    print(f"  dataset: {a.dataset_dir}   split={a.split}   masks={a.mask_dirname}")
     print(f"  metrics: tile={tile_metrics} ap_bins={a.ap_bins} buffer={a.buffer_px}\n")
     for j in plan:
         print(f"  {j['model']:<58} seed={j['seed']:<4} ups={j['ups']:<8} "
