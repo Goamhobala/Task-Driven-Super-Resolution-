@@ -70,7 +70,7 @@ export SEN2SR_DIR="${SEN2SR_DIR:-/scratch/${USER_NAME}/InstaRoad/models/SR4RS_RG
 SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-2}"
 
 # --- the budget: identical to r2/r4 -----------------------------------------
-N_TRIALS="${N_TRIALS:-30}"
+N_TRIALS="${N_TRIALS:-20}"
 TUNE_EPOCHS="${TUNE_EPOCHS:-10}"
 PATIENCE="${PATIENCE:-5}"
 REFIT_EPOCHS="${REFIT_EPOCHS:-100}"

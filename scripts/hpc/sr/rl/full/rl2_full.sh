@@ -52,7 +52,7 @@ SR_PAD="${SR_PAD:-0}"
 SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-1}"
 
 # --- the budget: identical to r2/r4 -----------------------------------------
-N_TRIALS="${N_TRIALS:-30}"
+N_TRIALS="${N_TRIALS:-20}"
 TUNE_EPOCHS="${TUNE_EPOCHS:-10}"
 PATIENCE="${PATIENCE:-5}"
 REFIT_EPOCHS="${REFIT_EPOCHS:-100}"
