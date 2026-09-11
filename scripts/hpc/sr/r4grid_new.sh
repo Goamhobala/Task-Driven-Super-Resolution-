@@ -129,7 +129,7 @@ REG="${REG:-true}"
 # sequence behind — the snapshot strips ARE the mechanism figure, and a collapse
 # with no frames is an observation that cannot be shown. SEN2SR-Lite snapshots
 # are ~2 MB, so 100 of them is a rounding error next to the checkpoints.
-SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-1}"
+SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-2}"
 
 # --- the pinned axis ---------------------------------------------------------
 # min == max makes Optuna's log-uniform suggest a CONSTANT, which then lands in

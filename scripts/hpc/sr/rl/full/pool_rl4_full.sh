@@ -32,30 +32,54 @@
 # CHAINING IT THROUGH A MAINTENANCE WINDOW
 # ----------------------------------------
 # Queued jobs keep running and keep starting while the scheduler is closed to
-# NEW submissions, so submit the whole chain BEFORE the window and let the
-# links hand off to each other:
+# NEW submissions, so submit everything BEFORE the window and let the links
+# hand off to each other.
+#
+# THE TUNE IS SERIAL, THE THREE REFITS ARE NOT. One search produces one
+# overlay; the three seeds then replicate it and are completely independent, so
+# they should run side by side on three GPUs rather than queueing behind each
+# other. That is four chains: one for the tune, one per seed.
 #
 #   REPO=$HOME/InstaRoad/InstaRoadPrototype
 #   P=$REPO/scripts/hpc/sr/rl/full/pool_rl4_full.sh
-#   PREV=$(sbatch --parsable "$P")
-#   for _ in $(seq 7); do PREV=$(sbatch --parsable --dependency=afterany:$PREV "$P"); done
 #
-# HOW MANY LINKS. The work is ONE tune then THREE refits, in that order, and a
-# link covers 48 h of it:
+#   # 1. the search: two links, in case 30x10 does not fit one allocation
+#   T=$(STAGES=tune sbatch --parsable "$P")
+#   T=$(STAGES=tune sbatch --parsable --dependency=afterany:$T "$P")
+#
+#   # 2. three INDEPENDENT chains, each hanging off the last tune link
+#   for s in 444 666 888; do
+#     PREV=$T
+#     for _ in $(seq 3); do
+#       PREV=$(STAGES=refit SEEDS=$s sbatch --parsable \
+#                --dependency=afterany:$PREV -J rl4_full_s$s "$P")
+#     done
+#   done
+#
+# sbatch propagates the submitting environment (--export=ALL is the default),
+# which is how STAGES and SEEDS reach the script.
+#
+# WHY afterany, NOT afterok. A link that hits the wall clock mid-fit exits
+# non-zero, and that is the NORMAL case here -- afterok would hold the rest of
+# the chain exactly when you cannot intervene. The guards make the retry safe:
+# a link with nothing left to do exits in seconds.
+#
+# WHY DEPENDING ON THE *LAST* TUNE LINK IS CORRECT. If the search finished in
+# the first link, the second finds best_params.yaml and exits almost
+# immediately, so the refits start straight away. If it did not, the second
+# link resumes it -- the Optuna study is sqlite:///<run dir>/study.db, so
+# completed trials survive a wall-clock kill. Either way the refits begin only
+# once an overlay exists. A refit link that somehow starts without one exits 3
+# with a clear message rather than fitting an untuned model.
+#
+# HOW MANY LINKS PER CHAIN. A link covers 48 h:
 #   tune    30 trials x 10 epochs, minus whatever MedianPruner kills from
 #           epoch 2 on                                              ~1-2 links
-#   refit   100 epochs of joint SR4RS, each seed. For scale, FROZEN SR4RS
-#           (r3b) measured 8m18s/epoch = ~14 h for 100; joint adds the SR
-#           backward pass, and r4b seed 66 needed three submissions to finish
-#           its fit                                          ~1-2 links x 3
-# So 8 links total (the first plus seq 7) is the safe size for a weekend you
-# cannot add to. Over-provisioning is nearly free -- a link with nothing left
-# to do exits in seconds -- while running out mid-fit costs you the window.
-#
-# afterany, NOT afterok. A link that hits the wall clock mid-fit exits
-# non-zero, and that is the normal case here -- afterok would hold the rest of
-# the chain exactly when it is needed most. A link that finds everything
-# already done exits in seconds, so over-provisioning the chain is cheap.
+#   refit   100 epochs of joint SR4RS. For scale, FROZEN SR4RS (r3b) measured
+#           8m18s/epoch = ~14 h for 100; joint adds the SR backward pass, and
+#           r4b seed 66 needed three submissions to finish its fit  ~1-3 links
+# Hence 2 tune links and 3 per seed. Over-provisioning is nearly free; running
+# out mid-fit costs you the window.
 #
 # KEEP_LAST defaults to 1 on this path, which is what makes the chain work:
 # last.ckpt is the resume point, and deleting it would cost days.
