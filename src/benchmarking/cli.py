@@ -346,6 +346,27 @@ def _discover_ckpt_runs(ckpt_dir: Path) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # commands
 # --------------------------------------------------------------------------- #
+def _default_tile_metrics(names) -> tuple:
+    """apls+cldice unless the caller said otherwise; 'none' switches them off.
+
+    These default ON because a store is only as reportable as its RAGGEDEST
+    row: cross_seed_ci drops whichever metric a seed happens to lack, so one
+    bench run without cldice silently blanks that column for the whole arm.
+    That is exactly how the 2026-09 r3/r4 rows landed with apls but no cldice
+    -- the engine default lived in an uncommitted edit, so the cluster ran the
+    older `apls`-only one. Defaulting HERE means a stale caller cannot
+    reintroduce the gap.
+    """
+    if not names:
+        return ("apls", "cldice")
+    low = [n.lower() for n in names]
+    if "none" in low:
+        if len(low) > 1:
+            raise typer.BadParameter("--tile-metric none cannot be combined with others")
+        return ()
+    return tuple(names)
+
+
 @app.command(name="eval")
 def run_eval(
     dataset_dir: Annotated[Path, typer.Option(help="ROSA dataset root (has splits/<split>.csv)")],
@@ -364,14 +385,14 @@ def run_eval(
     config_yaml: Annotated[Optional[Path], typer.Option(help="Training config (e.g. best_params.yaml) -> config_hash")] = None,
     exp_tag: Annotated[str, typer.Option(help="Experiment tag (e.g. cdngi, r2a_cdngi)")] = "",
     label_source: Annotated[str, typer.Option(help="GT label source (cdngi | osm | overture)")] = "",
-    tile_metric: Annotated[List[str], typer.Option(help="Tile-metric plugin(s), repeatable (see benchmarking.tile_metrics)")] = None,
+    tile_metric: Annotated[List[str], typer.Option(help="Tile-metric plugin(s), repeatable (see benchmarking.tile_metrics). DEFAULT: apls,cldice -- both are topology metrics with a MACRO form only, and a store missing either cannot be reported against arms that have it. Pass --tile-metric none to switch them off.")] = None,
     check: Annotated[str, typer.Option(help="tp+fn-vs-mask invariant: first | all | off")] = "first",
     device: Annotated[Optional[str], typer.Option(help="cuda | cpu (default: auto)")] = None,
     threshold: Annotated[Optional[float], typer.Option(help="Override the checkpoint's binarisation threshold (e.g. a tuned θ*)")] = None,
     max_tiles: Annotated[Optional[int], typer.Option(help="Score only the first N tiles of the split (quick local smoke)")] = None,
     stratum: Annotated[Optional[str], typer.Option(help="Score only this stratum, e.g. Urban | PeriUrban | Rural (case/dash-insensitive)")] = None,
     stratum_col: Annotated[Optional[str], typer.Option(help="Split-CSV column the stratum comes from")] = None,
-    ap_bins: Annotated[Optional[int], typer.Option(help="Add per-chip Average Precision (AUPRC) scored from the probability map over this many thresholds spanning [0,1] (101 = 0.01 resolution). Unlike an AP derived from a theta sweep, coverage is complete by construction. Step-wise sum, per Davis & Goadrich.")] = None,
+    ap_bins: Annotated[Optional[int], typer.Option(help="Per-chip Average Precision (AUPRC) scored from the probability map over this many thresholds spanning [0,1] (101 = 0.01 resolution). Unlike an AP derived from a theta sweep, coverage is complete by construction. Step-wise sum, per Davis & Goadrich. DEFAULT 101; pass --ap-bins 0 to switch it off.")] = 101,
     buffer_px: Annotated[Optional[str], typer.Option(help="Buffered precision/recall/F1 tolerance(s) in px: '3', or a comma list '1,2,3,4,5' for a tolerance sweep (columns gain an _r<N> suffix). Several radii share one distance transform, so the sweep is nearly free. 3 px = 7.5 m at 2.5 m GSD. DEFAULT: the full 1..5 sweep — pass '' to switch it off.")] = "1,2,3,4,5",
     tile_metric_workers: Annotated[Optional[int], typer.Option(help="Fan the tile metrics (APLS/clDice — pure CPU, and ~85% of a bench with APLS on) out over this many processes, overlapped with inference. Default: $BENCH_TILE_METRIC_WORKERS, else all but two cores. 0 or 1 runs them inline. The store is identical either way — rows are merged in split order.")] = None,
     wandb_meta: Annotated[Optional[Path], typer.Option(help="train_meta.json with a `wandb` block: resume that run and push the bench metrics (incl. APLS) to its summary")] = None,
@@ -393,7 +414,7 @@ def run_eval(
         chip_px=chip_px, batch_size=batch_size, mask_source=mask_source,
         mask_dirname=mask_dirname, sen2sr_dir=sen2sr_dir, config_yaml_path=config_yaml,
         exp_tag=exp_tag, label_source=label_source,
-        tile_metrics=tuple(tile_metric or ()), check=check, device=device,
+        tile_metrics=_default_tile_metrics(tile_metric), check=check, device=device,
         threshold=threshold, max_tiles=max_tiles,
         stratum=stratum, stratum_col=stratum_col,
         buffer_px=_parse_radii(buffer_px), ap_bins=ap_bins,

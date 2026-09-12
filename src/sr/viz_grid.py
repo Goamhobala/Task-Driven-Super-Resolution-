@@ -258,8 +258,10 @@ def run_checkpoint(ckpt, sr_dir, x, threshold, device, tile_scale, pristine=Fals
     pristine_sr = None
     if pristine:
         # Lazy import avoids the viz_single<->viz_grid import cycle.
-        from sr.viz_single import load_pristine_sr
-        pmod = load_pristine_sr(model.hparams.upsampler, Path(sr_dir), p).eval().to(device)
+        from sr.viz_single import ckpt_hc_args, load_pristine_sr
+        hc_mode, hc_mask = ckpt_hc_args(model)
+        pmod = load_pristine_sr(model.hparams.upsampler, Path(sr_dir), p,
+                                sr_hc=hc_mode, hc_mask=hc_mask).eval().to(device)
         pristine_sr = sr_img(pmod)
     return sr, pred, pristine_sr
 

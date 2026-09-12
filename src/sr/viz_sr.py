@@ -19,6 +19,39 @@ against both the un-enhanced input and the un-finetuned SR. All image panels
 share ONE percentile stretch computed from the original crop, so a panel
 getting brighter/sharper is the SR drifting, not an autoscale artefact.
 
+THAT DEFAULT HAS A FAILURE MODE, AND `--stretch-mode` IS THE ESCAPE HATCH.
+A generator adapted hard toward the segmentation loss is under no obligation to
+keep its output in the input's reflectance range — it often learns very large
+contrasts. Once its values leave [lo, hi], the shared stretch clips every pixel
+to 0 or 1 and the panel renders as a flat block: the frame is fine, the mapping
+is saturated. The per-frame log line and the panel title now both report the
+CLIPPED FRACTION, so that case reads as "clip 97%" instead of looking like a
+broken tile. Three modes:
+
+  shared     (default) percentiles from the ORIGINAL 10 m crop, applied to
+             every panel. Brightness is comparable across frames; a drifted
+             frame saturates, and says so.
+  global     percentiles pooled over the original crop AND every frame. Still
+             ONE mapping — so frames stay comparable — but wide enough that
+             nothing clips. Costs the frames being held in memory at once.
+  per-frame  each SR frame autoscaled to its own percentiles. Always shows the
+             structure; brightness is NOT comparable between frames, so a
+             frame looking sharper may only mean its histogram moved. The
+             header panels keep the original stretch, as the fixed reference.
+
+A PERCENTILE PAIR ALWAYS CLIPS SOMETHING — 2-98 DISCARDS 4% BY DEFINITION.
+"Don't clip, just cut the long tails" is therefore a choice of `--stretch`, not
+a separate mode: widen the pair until only the outliers fall outside it. On a
+drifted generator the pairing to reach for is
+
+    --stretch-mode global --stretch 0.5 99.5
+
+which on the ls1e-4 grid arm leaves 0.6-1.2% clipped (against 63-72% for the
+default shared 2-98) while keeping ONE mapping across every frame, so a real
+brightness difference between runs still reads as one. Go to 0.1/99.9 if even
+that is too aggressive — the cost is contrast, since a handful of outlying
+pixels then set the range the bulk of the image has to share.
+
 Snapshots hold weights only — no UNet — so there are no mask predictions here;
 for those use `viz_single`/`viz_grid` on a real checkpoint. Each panel is
 titled with its epoch and the `sr_drift_rel` recorded in the frame (relative
@@ -236,9 +269,20 @@ def resolve_device(arg, upsampler, crop, pad, upscale=4):
 
 
 # ---------------------------------------------------------------- SR frames
+def snapshot_hc(snapshot):
+    """(sr_hc, hc_mask) for `load_pristine_sr`, read off one snapshot.
+
+    Snapshots written since the HC 2x2 record the RESOLVED `sr_hc`; older ones
+    do not, so fall back to the state dict itself, which is self-describing —
+    the mask is a persistent buffer, so its presence IS the constraint."""
+    sd = snapshot["sr_state_dict"]
+    mask = sd.get("hard_constraint.low_pass_mask")
+    return snapshot.get("sr_hc") or ("on" if mask is not None else "off"), mask
+
+
 @torch.no_grad()
 def sr_evolution(snaps, upsampler, sr_dir, x, tile_scale, pad, device,
-                 upscale=4):
+                 upscale=4, sr_hc=None, hc_mask=None):
     """Yield (epoch, is_init, drift, sr_chw) for each snapshot, in order.
 
     ONE SR module is built (from the pristine weights, so buffers and any
@@ -256,7 +300,10 @@ def sr_evolution(snaps, upsampler, sr_dir, x, tile_scale, pad, device,
     first allocation failure demotes the whole run to CPU rather than leaving
     the machine swapping — slower, but it finishes."""
     device = torch.device(device)
-    module = load_pristine_sr(upsampler, Path(sr_dir), pad).eval().to(device)
+    if sr_hc is None:
+        sr_hc, hc_mask = snapshot_hc(load_snapshot(snaps[0][2]))
+    module = load_pristine_sr(upsampler, Path(sr_dir), pad, sr_hc=sr_hc,
+                              hc_mask=hc_mask).eval().to(device)
     reflectance = torch.from_numpy(x)[None].float().to(device) / tile_scale
     t_in = (torch.nn.functional.pad(reflectance, (pad,) * 4, mode="reflect")
             if pad else reflectance)
@@ -283,6 +330,16 @@ def sr_evolution(snaps, upsampler, sr_dir, x, tile_scale, pad, device,
         del hr
         release_mps()
         yield epoch, is_init, snap.get("sr_drift_rel"), out
+
+
+def clip_frac(x, lo, hi) -> float:
+    """Fraction of the RGB pixels this stretch maps outside [0, 1].
+
+    The number that separates "the SR output is a flat grey block" from "the
+    stretch is saturated": at 0.97 the panel carries essentially no information
+    and needs `--stretch-mode global` or `per-frame` to be readable at all."""
+    rgb = np.asarray(x)[:3]
+    return float(((rgb < lo) | (rgb > hi)).mean())
 
 
 def rgb_u8(x, lo, hi):
@@ -338,6 +395,17 @@ def main():
                     help="drop the reference row (original / bicubic / "
                          "un-finetuned SR / GT) and tile every frame, init "
                          "included, --per-row to a row")
+    ap.add_argument("--stretch-mode", default="shared",
+                    choices=("shared", "global", "per-frame"),
+                    help="shared (default) = percentiles from the ORIGINAL crop, "
+                         "applied to every panel (comparable, but a drifted frame "
+                         "saturates); global = percentiles pooled over the original "
+                         "AND every frame (one mapping, nothing clips, frames held "
+                         "in memory); per-frame = each frame autoscaled (always "
+                         "readable, brightness NOT comparable)")
+    ap.add_argument("--clip-warn", type=float, default=0.02,
+                    help="annotate a panel's title with its clipped fraction once "
+                         "it exceeds this (default 0.02)")
     ap.add_argument("--stretch", type=float, nargs=2, default=(2, 98),
                     metavar=("PLO", "PHI"))
     ap.add_argument("--device", default="auto",
@@ -367,9 +435,14 @@ def main():
     sr_dir = Path(args.sr_dir) if args.sr_dir else default_sr_dir(upsampler, examples)
     crop, pad = resolve_geometry(head["sr_state_dict"], upsampler,
                                  args.crop, args.sr_pad)
+    # Which module architecture to replay these weights into (HC 2x2): r4a
+    # snapshots carry sr_model./hard_constraint. prefixes on a SR4RS generator,
+    # r2b snapshots carry no hard_constraint. keys at all.
+    sr_hc, hc_mask = snapshot_hc(head)
     device = resolve_device(args.device, upsampler, crop, pad)
     print(f"{len(snaps)} snapshots in {snapshot_dir.name}  "
-          f"(upsampler={upsampler}, crop={crop}, sr_pad={pad}, sr_dir={sr_dir})")
+          f"(upsampler={upsampler}, sr_hc={sr_hc}, crop={crop}, sr_pad={pad}, "
+          f"sr_dir={sr_dir})")
 
     # The init frame is the un-finetuned baseline: it belongs in the header row
     # rather than the evolution, which also makes the frame count divide evenly
@@ -417,7 +490,8 @@ def main():
                   (rgb_u8(bicubic, lo, hi), "Bicubic x4", {})]
         if init is not None:
             _, _, _, sr0 = next(sr_evolution([init], upsampler, sr_dir, x,
-                                             tile_scale, pad, device))
+                                             tile_scale, pad, device,
+                                             sr_hc=sr_hc, hc_mask=hc_mask))
             panels.append((rgb_u8(sr0, lo, hi),
                            f"Un-finetuned SR (e{init[0]} init)", {}))
         panels.append((gt, gt_label, {"cmap": "gray", "vmin": 0, "vmax": 1}))
@@ -431,13 +505,39 @@ def main():
                   f"{len(panels)} reference panels; "
                   f"dropped {', '.join(p[1] for p in panels[per_row:])}")
 
-    frames = sr_evolution(snaps, upsampler, sr_dir, x, tile_scale, pad, device)
+    frames = sr_evolution(snaps, upsampler, sr_dir, x, tile_scale, pad, device,
+                          sr_hc=sr_hc, hc_mask=hc_mask)
+    if args.stretch_mode == "global":
+        # The only mode that needs every frame before drawing any of them: the
+        # mapping is pooled over all of them. `--every` is what keeps this
+        # affordable (one 128px crop -> 512px x 4 bands is ~4 MB a frame).
+        frames = list(frames)
+        pool = np.concatenate([x[:3].ravel()]
+                              + [f[3][:3].ravel() for f in frames])
+        lo, hi = np.percentile(pool, args.stretch)
+        hi = max(hi, lo + 1e-6)
+        print(f"  global stretch over {len(frames)} frames + the original: "
+              f"[{lo:.4f}, {hi:.4f}]")
+
     for i, (epoch, is_init, drift, sr) in enumerate(frames):
         ax = axes[first_row + i // per_row, i % per_row]
-        ax.imshow(rgb_u8(sr, lo, hi))
+        # In per-frame mode ONLY the SR frames autoscale; the header panels stay
+        # on the original crop's stretch, because they are the fixed reference
+        # the frames are being judged against.
+        if args.stretch_mode == "per-frame":
+            f_lo, f_hi = np.percentile(np.asarray(sr)[:3], args.stretch)
+            f_hi = max(f_hi, f_lo + 1e-6)
+        else:
+            f_lo, f_hi = lo, hi
+        clipped = clip_frac(sr, f_lo, f_hi)
+        ax.imshow(rgb_u8(sr, f_lo, f_hi))
         tag = f"e{epoch}" + (" init" if is_init else "")
-        ax.set_title(tag + (f"  d={drift:.3f}" if drift is not None else ""),
-                     fontsize=7)
+        title = tag + (f"  d={drift:.3f}" if drift is not None else "")
+        # A saturated panel must announce itself, or it reads as a broken tile.
+        if clipped > args.clip_warn:
+            title += f"\nclip {clipped:.0%}"
+        ax.set_title(title, fontsize=7,
+                     color=("#b3261e" if clipped > 0.5 else "black"))
         # Per-frame numbers for the panel you are looking at. NOT the mean: under
         # SEN2SR's hard constraint the low frequencies (incl. DC) are pinned to
         # the LR input, so the mean is constant by construction and only the
@@ -445,13 +545,15 @@ def main():
         # IMAGE has travelled from the un-finetuned one, in reflectance.
         if sr0 is None:
             sr0 = sr
+        rgb = np.asarray(sr)[:3]
         print(f"  {tag:10s} drift={drift if drift is None else round(drift, 4)}"
-              f"  std={sr.std():.4f}  d_init={np.abs(sr - sr0).mean():.4g}")
+              f"  std={sr.std():.4f}  d_init={np.abs(sr - sr0).mean():.4g}"
+              f"  range=[{rgb.min():+.3f},{rgb.max():+.3f}]  clip={clipped:.1%}")
 
     fig.suptitle(
         f"SR evolution — {snapshot_dir.name} ({upsampler}, sr_pad {pad})\n"
         f"{image.stem}  crop r{row} c{col} {crop}px -> {crop * 4}px, 2.5 m  "
-        f"(shared {args.stretch[0]:g}-{args.stretch[1]:g}% stretch; "
+        f"({args.stretch_mode} {args.stretch[0]:g}-{args.stretch[1]:g}% stretch; "
         f"d = sr_drift_rel)", fontsize=9)
     fig.tight_layout()
     out = args.out or f"{image.stem}_{snapshot_dir.name}.png"

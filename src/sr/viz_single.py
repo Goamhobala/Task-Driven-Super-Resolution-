@@ -88,26 +88,59 @@ def default_sr_dir(upsampler: str, examples: Path) -> Path:
     return Path(SR4RS_DIR) if upsampler == "sr4rs" else examples
 
 
-def load_pristine_sr(upsampler: str, sr_dir: Path, sr_pad: int):
+def load_pristine_sr(upsampler: str, sr_dir: Path, sr_pad: int,
+                     sr_hc: str = "native", hc_mask=None):
     """The UN-finetuned SR net: the exact module the ckpt was initialised from
     (loaded fresh from `sr_dir`, before joint fine-tuning drifted its weights).
     Mirrors JointSRUNetLightning.__init__'s per-upsampler construction, incl.
-    the sr_pad low-pass-mask grow for SEN2SR."""
+    the sr_pad low-pass-mask grow for SEN2SR.
+
+    `sr_hc` is the checkpoint's / snapshot's hard-constraint treatment
+    (docs/hc_2x2_plan.md): it decides whether this module carries the
+    `hard_constraint.*` / `sr_model.*` keys, so getting it wrong shows up as a
+    state-dict mismatch on the replay path rather than as a wrong picture.
+    `hc_mask` supplies the mask when the generator does not ship one (r4a's
+    SR4RS); pass the tensor straight out of the ckpt/snapshot, which is already
+    grown to the run's own pad, in which case sr_pad is not re-applied."""
+    from sr.sen2sr_loader import resolve_sr_hc
+    hc_on = resolve_sr_hc(upsampler, sr_hc)
     if upsampler == "sr4rs":
         from sr.sr4rs_torch import load_trainable_sr4rs
-        return load_trainable_sr4rs(sr_dir)
+        gen = load_trainable_sr4rs(sr_dir)
+        if not hc_on:
+            return gen
+        from sr.sen2sr_loader import TrainableSEN2SR, hard_constraint_from_mask
+        if hc_mask is None:
+            raise ValueError(
+                "sr_hc='on' with upsampler='sr4rs' needs hc_mask — the mask "
+                "lives in the checkpoint/snapshot (hard_constraint.low_pass_"
+                "mask), not in the SR4RS model dir.")
+        return TrainableSEN2SR(gen, hard_constraint_from_mask(hc_mask.clone()),
+                               clamp_min=0.0)
     if upsampler in ("sen2sr", "sen2sr_full"):
         from sr.sen2sr_loader import (
             load_trainable_sen2sr, load_trainable_sen2sr_full, pad_low_pass_mask)
-        sr = (load_trainable_sen2sr(str(sr_dir)) if upsampler == "sen2sr"
-              else load_trainable_sen2sr_full(str(sr_dir)))
-        if sr_pad > 0:
+        loader = (load_trainable_sen2sr if upsampler == "sen2sr"
+                  else load_trainable_sen2sr_full)
+        sr = loader(str(sr_dir), hard_constraint=hc_on)
+        if hc_on and sr_pad > 0:
             pad_low_pass_mask(sr, sr_pad)
         return sr
     if upsampler == "bicubic":
         from sr.sen2sr_loader import BicubicUpsampler
         return BicubicUpsampler(4)   # parameter-free: pristine == finetuned
     raise ValueError(f"no pristine loader for upsampler {upsampler!r}")
+
+
+def ckpt_hc_args(model):
+    """(sr_hc, hc_mask) for `load_pristine_sr`, read off a restored model.
+
+    The mask is a frozen buffer, so taking it from the fine-tuned model is not
+    a contamination of the "pristine" panel — and it is the only copy that is
+    guaranteed present and already the right size for this run's sr_pad."""
+    hc = getattr(getattr(model, "sr", None), "hard_constraint", None)
+    return (getattr(model.hparams, "sr_hc", "native") or "native",
+            None if hc is None else hc.low_pass_mask)
 
 
 @torch.no_grad()
@@ -154,7 +187,9 @@ def run_checkpoint(ckpt: Path, sr_dir: Path, x, threshold, device, pristine=Fals
 
     pristine_sr = None
     if pristine:
-        pmod = load_pristine_sr(model.hparams.upsampler, sr_dir, p).eval().to(device)
+        hc_mode, hc_mask = ckpt_hc_args(model)
+        pmod = load_pristine_sr(model.hparams.upsampler, sr_dir, p,
+                                sr_hc=hc_mode, hc_mask=hc_mask).eval().to(device)
         pristine_sr = sr_img(pmod)
         d = float(np.abs(pristine_sr - finetuned).mean())
         print(f"mean|finetuned - un-finetuned SR| = {d:.4g} (reflectance)")

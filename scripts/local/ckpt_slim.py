@@ -111,6 +111,39 @@ def prune_run_dir(d: Path, drop_epochs: bool, apply: bool) -> tuple[int, int, li
     return before, after, notes
 
 
+def thin_snapshots(d: Path, keep_every: int, apply: bool) -> tuple[int, int, list[str]]:
+    """Keep every Nth SR snapshot, plus the first and last frames.
+
+    The init frame is the REFERENCE the drift is measured against and the last
+    frame is the endpoint, so both survive any thinning -- what gets dropped is
+    intermediate temporal resolution, which is the only part that is merely
+    nice to have.
+
+    Snapshots are already inference-only (sr_state_dict + a few scalars), so
+    there is nothing to strip out of them; thinning the count is the only lever.
+    """
+    snaps = sorted((d / "sr_snapshots").glob("*.pt"))
+    if not snaps:
+        return 0, 0, []
+    keep = {snaps[0], snaps[-1]} | {f for i, f in enumerate(snaps) if i % keep_every == 0}
+    before = after = 0
+    notes = []
+    for f in snaps:
+        sz = f.stat().st_size
+        before += sz
+        if f in keep:
+            after += sz
+        else:
+            if apply:
+                f.unlink()
+    notes.append(f"    sr_snapshots  {len(snaps)} frames -> {len(keep)} "
+                 f"({before/2**20:.0f} -> {sum(f.stat().st_size for f in keep if f.exists())/2**20:.0f} MB)"
+                 if apply else
+                 f"    sr_snapshots  {len(snaps)} frames -> {len(keep)} "
+                 f"({before/2**20:.0f} -> {after/2**20:.0f} MB)")
+    return before, after, notes
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -122,6 +155,9 @@ def main(argv=None) -> int:
     q.add_argument("--drop-epoch-snapshots", action="store_true",
                    help="delete *_epochNNN.ckpt outright instead of stripping them")
     q.add_argument("--apply", action="store_true", help="actually modify files")
+    q.add_argument("--thin-snapshots", type=int, metavar="N", default=0,
+                   help="also keep only every Nth sr_snapshots frame (first and "
+                        "last always kept). 0 = leave snapshots alone.")
     a = p.parse_args(argv)
 
     dirs = list(a.run_dir)
@@ -133,6 +169,9 @@ def main(argv=None) -> int:
     tb = ta = 0
     for d in dirs:
         b, t, notes = prune_run_dir(d, a.drop_epoch_snapshots, a.apply)
+        if a.thin_snapshots > 1:
+            sb, st, snotes = thin_snapshots(d, a.thin_snapshots, a.apply)
+            b += sb; t += st; notes += snotes
         if not notes:
             continue
         print(f"\n{d.name}")
