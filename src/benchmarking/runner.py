@@ -89,6 +89,50 @@ def _sync(device: str) -> None:
     """Make wall-clock timing honest on GPU (kernels launch async)."""
     if device.startswith("cuda"):
         torch.cuda.synchronize()
+    elif device.startswith("mps"):
+        # Also bounds the depth of the Metal command queue: an unbounded
+        # backlog of chips is what an 8 GB Mac wedges on.
+        torch.mps.synchronize()
+
+
+def _patch_mps_nearest_interpolate() -> None:
+    """Route nearest-neighbour upsampling on MPS through ``repeat_interleave``.
+
+    ``upsample_nearest2d`` on MPS builds an index tensor and reads it back
+    (``waitAndReadIntTensorData``); on this box the U-Net decoder's x2 nearest
+    upsample wedges there — the command buffer never completes and the process
+    parks in an uninterruptible wait. For an INTEGER scale factor
+    ``repeat_interleave`` is bit-identical (nearest picks ``floor(i / scale)``),
+    so this is a routing change, not a numerical one. Non-integer ratios and
+    every other mode fall through to the original implementation.
+    """
+    F = torch.nn.functional
+    if getattr(F.interpolate, "_mps_nearest_shim", False):
+        return
+    orig = F.interpolate
+
+    def interpolate(input, size=None, scale_factor=None, mode="nearest",
+                    align_corners=None, recompute_scale_factor=None, antialias=False):
+        if (mode == "nearest" and input.dim() == 4
+                and getattr(input, "device", None) is not None
+                and input.device.type == "mps"):
+            h, w = input.shape[-2:]
+            if size is not None and scale_factor is None:
+                sh, sw = (size, size) if isinstance(size, int) else tuple(size)
+                if sh % h == 0 and sw % w == 0:
+                    return input.repeat_interleave(sh // h, -2).repeat_interleave(sw // w, -1)
+            elif scale_factor is not None and size is None:
+                sf = ((scale_factor, scale_factor)
+                      if isinstance(scale_factor, (int, float)) else tuple(scale_factor))
+                if all(float(f).is_integer() and f >= 1 for f in sf):
+                    return input.repeat_interleave(int(sf[0]), -2).repeat_interleave(int(sf[1]), -1)
+        return orig(input, size=size, scale_factor=scale_factor, mode=mode,
+                    align_corners=align_corners,
+                    recompute_scale_factor=recompute_scale_factor,
+                    antialias=antialias)
+
+    interpolate._mps_nearest_shim = True
+    F.interpolate = interpolate
 
 
 def _grid(height: int, width: int, chip_px: int):
@@ -223,13 +267,17 @@ class SRPredictor:
 
     family = "sr"
 
-    def __init__(self, checkpoint, device: str, sen2sr_dir=None):
+    def __init__(self, checkpoint, device: str, sen2sr_dir=None, hc_mask_path=None):
         from sr.model import JointSRUNetLightning  # lazy
 
         kwargs = {"map_location": "cpu"}
         if sen2sr_dir is not None:
             # hparams bake the TRAINING node's weights dir; override for eval.
             kwargs["sen2sr_dir"] = str(sen2sr_dir)
+        if hc_mask_path is not None:
+            # same problem as sen2sr_dir: the hard-constraint mask path is
+            # baked in at train time and needs overriding on a different node.
+            kwargs["hc_mask_path"] = str(hc_mask_path)
         self.model = JointSRUNetLightning.load_from_checkpoint(checkpoint, **kwargs)
         self.model.eval().float().to(device)
         self.device = device
@@ -265,7 +313,9 @@ class SRPredictor:
                 x[:, r * req:(r + 1) * req, c * req:(c + 1) * req]
                 for r in range(k) for c in range(k)
             ])  # (k*k, C, req, req)
-            out = self.model(subs)  # (k*k, 1, s*req, s*req)
+            # One sub-cell per forward: a k*k batch through SR4RS OOMs an 8 GB
+            # Mac on MPS. Eval-mode norms use stored stats, so this is exact.
+            out = torch.cat([self.model(s.unsqueeze(0)) for s in subs])  # (k*k, 1, s*req, s*req)
             sq = self.scale * req
             logits = out.new_empty((1, out.shape[1], self.scale * cell_px, self.scale * cell_px))
             for i in range(k * k):
@@ -276,11 +326,13 @@ class SRPredictor:
         return torch.sigmoid(logits).cpu(), ms
 
 
-def load_predictor(model: str, checkpoint, device: str, sen2sr_dir=None):
+def load_predictor(model: str, checkpoint, device: str, sen2sr_dir=None, hc_mask_path=None):
+    if device.startswith("mps"):
+        _patch_mps_nearest_interpolate()
     if model == "unet":
         return UNetPredictor(checkpoint, device)
     if model == "sr":
-        return SRPredictor(checkpoint, device, sen2sr_dir=sen2sr_dir)
+        return SRPredictor(checkpoint, device, sen2sr_dir=sen2sr_dir, hc_mask_path=hc_mask_path)
     raise ValueError(f"unsupported model family {model!r} (choose from {MODEL_FAMILIES})")
 
 
@@ -606,7 +658,7 @@ def _score_tile_sr(pred: SRPredictor, dataset_dir, row, cell_m, chip_px_opt,
 # --------------------------------------------------------------------------- #
 def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
              model="unet", cell_m=CELL_M_DEFAULT, chip_px=None, batch_size=8,
-             mask_source=None, mask_dirname=None, sen2sr_dir=None,
+             mask_source=None, mask_dirname=None, sen2sr_dir=None, hc_mask_path=None,
              config_yaml_path=None, exp_tag="", label_source="",
              tile_metrics=(), check="first", device=None, threshold=None,
              max_tiles=None, sweep_thresholds=None,
@@ -688,7 +740,7 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
                              "use --mask-dirname to remap the CSV's mask dir")
 
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    pred = load_predictor(model, checkpoint, device, sen2sr_dir=sen2sr_dir)
+    pred = load_predictor(model, checkpoint, device, sen2sr_dir=sen2sr_dir, hc_mask_path=hc_mask_path)
     if threshold is not None:
         pred.threshold = float(threshold)
     plugins = resolve_tile_metrics(tile_metrics)
@@ -735,6 +787,7 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
             # zone_name — many tiles share a zone and chip_id derives from
             # tile_id, so zone_name would collide chips across tiles.
             tile_id = Path(row["image_path"]).stem
+            print(f"[tile {i + 1}/{len(df)}] {tile_id}", flush=True)
             check_gt = check == "all" or (check == "first" and i == 0)
             if model == "unet":
                 rows, canvases, chip_px_used, gt_road_px, gt_tf = _score_tile_unet(
@@ -758,6 +811,11 @@ def evaluate(dataset_dir, checkpoint, model_name, seed, store_dir, split="test",
                         f"{tile_id}: invariant failed — chips' tp+fn = {got} but the "
                         f"tile mask has {gt_road_px} road px. Grid/window/GT bug."
                     )
+
+            if device.startswith("mps"):
+                # 8 GB unified memory: hand the cached blocks back per tile so the
+                # next tile does not allocate against a fragmented pool.
+                torch.mps.empty_cache()
 
             if not plugins:
                 _accumulate(chip_rows, rows)

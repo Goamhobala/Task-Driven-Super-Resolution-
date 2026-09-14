@@ -85,8 +85,8 @@
 # last.ckpt is the resume point, and deleting it would cost days.
 #
 #   STAGES=tune / STAGES=refit     restrict what a link does
-#   STAGES=bench                   bench each seed's CURRENT last.ckpt now, while
-#                                  the fit keeps running (rows: <name>_partial_epNNN)
+#   STAGES=bench                   bench each seed's last.ckpt as-is (no epoch check),
+#                                  for runs stopped once their curves plateaued
 #   SEEDS="444"                    one seed at a time
 #   TUNE_SEED=0                    the seed the search runs at
 #   FORCE_FIT=1                    discard partial fits and retrain (rarely)

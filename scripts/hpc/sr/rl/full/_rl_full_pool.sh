@@ -7,24 +7,18 @@
 # STAGES (space-separated, default "tune refit"):
 #   tune    the search, skipped once best_params.yaml exists
 #   refit   fit -> bench per seed, idempotent (resumes, skips finished work)
-#   bench   bench a seed's CURRENT last.ckpt without waiting for the fit to
-#           finish -- see "PARTIAL BENCH" below. Safe beside a running fit.
+#   bench   bench each seed's last.ckpt as it stands, without waiting for or
+#           checking the fit -- see "BENCH FROM last.ckpt" below.
 #
-# PARTIAL BENCH (STAGES=bench)
-# ----------------------------
-# Scores the newest readable last*.ckpt of each seed at its own val θ*, as the
-# fit would, but under its OWN model name, <arm model>_partial_epNNN:
-#   * the store is append-only with no dedupe, and in_store matches on the name
-#     -- a partial row under the arm's name would make the finished fit's bench
-#     skip itself, leaving the store with an epoch-N number labelled final;
-#   * the checkpoint is COPIED first and re-read, so a fit still writing it
-#     cannot hand the scorer a torn file, and the row's epoch is pinned;
-#   * θ* goes to partial_bench/epNNN/sweep.json, never the fit's sweep.json.
-# The copy is deleted after a successful bench (KEEP_PARTIAL_CKPT=1 keeps it).
-# BENCH_WANDB defaults to 0 here, so partial numbers never land in the fit's
-# wandb summary under the keys the final bench will use; set 1 to push them.
-# Rerunning at the same epoch costs seconds; at a later epoch it adds a new row.
-# A seed whose fit is already complete is left to the regular bench.
+# BENCH FROM last.ckpt (STAGES=bench)
+# -----------------------------------
+# For runs stopped by hand once their curves plateaued: scores
+# checkpoints/last.ckpt under the arm's normal model name. No epoch is read and
+# nothing is gated on how far the fit got. θ* comes from the run's sweep.json,
+# which is swept on val from last.ckpt first if the fit never wrote one.
+# Skipped only if the (model, seed, test) row is already in the store, so a
+# rerun never adds a duplicate. Do NOT put `refit` in STAGES for these seeds:
+# the refit path would resume them toward REFIT_EPOCHS.
 #
 # WHY THE OVERLAY IS COPIED, NOT RE-TUNED PER SEED
 # ------------------------------------------------
@@ -40,6 +34,23 @@ ARM="${ARM:?set ARM=rl2_full|rl4_full}"
 ARM_SCRIPT="$REPO_DIR/scripts/hpc/sr/rl/full/${ARM}.sh"
 [ -f "$ARM_SCRIPT" ] || { echo "ERROR: no arm script at $ARM_SCRIPT" >&2; exit 2; }
 source "$REPO_DIR/scripts/hpc/sr/refit/_refit_lib.sh"
+# _refit_lib's ckpt_epoch / fit_state / in_store shell out to a bare `python`
+# that must import torch and benchmarking, and they swallow the failure:
+# ckpt_epoch prints -1 and in_store answers "not in the store". Nothing upstream
+# activates the venv when this pool is submitted directly (the engine only does
+# so later, inside each arm call), so without this every checkpoint read as
+# unreadable, no fit ever read as done, and the store guard could not see rows.
+VENV_DIR="${VENV_DIR:-/scratch/${USER_NAME}/InstaRoad/.venv}"
+if [ -f "$VENV_DIR/bin/activate" ]; then
+  source "$VENV_DIR/bin/activate"
+else
+  echo "ERROR: no venv at ${VENV_DIR} — the pool's resume/store guards need its torch." >&2
+  exit 2
+fi
+export PYTHONPATH="$REPO_DIR/src:${PYTHONPATH:-}"
+python -c "import torch, benchmarking.store" 2>/dev/null || {
+  echo "ERROR: $(command -v python) cannot import torch + benchmarking.store — the guards would silently misreport." >&2
+  exit 2; }
 
 TUNE_SEED="${TUNE_SEED:-0}"
 SEEDS="${SEEDS:-444 666 888}"
@@ -81,52 +92,25 @@ case " $STAGES " in *" tune "*)
 
 case " $STAGES " in *" refit "*|*" bench "*) : ;; *) exit 0 ;; esac
 
-partial_bench () {   # seed run_dir model_name -> bench last.ckpt as it stands now
-  local seed="$1" run_dir="$2" model_name="$3" ck f ep best="" best_ep=-1
-  ck="$run_dir/checkpoints"
-  # last.ckpt is what the user resumes from, but a resume in a DIFFERENT
-  # checkpoint dir writes last-v1.ckpt and freezes last.ckpt, so take the
-  # newest epoch among them rather than trusting the name.
-  for f in "$ck"/last.ckpt "$ck"/last-v*.ckpt; do
-    [ -f "$f" ] || continue
-    ep=$(ckpt_epoch "$f")
-    [ "$ep" -gt "$best_ep" ] && { best="$f"; best_ep="$ep"; }
-  done
-  if [ -z "$best" ] || [ "$best_ep" -lt 0 ]; then
-    echo "### partial bench: no readable last.ckpt under ${ck} — skipping" >&2
+bench_last () {   # seed run_dir model_name -> bench checkpoints/last.ckpt as-is
+  local seed="$1" run_dir="$2" model_name="$3"
+  local ckpt="$run_dir/checkpoints/last.ckpt"
+  if [ ! -f "$ckpt" ]; then
+    echo "### bench: no ${ckpt} — skipping" >&2
     return 0
   fi
-  if [ "$(fit_state "$run_dir" "$REFIT_EPOCHS")" = "done" ]; then
-    echo "### partial bench: fit is complete — the regular bench owns this seed, skipping"
+  if in_store "$STORE_DIR" "$model_name" "$seed" test; then
+    echo "### bench: ${model_name} seed ${seed} already in the store — skipping (append-only, no dedupe)"
     return 0
   fi
-
-  local tag; tag=$(printf 'ep%03d' "$best_ep")
-  local pb="$run_dir/partial_bench/$tag" name="${model_name}_partial_${tag}"
-  echo "### PARTIAL BENCH  $(basename "$best") epoch=${best_ep}  model_name=${name}"
-  if in_store "$STORE_DIR" "$name" "$seed" test; then
-    echo "### ${name} already in the store — skipping (append-only, no dedupe)"
-    return 0
-  fi
-
-  mkdir -p "$pb"
-  if [ ! -f "$pb/model.ckpt" ]; then
-    cp "$best" "$pb/model.ckpt.tmp"
-    # Re-read the COPY: if the fit rewrote last.ckpt mid-copy the epoch differs
-    # or the file will not load, and the scorer must never see that.
-    if [ "$(ckpt_epoch "$pb/model.ckpt.tmp")" != "$best_ep" ]; then
-      rm -f "$pb/model.ckpt.tmp"
-      echo "### partial bench: copy of $(basename "$best") changed under us (fit saving?) — rerun" >&2
-      return 1
-    fi
-    mv -f "$pb/model.ckpt.tmp" "$pb/model.ckpt"
-  fi
-
-  run_arm bench "$seed" MODEL_NAME="$name" BENCH_CKPT="$pb/model.ckpt" \
-      BENCH_SWEEP_OUT="$pb/sweep.json" BENCH_WANDB="${BENCH_WANDB:-0}" || {
-    echo "### PARTIAL BENCH FAILED (copy kept at ${pb}/model.ckpt)" >&2
-    return 1; }
-  [ "${KEEP_PARTIAL_CKPT:-0}" = "1" ] || rm -f "$pb/model.ckpt"
+  # clDice is always in the row: an inherited TILE_METRICS=apls (sbatch exports
+  # the submitting shell) would otherwise drop it, and a store missing it
+  # cannot be reported against arms that have it.
+  local tm="${TILE_METRICS:-apls,cldice}"
+  case ",${tm}," in *,cldice,*) : ;; *) tm="${tm:+${tm},}cldice" ;; esac
+  echo "### BENCH last.ckpt  model_name=${model_name}  seed=${seed}  tile_metrics=${tm}"
+  run_arm bench "$seed" MODEL_NAME="$model_name" BENCH_CKPT="$ckpt" \
+      BENCH_SWEEP_OUT="$run_dir/sweep.json" TILE_METRICS="$tm"
 }
 
 for SEED in $SEEDS; do
@@ -147,8 +131,8 @@ for SEED in $SEEDS; do
   cp "$OVERLAY" "$RUN_DIR/best_params.yaml"
 
   case " $STAGES " in *" bench "*)
-    partial_bench "$SEED" "$RUN_DIR" "$MODEL_NAME" || \
-      echo "### ${ARM} seed ${SEED}: partial bench did not complete — continuing" >&2
+    bench_last "$SEED" "$RUN_DIR" "$MODEL_NAME" || \
+      echo "### ${ARM} seed ${SEED}: BENCH FAILED — continuing" >&2
   ;; esac
   case " $STAGES " in *" refit "*) : ;; *) continue ;; esac
 
