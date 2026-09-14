@@ -1319,7 +1319,16 @@ fi
 # used. Default split is `test` — the only split this protocol reports.
 if [ "$STAGE" = "bench" ]; then
   CKPT="${RUN_DIR}/checkpoints/${FINAL_CKPT_NAME}.ckpt"
-  if [ ! -f "$CKPT" ]; then
+  # BENCH_CKPT: score an explicit checkpoint instead of the final one — the
+  # partial-fit bench (STAGES=bench in rl/full/_rl_full_pool.sh) points it at a
+  # frozen copy of last.ckpt so a fit still writing its checkpoints cannot hand
+  # the scorer a torn file. Pair it with its OWN MODEL_NAME: the store has no
+  # dedupe, and a partial row under the arm's name would make in_store skip the
+  # real bench once the fit finishes.
+  if [ -n "${BENCH_CKPT:-}" ]; then
+    [ -f "$BENCH_CKPT" ] || { echo "ERROR: BENCH_CKPT=${BENCH_CKPT} not found." >&2; exit 1; }
+    CKPT="$BENCH_CKPT"
+  elif [ ! -f "$CKPT" ]; then
     if [ -f "${RUN_DIR}/checkpoints/last.ckpt" ]; then
       echo "WARN: ${FINAL_CKPT_NAME}.ckpt missing; benchmarking last.ckpt instead." >&2
       CKPT="${RUN_DIR}/checkpoints/last.ckpt"
@@ -1392,6 +1401,31 @@ if [ "$STAGE" = "bench" ]; then
   if [ -n "${BENCH_THRESHOLD:-}" ]; then
     THETA="$BENCH_THRESHOLD"
     THETA_SRC="BENCH_THRESHOLD (env override)"
+  elif [ -n "${BENCH_SWEEP_OUT:-}" ]; then
+    # θ* for THIS checkpoint, selected exactly as the fit stage selects it
+    # (same split, criterion and flags as the post-refit sweep below). A
+    # partial checkpoint must not borrow the finished fit's sweep.json, and
+    # must not write one either — that file belongs to the fit.
+    if [ ! -f "$BENCH_SWEEP_OUT" ]; then
+      MASK_ARGS_SWEEP=(--mask-source "$MASK_SOURCE")
+      [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_SWEEP+=(--mask-dirname "$MASK_DIRNAME")
+      echo "=== θ* SWEEP for ${CKPT} (split=${SWEEP_SPLIT:-val}, criterion=${SWEEP_CRITERION:-iou}) ==="
+      mkdir -p "$(dirname "$BENCH_SWEEP_OUT")"
+      python -m benchmarking.cli sweep \
+        --criterion "${SWEEP_CRITERION:-iou}" \
+        --dataset-dir "$DATASET_DIR" \
+        --checkpoint "$CKPT" \
+        --model sr \
+        --model-name "$MODEL_NAME" \
+        --seed "$SEED" \
+        --split "${SWEEP_SPLIT:-val}" \
+        --sen2sr-dir "$SEN2SR_DIR" \
+        --out "${BENCH_SWEEP_OUT}.tmp" \
+        "${MASK_ARGS_SWEEP[@]}"
+      mv -f "${BENCH_SWEEP_OUT}.tmp" "$BENCH_SWEEP_OUT"
+    fi
+    THETA=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['best_threshold'])" "$BENCH_SWEEP_OUT")
+    THETA_SRC="$BENCH_SWEEP_OUT"
   elif [ -f "${RUN_DIR}/sweep.json" ]; then
     THETA=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['best_threshold'])" "${RUN_DIR}/sweep.json")
     THETA_SRC="${RUN_DIR}/sweep.json"
