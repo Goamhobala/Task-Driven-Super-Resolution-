@@ -49,12 +49,13 @@
 #
 #   # 2. three INDEPENDENT chains, each hanging off the last tune link
 #   for s in 444 666 888; do
-#     PREV=$T
-#     for _ in $(seq 3); do
-#       PREV=$(STAGES=refit SEEDS=$s sbatch --parsable \
-#                --dependency=afterany:$PREV -J rl4_full_s$s "$P")
-#     done
+#     STAGES=refit SEEDS=$s sbatch --dependency=afterany:$T -J rl4_full_s$s "$P"
 #   done
+#
+# ONE LINK PER SEED is enough: a 100-epoch rl4 refit measures ~2 days, and the
+# linear probe makes it cheaper than the r4 arms it borrows its generator from.
+# Add a second link per seed if the window is long and you cannot resubmit --
+# an unused link exits in seconds.
 #
 # sbatch propagates the submitting environment (--export=ALL is the default),
 # which is how STAGES and SEEDS reach the script.
@@ -75,16 +76,17 @@
 # HOW MANY LINKS PER CHAIN. A link covers 48 h:
 #   tune    30 trials x 10 epochs, minus whatever MedianPruner kills from
 #           epoch 2 on                                              ~1-2 links
-#   refit   100 epochs of joint SR4RS. For scale, FROZEN SR4RS (r3b) measured
-#           8m18s/epoch = ~14 h for 100; joint adds the SR backward pass, and
-#           r4b seed 66 needed three submissions to finish its fit  ~1-3 links
-# Hence 2 tune links and 3 per seed. Over-provisioning is nearly free; running
-# out mid-fit costs you the window.
+#   refit   100 epochs of joint SR4RS under a LINEAR head, ~2 days   1 link
+# Hence 2 tune links and 1 per seed. NB ~2 days against a 48 h wall clock has
+# little margin: a fit that overruns dies with no successor, and during a
+# maintenance window there is no resubmitting. A spare link is nearly free.
 #
 # KEEP_LAST defaults to 1 on this path, which is what makes the chain work:
 # last.ckpt is the resume point, and deleting it would cost days.
 #
 #   STAGES=tune / STAGES=refit     restrict what a link does
+#   STAGES=bench                   bench each seed's CURRENT last.ckpt now, while
+#                                  the fit keeps running (rows: <name>_partial_epNNN)
 #   SEEDS="444"                    one seed at a time
 #   TUNE_SEED=0                    the seed the search runs at
 #   FORCE_FIT=1                    discard partial fits and retrain (rarely)

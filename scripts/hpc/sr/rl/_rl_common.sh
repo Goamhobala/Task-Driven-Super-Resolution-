@@ -49,8 +49,8 @@ MONITOR="${MONITOR:-val_ap}"
 # diagnostic re-search — in which case it would be a real 1x1 pass, and its
 # study would overwrite the planted overlay (the engine plants nothing at the
 # tune stage, so the two can never be confused).
-N_TRIALS="${N_TRIALS:-1}"
-TUNE_EPOCHS="${TUNE_EPOCHS:-1}"
+N_TRIALS="${N_TRIALS:-20}"
+TUNE_EPOCHS="${TUNE_EPOCHS:-10}"
 PATIENCE="${PATIENCE:-5}"   # the TUNE stage's stopper; inert at 1 epoch
 
 # --- The pinned head lr (plan §1, §5) ---------------------------------------
@@ -128,7 +128,7 @@ STD_BAND_RAISE_HI="${STD_BAND_RAISE_HI:-100}"
 STD_BAND_ACTION="${STD_BAND_ACTION:-warn}"
 
 # --- Snapshots: EVERY epoch --------------------------------------------------
-SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-1}"
+SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-2}"
 
 # --- Bare-only: no hard constraint anywhere (plan §1) -----------------------
 # Forced `off` (not `native`) so every arm carries the same _nohc tag and no

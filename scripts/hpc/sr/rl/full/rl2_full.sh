@@ -49,7 +49,7 @@ SR_HC="${SR_HC:-off}"
 SR_PAD="${SR_PAD:-0}"
 
 # The generator moves and this arm exists to watch what that does to it.
-SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-1}"
+SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-2}"
 
 # --- the budget: identical to r2/r4 -----------------------------------------
 N_TRIALS="${N_TRIALS:-20}"

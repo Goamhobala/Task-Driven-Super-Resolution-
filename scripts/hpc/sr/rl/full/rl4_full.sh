@@ -19,8 +19,8 @@
 #   # 1. the search, on its own
 #   sbatch --gres=gpu:1 --cpus-per-task=8 --time=48:00:00 \
 #          -J rl4_full_tune -o slurm-%x-%j.txt \
-#          scripts/hpc/train.sbatch --SCRIPT=sr/rl/full/_rl_full_pool.sh \
-#          ARM=rl4_full STAGES=tune
+        #  scripts/hpc/train.sbatch --SCRIPT=sr/rl/full/_rl_full_pool.sh \
+        #  ARM=rl4_full STAGES=tune
 #
 #   # 2. AFTER it writes best_params.yaml -- one job per seed
 #   sbatch ... -J rl4_full_s444 ... --SCRIPT=sr/rl/full/_rl_full_pool.sh \
