@@ -92,7 +92,7 @@ WARMUP_START="${WARMUP_START:-30}"    # from-scratch: ramp skeleton weight 30->4
 WARMUP_RAMP="${WARMUP_RAMP:-10}"
 
 # --- Bench -------------------------------------------------------------------
-STORE_DIR="${STORE_DIR:-${INSTAROAD_ROOT}/benchmarks_loss}"  # loss-dedicated
+STORE_DIR="${STORE_DIR:-${INSTAROAD_ROOT}/benchmarks_loss_corrected}"  # loss-dedicated
 BENCH_SPLIT="${BENCH_SPLIT:-val}"     # decisions on val; test held out
 TILE_METRICS="${TILE_METRICS:-apls,cldice}"  # comma-separated tile-metric plugins
                                       # (benchmarking.tile_metrics); '' disables.

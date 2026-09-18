@@ -153,6 +153,10 @@ TAG = {
     # Phase B compounds. These lagged pilot_seq.sh by a week — the "adding an
     # arm means four files" gotcha, caught 2026-08-12.
     "l5_new": "pstar_dice", "l13_new": "pstar_sdice", "l14_new": "pstar_lcdice",
+    # Phase B compounds with P* pinned in the arm script: EXP_TAG=r0_new_<pstar>
+    # + LOSS_TAG=_pstar_<region>, so the tag below IS the whole chain.
+    "l20_new": "wbce_pstar_sdice", "l21_new": "wbce_pstar_lcdice",
+    "l22_new": "tl_pstar_sdice", "l23_new": "tl_pstar_lcdice",
 }
 
 
@@ -494,7 +498,38 @@ def report(metrics: str = "f1,iou,apls,cldice", store: str = "",
     # they were the same quantity suggests the buffer LOWERS F1, which is
     # impossible. Pass aggregation="macro" for a table where every column is
     # the same kind of average.
-    args = [a for m in metrics.split(",") for a in ("--metric", m.strip())]
+    # Keep only the metrics this store actually carries. `report` REJECTS an
+    # absent metric (cli._load_metric_table raises BadParameter) so a typo fails
+    # loudly — correct for a human, fatal for a default list applied to stores
+    # benched with and without --buffer-px. Also skips cleanly when the store
+    # does not exist yet, e.g. after a --dry-run sweep that wrote nothing.
+    wanted = [m.strip() for m in metrics.split(",") if m.strip()]
+    store_dir = store or env["STORE_DIR"]
+    try:
+        # _base_env sets PYTHONPATH for the SUBPROCESS; this import runs in the
+        # modal_app process, which has no repo on sys.path of its own.
+        import sys
+        if f"{REPO_REMOTE}/src" not in sys.path:
+            sys.path.insert(0, f"{REPO_REMOTE}/src")
+        from benchmarking.store import load_chips, load_tiles
+        cols = set(load_chips(Path(store_dir)).columns)
+        try:
+            cols |= set(load_tiles(Path(store_dir)).columns)
+        except Exception:
+            pass
+    except Exception as exc:
+        print(f"[report] store {store_dir} unreadable ({type(exc).__name__}); "
+              "nothing to report")
+        return
+    keep = [m for m in wanted if m in cols]
+    drop = [m for m in wanted if m not in cols]
+    if drop:
+        print(f"[report] skipping absent metric(s): {', '.join(drop)}")
+    if not keep:
+        print(f"[report] none of {wanted} are columns of {store_dir}")
+        return
+    print(f"[report] metrics: {', '.join(keep)}")
+    args = [a for m in keep for a in ("--metric", m)]
     args += ["--aggregation", aggregation]
     if stratum:
         args += ["--stratum", stratum]
@@ -505,7 +540,7 @@ def report(metrics: str = "f1,iou,apls,cldice", store: str = "",
         args += ["--out", out]
     subprocess.run(
         ["python", "-m", "benchmarking.cli", "report",
-         "--store-dir", store or env["STORE_DIR"], *args],
+         "--store-dir", store_dir, *args],
         env=env, check=True,
     )
     if out:
@@ -811,6 +846,7 @@ def main(
     workers: int = 2,
     precision: str = "bf16-mixed",
     parallel: bool = False,
+    tune_only: bool = False,
     wandb: bool = True,
     metrics: str = "f1,iou,apls,cldice,buffered_f1,buffered_precision,buffered_recall",
     stratum: str = "",
@@ -831,6 +867,7 @@ def main(
     stretch_from_sr: bool = False,
     tag_suffix: str = "",
     phase_b_parents: str = "gap_tl_ce",
+    phase_b_stage: str = "all",
     phase_b_no_bench: bool = False,
     phase_b_regions: str = "",
     sweep_lo: float = 0.0,
@@ -854,25 +891,48 @@ def main(
         rate = _rate(gpu, cpu, memory)
         print(f"θ sweep on {gpu} (~${rate:.3f}/h) -> {theta_store}")
         print(f"extra args: {sweep_args or '(none)'}\n")
-        sweep.with_options(gpu=gpu, cpu=cpu, memory=memory,
-                           timeout=int(hours * 3600), volumes=VOLUMES).remote(
+        # .spawn(), not .remote(): a .remote() call is cancelled when its client
+        # dies, even under --detach. That killed a sweep 38 min in on
+        # 2026-08-14 because the launching shell exited. final_bench and
+        # phase_b were already fixed; this path was the one left behind.
+        call = sweep.with_options(
+            gpu=gpu, cpu=cpu, memory=memory,
+            timeout=int(hours * 3600), volumes=VOLUMES).spawn(
             {"SEED": seed, "INSTAROAD_GIT_SHA": _git_sha(),
              "THETA_STORE_DIR": theta_store, "SWEEP_ARGS": sweep_args}
         )
+        print(f"spawned: {call.object_id}")
+        print("  Safe to disconnect — the sweep survives this client dying.\n")
+        call.get()
         report.remote(metrics=metrics, store=theta_store,
                       stratum=stratum, by_stratum=by_stratum)
         return
     if action == "phase-b":
         rate = _rate(gpu, cpu, memory)
-        est = trials * 0.27 + 2.9        # 16 min/trial tune + ~2.9 h fit (L4,
-                                         # measured on sr_r0_new_gap_t2_ce)
-        n = len(phase_b_regions.split()) if phase_b_regions else 3
+        # Per-stage costs, measured on sr_r0_new_gap_t2_ce (L4): a Phase B trial
+        # is ~16 min (8 epochs, pruned), a 50-epoch fit ~2.5 h, a bench ~0.4 h.
+        # Quoting the "all" total for a tune-only run overstates it by 4x, which
+        # is the difference between fitting in a $30 budget and not.
+        TUNE_H, FIT_H, BENCH_H = trials * 0.27, 2.5, 0.4
+        if phase_b_stage == "tune":
+            est = TUNE_H
+        elif phase_b_stage == "fit":
+            est = FIT_H
+        elif phase_b_stage == "bench":
+            est = BENCH_H
+        else:
+            est = TUNE_H + FIT_H + BENCH_H
+        reg_list = phase_b_regions.split() or ["pstar_dice", "pstar_sdice",
+                                               "pstar_lcdice"]
+        n = len(reg_list) * len(phase_b_parents.split())
         print(f"Phase B on {gpu}  cpu={cpu} mem={memory}MiB  ~${rate:.3f}/h")
         print(f"  parents : {phase_b_parents}")
         print(f"  regions : {phase_b_regions or '(all three)'}")
-        if phase_b_no_bench:
-            est -= 0.4                    # bench is ~25 min of a ~11 h arm
+        if phase_b_no_bench and phase_b_stage == "all":
+            est -= BENCH_H
             print("  stages  : tune -> fit ONLY (not swept, not benched)")
+        else:
+            print(f"  stage   : {phase_b_stage}")
         print(f"  trials  : {trials}   (only lr and mix_w are searched;")
         print(f"            pos_weight/tl_theta/gap_theta are pinned from the parent)")
         print(f"  estimate: ~{est:.1f} h/arm x {n} arm(s) = ~{est * n:.1f} GPU-h "
@@ -883,15 +943,38 @@ def main(
             "WANDB_MODE": "online" if wandb else "offline",
             "PHASE_B_ARGS": (
                 f"--parents {phase_b_parents} --trials {trials} --seed {seed}"
-                + (f" --regions {phase_b_regions}" if phase_b_regions else "")
+                + f" --stage {phase_b_stage}"
+                + (f" --regions {phase_b_regions}"
+                   if phase_b_regions and not parallel else "")
                 + (" --no-bench" if phase_b_no_bench else "")
             ),
         }
-        call = phase_b.with_options(
+        fn = phase_b.with_options(
             gpu=gpu, cpu=cpu, memory=memory, timeout=int(hours * 3600),
             volumes=VOLUMES,
             secrets=[modal.Secret.from_name("wandb")] if wandb else [],
-        ).spawn(env)
+        )
+        # --parallel gives each REGION its own container, the same shape the
+        # `run` action uses for arms. One container per region is the only way
+        # three tunes finish in ~8 h instead of ~24; the COST is identical
+        # because Modal bills container-seconds either way. Each region writes
+        # to its own run dir, so the concurrent volume commits do not collide.
+        if parallel and len(reg_list) > 1:
+            calls = []
+            for r in reg_list:
+                e = dict(env)
+                e["PHASE_B_ARGS"] = env["PHASE_B_ARGS"] + f" --regions {r}"
+                calls.append((r, fn.spawn(e)))
+            for r, c in calls:
+                print(f"spawned [{r}]: {c.object_id}")
+            print("  Safe to disconnect — training survives this client dying.\n")
+            for r, c in calls:
+                try:
+                    c.get()
+                except Exception as exc:
+                    print(f"[{r}] FAILED: {exc}")
+            return
+        call = fn.spawn(env)
         print(f"spawned: {call.object_id}")
         print("  Safe to disconnect — training survives this client dying.\n")
         call.get()
@@ -1014,6 +1097,8 @@ def main(
           + (f", i.e. ~{FREE_CREDIT/rate/n:.1f} h per arm across {n} arms" if n else ""))
     print(f"arms     : {' '.join(arm_list)}  (seed {seed})")
     print(f"mode     : {'PARALLEL — ' + str(n) + ' containers at once' if parallel else 'sequential — 1 container'}")
+    print(f"stages   : {'tune only (fit/bench deferred)' if tune_only else 'tune -> fit -> bench'}")
+    print(f"trials   : {trials} per arm")
     print()
 
     overrides = {
@@ -1027,6 +1112,11 @@ def main(
         # final Volume commit always happens.
         "MAX_SECONDS": max(600, int(hours * 3600) - BUDGET_MARGIN_S),
     }
+    if tune_only:
+        # Stop each container after its Optuna search. The fit is the expensive
+        # half; --tune-only buys a look at best_params.yaml before committing to
+        # it. Re-invoke the same command without the flag to resume at fit.
+        overrides["TUNE_ONLY"] = "1"
     if action == "probe":
         overrides["PROBE"] = "1"
         hours = min(hours, 1.0)

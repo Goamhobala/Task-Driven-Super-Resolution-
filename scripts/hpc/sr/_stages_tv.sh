@@ -1319,12 +1319,9 @@ fi
 # used. Default split is `test` — the only split this protocol reports.
 if [ "$STAGE" = "bench" ]; then
   CKPT="${RUN_DIR}/checkpoints/${FINAL_CKPT_NAME}.ckpt"
-  # BENCH_CKPT: score an explicit checkpoint instead of the final one — the
-  # partial-fit bench (STAGES=bench in rl/full/_rl_full_pool.sh) points it at a
-  # frozen copy of last.ckpt so a fit still writing its checkpoints cannot hand
-  # the scorer a torn file. Pair it with its OWN MODEL_NAME: the store has no
-  # dedupe, and a partial row under the arm's name would make in_store skip the
-  # real bench once the fit finishes.
+  # BENCH_CKPT: score an explicit checkpoint instead of the final one —
+  # STAGES=bench in rl/full/_rl_full_pool.sh points it at last.ckpt for runs
+  # stopped by hand once their curves plateaued.
   if [ -n "${BENCH_CKPT:-}" ]; then
     [ -f "$BENCH_CKPT" ] || { echo "ERROR: BENCH_CKPT=${BENCH_CKPT} not found." >&2; exit 1; }
     CKPT="$BENCH_CKPT"
@@ -1403,9 +1400,8 @@ if [ "$STAGE" = "bench" ]; then
     THETA_SRC="BENCH_THRESHOLD (env override)"
   elif [ -n "${BENCH_SWEEP_OUT:-}" ]; then
     # θ* for THIS checkpoint, selected exactly as the fit stage selects it
-    # (same split, criterion and flags as the post-refit sweep below). A
-    # partial checkpoint must not borrow the finished fit's sweep.json, and
-    # must not write one either — that file belongs to the fit.
+    # (same split, criterion and flags as the post-refit sweep below). Swept
+    # only if the file is missing; an existing one is reused.
     if [ ! -f "$BENCH_SWEEP_OUT" ]; then
       MASK_ARGS_SWEEP=(--mask-source "$MASK_SOURCE")
       [ "$MASK_SOURCE" = "raster" ] && MASK_ARGS_SWEEP+=(--mask-dirname "$MASK_DIRNAME")

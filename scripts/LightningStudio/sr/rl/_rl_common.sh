@@ -219,7 +219,7 @@ STD_BAND_ACTION="${STD_BAND_ACTION:-warn}"
 # observation that cannot be shown. Each snapshot records sr_hold_epochs, so a
 # dose-0 frame (epoch < hold — the ladder's free zero-dose point) is
 # distinguishable from an adapting one without going back to the config.
-SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-1}"
+SR_SNAPSHOT_EVERY="${SR_SNAPSHOT_EVERY:-2}"
 
 # --- Bare-only: no hard constraint anywhere (plan §1) -----------------------
 # The joint arms measure the UNCONSTRAINED upper bound on how far task gradients

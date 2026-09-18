@@ -205,3 +205,119 @@ def test_micro_is_now_accepted_for_buffered_metrics():
     out = cross_seed_ci(df, {"model_name": "m"}, metric="buffered_f1",
                         aggregation="micro")
     assert out["mean"] == pytest.approx(2 * 0.7 * 0.6 / (0.7 + 0.6))
+
+
+# --------------------------------------------------------------------------- #
+# multi-radius tolerance sweep
+# --------------------------------------------------------------------------- #
+def test_multi_radius_matches_single_radius_exactly():
+    """The sweep shares one pair of distance transforms across radii; that must
+    not change a single number versus scoring each rho on its own."""
+    from benchmarking.buffered_metrics import buffered_scores_multi
+
+    rng = np.random.default_rng(7)
+    gt = rng.random((64, 64)) > 0.88
+    pred = rng.random((64, 64)) > 0.88
+    multi = buffered_scores_multi(pred, gt, radii=(1, 2, 3, 4, 5))
+    for r in (1, 2, 3, 4, 5):
+        single = buffered_scores(pred, gt, rho=r)
+        for m in ("buffered_f1", "buffered_precision", "buffered_recall"):
+            assert multi[f"{m}_r{r}"] == pytest.approx(single[m]), f"{m} at rho={r}"
+
+
+def test_multi_radius_is_monotonic_in_rho():
+    """A bigger buffer can only forgive more, so every score is non-decreasing
+    in rho. If this fails the radii are being applied to the wrong mask."""
+    from benchmarking.buffered_metrics import buffered_scores_multi
+
+    gt = _blank(64)
+    gt[20, 5:60] = True
+    gt[40, 5:60] = True
+    pred = _blank(64)
+    pred[22, 5:60] = True            # 2 px off
+    pred[45, 5:60] = True            # 5 px off
+    out = buffered_scores_multi(pred, gt, radii=(1, 2, 3, 4, 5))
+    f1s = [out[f"buffered_f1_r{r}"] for r in (1, 2, 3, 4, 5)]
+    assert f1s == sorted(f1s), f1s
+    assert f1s[0] < f1s[-1]          # and it actually moves
+
+
+def test_multi_radius_empty_conventions_match_single():
+    from benchmarking.buffered_metrics import buffered_scores_multi
+
+    both = buffered_scores_multi(_blank(), _blank(), radii=(1, 3))
+    assert all(np.isnan(v) for v in both.values())
+    gt = _blank(); gt[10, 5:25] = True
+    one = buffered_scores_multi(_blank(), gt, radii=(1, 3))
+    assert all(v == 0.0 for v in one.values())
+
+
+def test_radius_key_is_column_safe():
+    from benchmarking.buffered_metrics import _rkey
+    assert _rkey(3) == "r3"
+    assert _rkey(3.0) == "r3"
+    assert _rkey(2.5) == "r2p5"      # no '.' in a parquet column name
+
+
+# --------------------------------------------------------------------------- #
+# Average Precision (full-range, binned)
+# --------------------------------------------------------------------------- #
+def test_ap_perfect_and_random_separation():
+    """A perfectly separable chip scores AP 1.0; a constant-probability chip
+    scores the positive prevalence, which is the no-skill baseline."""
+    from benchmarking.ap_metrics import chip_average_precision
+
+    gt = _blank(16)
+    gt[4:8, :] = True
+    probs = np.where(gt, 0.9, 0.1)
+    assert chip_average_precision(probs, gt, bins=101) == pytest.approx(1.0, abs=1e-3)
+
+    flat = np.full(gt.shape, 0.5)
+    prevalence = gt.mean()
+    assert chip_average_precision(flat, gt, bins=101) == pytest.approx(prevalence, abs=0.02)
+
+
+def test_ap_is_nan_without_positives():
+    """AP is undefined with no positive class; a fabricated 0.0 would drag the
+    mean down in proportion to how many road-free chips a split contains."""
+    from benchmarking.ap_metrics import chip_average_precision
+    assert np.isnan(chip_average_precision(np.full((8, 8), 0.3), _blank(8)))
+
+
+def test_ap_full_range_unlike_a_theta_sweep():
+    """The point of scoring probabilities: a saturated map whose recall barely
+    moves over theta in [0.05,0.95] still gets a full-domain AP, where a
+    sweep-derived area would collapse toward zero."""
+    from benchmarking.ap_metrics import chip_average_precision
+
+    gt = _blank(32)
+    gt[10:14, :] = True
+    # probabilities squeezed into a narrow band -> thresholding in [0.05,0.95]
+    # hardly changes the mask, but ranking is still perfect.
+    probs = np.where(gt, 0.51, 0.49)
+    assert chip_average_precision(probs, gt, bins=1001) == pytest.approx(1.0, abs=1e-2)
+
+
+def test_micro_derivable_accepts_suffixed_radii():
+    """The guard lived in three places and drifted: cross_seed_ci rejected
+    'buffered_f1_r1' while _micro_metric_from_counts happily computed it, so the
+    per-model table came out EMPTY with no error surfaced. One helper now."""
+    from benchmarking.stats import is_micro_derivable
+    for m in ("f1", "iou", "buffered_f1", "buffered_precision",
+              "buffered_f1_r1", "buffered_recall_r5", "buffered_precision_r2p5"):
+        assert is_micro_derivable(m), m
+    for m in ("apls", "cldice", "ap", "buffered_nonsense_r1", "buffered_f1_rx"):
+        assert not is_micro_derivable(m), m
+
+
+def test_cross_seed_ci_micro_works_for_suffixed_radius():
+    from benchmarking.stats import cross_seed_ci
+    df = _chips([
+        {"model_name": "m", "seed": 0, "chip_id": f"c{i}", "tp": 10, "fp": 10,
+         "fn": 10, "tn": 100, "buffered_precision_r1": 0.7,
+         "buffered_recall_r1": 0.6, "buffered_f1_r1": 0.65}
+        for i in range(4)
+    ])
+    out = cross_seed_ci(df, {"model_name": "m"}, metric="buffered_f1_r1",
+                        aggregation="micro")
+    assert out["mean"] == pytest.approx(2 * 0.7 * 0.6 / (0.7 + 0.6))

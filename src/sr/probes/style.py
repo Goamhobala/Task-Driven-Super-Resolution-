@@ -47,6 +47,7 @@ GREY = "#6b6b6b"
 ROAD = "#b3283a"       # road class, in the LDA densities
 BG = "#3d3d3d"         # background class
 ZERO_LINE = "#9a9a9a"
+BLACK = "#000000"
 
 # The lr_sr grid (`sr_r2grid_{on,off}_ls{LR}_..._rails_seed0`). `ls` in those
 # run names is lr_sr, NOT l2sp_lambda — every grid run has l2sp_lambda 0.0.

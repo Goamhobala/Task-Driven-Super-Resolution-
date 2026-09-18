@@ -31,7 +31,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from sr.model import JointSRUNetLightning
+from sr.model import AdaptiveNormBandExit, JointSRUNetLightning
 
 # Full-stack stats (1-based bands 1-4 -> indices 0-3), deliberately NOT equal
 # to the moments of any test tensor, so a stale adapter is visible.
@@ -235,29 +235,120 @@ def test_lag_diagnostic_separates_the_fast_and_slow_emas():
 # --------------------------------------------------------------------------- #
 # §4.3  the std hard band fails loud — it is not a clamp
 # --------------------------------------------------------------------------- #
-def test_std_outside_the_hard_band_raises_with_diagnostics():
+def test_a_band_exit_NEVER_kills_a_fit_by_default(capsys):
+    """THE regression test. On 2026-08-19 a raise-by-default band guard killed
+    r4b_new at epoch 13 of 100, after a day in the SLURM queue, at lr_sr 13x
+    BELOW the design default, on a decelerating trend that crossed the bound by
+    0.004. Measuring what the task loss does to the SR generator IS the
+    experiment; the instrument must never abort it."""
     model = make_model(adaptive_norm=True, adaptive_norm_momentum=1.0,
                        adaptive_norm_check_every=1)
-    # 5x band 0's frozen std (0.04) -> ratio 5.0, past the 2.0 raise threshold.
-    y = hr_tensor(mean=0.30, std=0.20, seed=11)
-    with pytest.raises(RuntimeError, match="hard band"):
-        model._adapt_update(y)
-    # Diagnostics, not a silent floor: the buffer still holds the real value.
-    assert float(model.band_std.reshape(-1)[0]) == pytest.approx(0.20, rel=1e-3)
+    assert model.hparams.std_band_action == "warn"
+    model._adapt_update(hr_tensor(mean=0.30, std=0.01, seed=12))   # 0.25x
+    out = capsys.readouterr().out
+    assert "BAND EXIT (non-fatal, training continues)" in out
+    assert model._adapt_band_exited is True
+    # ...and it keeps tracking afterwards rather than wedging.
+    model._adapt_update(hr_tensor(mean=0.30, std=0.045, seed=3))
+    assert float(model.band_std.reshape(-1)[0]) == pytest.approx(0.045, rel=1e-3)
 
 
-def test_std_collapse_raises_too():
+def test_band_exit_warns_only_once_but_the_metric_stays_latched():
     model = make_model(adaptive_norm=True, adaptive_norm_momentum=1.0,
                        adaptive_norm_check_every=1)
+    for _ in range(3):
+        model._adapt_update(hr_tensor(mean=0.30, std=0.01, seed=12))
+    assert model._adapt_band_exited is True
+
+
+def test_std_collapse_raises_only_when_explicitly_asked():
+    """`raise` is opt-in, for sr.tune, where pruning a bad corner saves budget."""
+    model = make_model(adaptive_norm=True, adaptive_norm_momentum=1.0,
+                       adaptive_norm_check_every=1, std_band_action="raise")
     y = hr_tensor(mean=0.30, std=0.01, seed=12)   # 0.25x band 0's 0.04
-    with pytest.raises(RuntimeError, match="hard band"):
+    with pytest.raises(AdaptiveNormBandExit, match="COLLAPSED"):
         model._adapt_update(y)
+
+
+def test_rejects_an_unknown_band_action():
+    with pytest.raises(ValueError, match="std_band_action"):
+        make_model(std_band_action="explode")
+
+
+def test_resume_rebases_the_band_reference_instead_of_re_tripping(tmp_path):
+    """Second half of the 2026-08-19 failure: `_adapt_init_*` are
+    non-persistent, so a RESUME_FIT would restore the ADAPTED band_std while
+    the reference still held the config's dataset stats — and the first check
+    after the resume would re-trip on drift the resumed segment never caused.
+    Without this, the run could not even be restarted."""
+    model = make_model(adaptive_norm=True, adaptive_norm_momentum=1.0,
+                       adaptive_norm_check_every=1, std_band_action="raise")
+    model._adapt_update(hr_tensor(mean=0.30, std=0.022, seed=4))   # ~0.55x
+    p = tmp_path / "last.pt"
+    torch.save(model.state_dict(), p)
+
+    resumed = make_model(adaptive_norm=True, adaptive_norm_momentum=1.0,
+                         adaptive_norm_check_every=1, std_band_action="raise")
+    resumed.load_state_dict(torch.load(p, weights_only=True), strict=True)
+    # Reference now equals the restored state, so the segment starts at 1.0x.
+    assert torch.allclose(resumed._adapt_init_std, resumed.band_std)
+    resumed._check_std_band()          # must NOT raise
+
+
+def test_growth_past_the_old_symmetric_bound_is_tolerated():
+    """Regression for 2026-08-13: a symmetric 2.0x upper bound killed a tune on
+    a SEN2SR trial whose std was growing (means DC-pinned and steady). Growth is
+    self-stabilising — rising std LOWERS the gradient gain — so 2x now warns."""
+    model = make_model(adaptive_norm=True, adaptive_norm_momentum=1.0,
+                       adaptive_norm_check_every=1)
+    y = hr_tensor(mean=0.30, std=0.088, seed=11)      # 2.2x band 0's 0.04
+    model._adapt_update(y)                            # must NOT raise
+    assert float(model.band_std.reshape(-1)[0]) == pytest.approx(0.088, rel=1e-3)
+
+
+def test_extreme_growth_still_raises():
+    model = make_model(adaptive_norm=True, adaptive_norm_momentum=1.0,
+                       adaptive_norm_check_every=1)
+    y = hr_tensor(mean=0.30, std=0.30, seed=11)       # 7.5x band 0's 0.04
+    with pytest.raises(AdaptiveNormBandExit, match="GREW"):
+        model._adapt_update(y)
+    # Diagnostics, not a silent clamp: the buffer still holds the real value.
+    assert float(model.band_std.reshape(-1)[0]) == pytest.approx(0.30, rel=1e-3)
+
+
+def test_band_limits_are_hparams():
+    """An arm with a known reason to expect contrast growth can loosen the
+    upper side WITHOUT touching the lower catastrophe bound."""
+    loose = make_model(adaptive_norm=True, adaptive_norm_momentum=1.0,
+                       adaptive_norm_check_every=1, std_band_raise_hi=20.0)
+    loose._adapt_update(hr_tensor(mean=0.30, std=0.30, seed=11))   # no raise
+    strict = make_model(adaptive_norm=True, adaptive_norm_momentum=1.0,
+                        adaptive_norm_check_every=1, std_band_raise_lo=0.95)
+    with pytest.raises(AdaptiveNormBandExit, match="COLLAPSED"):
+        strict._adapt_update(hr_tensor(mean=0.30, std=0.035, seed=12))
+
+
+def test_band_exit_is_catchable_without_catching_every_runtime_error():
+    """`sr.tune` prunes the trial on this type specifically; it must not be so
+    broad that a genuine bug is silently swallowed as 'bad hyperparameters'."""
+    assert issubclass(AdaptiveNormBandExit, RuntimeError)
+    model = make_model(adaptive_norm=True, adaptive_norm_momentum=1.0,
+                       adaptive_norm_check_every=1)
+    try:
+        model._adapt_update(hr_tensor(mean=0.30, std=0.01, seed=12))
+    except AdaptiveNormBandExit as exc:
+        assert len(exc.ratios) == C            # per-band diagnostics survive
+        assert exc.band == (0.5, 4.0)
+        assert "lr_sr" in str(exc)             # points at the first thing to check
+    else:
+        pytest.fail("expected AdaptiveNormBandExit")
 
 
 def test_std_inside_the_warn_band_warns_once_and_continues(capsys):
     model = make_model(adaptive_norm=True, adaptive_norm_momentum=1.0,
                        adaptive_norm_check_every=1)
-    # 0.064 = 1.6x band 0's 0.04: inside [0.5, 2.0], outside [0.7, 1.5].
+    # 0.064 = 1.6x band 0's 0.04: inside the raise band [0.5, 4.0], outside
+    # the warn band [0.7, 1.5] -> warn, keep training.
     y = hr_tensor(mean=0.30, std=0.064, seed=13)
     model._adapt_update(y)
     model._adapt_update(y)
