@@ -1,0 +1,22 @@
+# ZeroGPU: torch 2.8-2.13, python 3.12.12. Pin nothing tighter than needed.
+torch>=2.8
+torchvision
+lightning>=2.0
+torchmetrics>=1.0
+segmentation-models-pytorch
+sen2sr
+mlstac
+safetensors
+# The checkpoint was written by LightningCLI, so hyper_parameters carries an
+# `_instantiator`; without jsonargparse, lightning.pytorch.cli.ArgumentParser
+# resolves to a stub and load_from_checkpoint dies with
+# "TypeError: object() takes no arguments". Keeping it matches the env the
+# parity gate was certified against, rather than changing the load path.
+jsonargparse[signatures]>=4.27
+numpy
+pillow
+huggingface-hub
+# deliberately NOT here:
+#   mamba-ssm  -> r2a is SEN2SR-*Lite*; the Mamba path compiles CUDA kernels on
+#                 a GPU-less build node and is not needed.
+#   rasterio   -> tiles ship as .npy, so no GDAL/PROJ in the image at all.
