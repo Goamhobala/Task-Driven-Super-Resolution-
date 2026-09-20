@@ -4,3 +4,6 @@
 [submodule "instageo"]
 	path = instageo
 	url = https://github.com/InstaRoad/InstaGeo.git
+[submodule "demo/instaroad-static"]
+	path = demo/instaroad-static
+	url = https://github.com/Goamhobala/InstaRoad-static.git
