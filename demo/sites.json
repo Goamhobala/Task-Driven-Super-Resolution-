@@ -1,0 +1,2188 @@
+[
+ {
+  "id": "PortElizabeth_AlbanyThicket_-33p896_25p579_Urban",
+  "biome": "AlbanyThicket",
+  "urbanisation": "Urban",
+  "city": "PortElizabeth",
+  "lat_name": -33.896,
+  "lon_name": 25.579,
+  "split": "test",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 21,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   25.43744845538013,
+   -34.01207835917497,
+   25.71806850646107,
+   -33.77806661305552
+  ],
+  "centroid_wgs84": [
+   25.5777584809206,
+   -33.89507248611525
+  ]
+ },
+ {
+  "id": "AzonalVegetation_-30p63_20p09_Rural",
+  "biome": "AzonalVegetation",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -30.63,
+  "lon_name": 20.09,
+  "split": "test",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 12,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   19.954970302525158,
+   -30.700090557745344,
+   20.170376508052037,
+   -30.513769735392067
+  ],
+  "centroid_wgs84": [
+   20.0626734052886,
+   -30.606930146568708
+  ]
+ },
+ {
+  "id": "AlexanderBay_Desert_-28p57_16p55_PeriUrban",
+  "biome": "Desert",
+  "urbanisation": "PeriUrban",
+  "city": "AlexanderBay",
+  "lat_name": -28.57,
+  "lon_name": 16.55,
+  "split": "test",
+  "crs": [
+   "EPSG:32733"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   16.41948993451734,
+   -28.688464636463593,
+   16.683308558234522,
+   -28.455040552706834
+  ],
+  "centroid_wgs84": [
+   16.55139924637593,
+   -28.571752594585213
+  ]
+ },
+ {
+  "id": "Forests_-28p55_29p08_Rural",
+  "biome": "Forests",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -28.55,
+  "lon_name": 29.08,
+  "split": "test",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 23,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   28.945757753517718,
+   -28.670528636283155,
+   29.211838819583363,
+   -28.435595608165794
+  ],
+  "centroid_wgs84": [
+   29.07879828655054,
+   -28.553062122224475
+  ]
+ },
+ {
+  "id": "CapeTown_Fynbos_-33p96_18p61_Urban",
+  "biome": "Fynbos",
+  "urbanisation": "Urban",
+  "city": "CapeTown",
+  "lat_name": -33.96,
+  "lon_name": 18.61,
+  "split": "test",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 21,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   18.467130135830065,
+   -34.07961532003907,
+   18.750434921776467,
+   -33.84467190570494
+  ],
+  "centroid_wgs84": [
+   18.608782528803268,
+   -33.962143612872005
+  ]
+ },
+ {
+  "id": "Johannesburg_Grassland_-26p087_28p083_Urban",
+  "biome": "Grassland",
+  "urbanisation": "Urban",
+  "city": "Johannesburg",
+  "lat_name": -26.087,
+  "lon_name": 28.083,
+  "split": "test",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   27.9550180459603,
+   -26.15860179345374,
+   28.161399290462555,
+   -25.972203317806613
+  ],
+  "centroid_wgs84": [
+   28.058208668211428,
+   -26.06540255563018
+  ]
+ },
+ {
+  "id": "IndianOceanCoastalBelt_-30p81_30p34_PeriUrban",
+  "biome": "IndianOceanCoastalBelt",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -30.81,
+  "lon_name": 30.34,
+  "split": "test",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 22,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   30.200919982829753,
+   -30.923870677421508,
+   30.472730210872708,
+   -30.686374276170532
+  ],
+  "centroid_wgs84": [
+   30.33682509685123,
+   -30.805122476796022
+  ]
+ },
+ {
+  "id": "Savanna_-28p57_29p82_PeriUrban",
+  "biome": "Savanna",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -28.57,
+  "lon_name": 29.82,
+  "split": "test",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 24,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   29.686280171768377,
+   -28.68062503649707,
+   29.953858619940515,
+   -28.444391299399367
+  ],
+  "centroid_wgs84": [
+   29.820069395854446,
+   -28.562508167948216
+  ]
+ },
+ {
+  "id": "SucculentKaroo_-30p88_18p74_Rural",
+  "biome": "SucculentKaroo",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -30.88,
+  "lon_name": 18.74,
+  "split": "test",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 19,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   18.601893345510533,
+   -30.999377876967145,
+   18.873923486681402,
+   -30.764777280239407
+  ],
+  "centroid_wgs84": [
+   18.73790841609597,
+   -30.882077578603276
+  ]
+ },
+ {
+  "id": "AlbanyThicket_-32p92_27p50_PeriUrban",
+  "biome": "AlbanyThicket",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -32.92,
+  "lon_name": 27.5,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   27.36102239231524,
+   -32.987867189869064,
+   27.58096880274276,
+   -32.80230876062833
+  ],
+  "centroid_wgs84": [
+   27.470995597528997,
+   -32.8950879752487
+  ]
+ },
+ {
+  "id": "AlbanyThicket_-32p93_24p66_Rural",
+  "biome": "AlbanyThicket",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -32.93,
+  "lon_name": 24.66,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   24.51794646309963,
+   -33.048220775098265,
+   24.797629219274178,
+   -32.812360725464856
+  ],
+  "centroid_wgs84": [
+   24.657787841186902,
+   -32.93029075028156
+  ]
+ },
+ {
+  "id": "AlbanyThicket_-32p98_26p39_Rural",
+  "biome": "AlbanyThicket",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -32.98,
+  "lon_name": 26.39,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 15,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   26.258408641088277,
+   -33.048636464726656,
+   26.47883444487347,
+   -32.862802183573294
+  ],
+  "centroid_wgs84": [
+   26.368621542980875,
+   -32.955719324149975
+  ]
+ },
+ {
+  "id": "EastLondon_AlbanyThicket_-32p94_27p82_Urban",
+  "biome": "AlbanyThicket",
+  "urbanisation": "Urban",
+  "city": "EastLondon",
+  "lat_name": -32.94,
+  "lon_name": 27.82,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   27.6852513595966,
+   -33.00977503536823,
+   27.90591230184088,
+   -32.82365968000675
+  ],
+  "centroid_wgs84": [
+   27.79558183071874,
+   -32.91671735768749
+  ]
+ },
+ {
+  "id": "AzonalVegetation_-28p08_26p88_PeriUrban",
+  "biome": "AzonalVegetation",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -28.08,
+  "lon_name": 26.88,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   26.750060951515024,
+   -28.152712535345668,
+   26.95871957797117,
+   -27.967615129221187
+  ],
+  "centroid_wgs84": [
+   26.854390264743095,
+   -28.06016383228343
+  ]
+ },
+ {
+  "id": "AzonalVegetation_-31p68_18p52_PeriUrban",
+  "biome": "AzonalVegetation",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -31.68,
+  "lon_name": 18.52,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   18.382396430447265,
+   -31.790463555071142,
+   18.6583500157641,
+   -31.554464363001543
+  ],
+  "centroid_wgs84": [
+   18.520373223105683,
+   -31.672463959036342
+  ]
+ },
+ {
+  "id": "AzonalVegetation_-33p85_20p04_Rural",
+  "biome": "AzonalVegetation",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -33.85,
+  "lon_name": 20.04,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 15,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   19.900851908843432,
+   -33.918530068257496,
+   20.123669216436085,
+   -33.732072396939834
+  ],
+  "centroid_wgs84": [
+   20.01226056263976,
+   -33.82530123259866
+  ]
+ },
+ {
+  "id": "GraafReniet_AzonalVegetation_-32p252_24p533_Urban",
+  "biome": "AzonalVegetation",
+  "urbanisation": "Urban",
+  "city": "GraafReniet",
+  "lat_name": -32.252,
+  "lon_name": 24.533,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 23,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   24.390235110917963,
+   -32.36709555799993,
+   24.667998545235168,
+   -32.13104977993151
+  ],
+  "centroid_wgs84": [
+   24.529116828076567,
+   -32.249072668965724
+  ]
+ },
+ {
+  "id": "Desert_-28p20_17p12_Rural",
+  "biome": "Desert",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -28.2,
+  "lon_name": 17.12,
+  "split": "train",
+  "crs": [
+   "EPSG:32733"
+  ],
+  "n_tiles": 18,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   16.986874419871352,
+   -28.31205139883755,
+   17.252090990656537,
+   -28.078747242942395
+  ],
+  "centroid_wgs84": [
+   17.119482705263945,
+   -28.195399320889972
+  ]
+ },
+ {
+  "id": "Pella_Desert_-29p031_19p156_PeriUrban",
+  "biome": "Desert",
+  "urbanisation": "PeriUrban",
+  "city": "Pella",
+  "lat_name": -29.031,
+  "lon_name": 19.156,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 12,
+  "rows": [
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   19.02066396049055,
+   -29.1474498080028,
+   19.284497093968575,
+   -28.959842524804152
+  ],
+  "centroid_wgs84": [
+   19.15258052722956,
+   -29.053646166403475
+  ]
+ },
+ {
+  "id": "Forests_-28p41_32p36_PeriUrban",
+  "biome": "Forests",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -28.41,
+  "lon_name": 32.36,
+  "split": "train",
+  "crs": [
+   "EPSG:32736"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   32.23430002354189,
+   -28.481783309857256,
+   32.44448154509619,
+   -28.295914138891227
+  ],
+  "centroid_wgs84": [
+   32.339390784319036,
+   -28.388848724374242
+  ]
+ },
+ {
+  "id": "Forests_-30p29_30p45_Rural",
+  "biome": "Forests",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -30.29,
+  "lon_name": 30.45,
+  "split": "train",
+  "crs": [
+   "EPSG:32736"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   30.31053109786426,
+   -30.402596685892757,
+   30.582438604571465,
+   -30.166617329085188
+  ],
+  "centroid_wgs84": [
+   30.44648485121786,
+   -30.284607007488972
+  ]
+ },
+ {
+  "id": "Knysna_Forest_-33p98_23p07_Urban",
+  "biome": "Forests",
+  "urbanisation": "Urban",
+  "city": "Knysna",
+  "lat_name": -33.98,
+  "lon_name": 23.07,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   22.931060732459176,
+   -34.10237750040585,
+   23.21364470142342,
+   -33.866978167526526
+  ],
+  "centroid_wgs84": [
+   23.072352716941296,
+   -33.98467783396619
+  ]
+ },
+ {
+  "id": "Fynbos_-33p97_24p21_Rural",
+  "biome": "Fynbos",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -33.97,
+  "lon_name": 24.21,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 23,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   24.062090620575166,
+   -34.08511449623867,
+   24.347414594995502,
+   -33.84738060412896
+  ],
+  "centroid_wgs84": [
+   24.204752607785334,
+   -33.96624755018381
+  ]
+ },
+ {
+  "id": "Fynbos_-34p53_20p04_PeriUrban",
+  "biome": "Fynbos",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -34.53,
+  "lon_name": 20.04,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   19.90395277873026,
+   -34.60394849312365,
+   20.129203945813078,
+   -34.4174883404043
+  ],
+  "centroid_wgs84": [
+   20.01657836227167,
+   -34.51071841676398
+  ]
+ },
+ {
+  "id": "George_Fynbos_-33p95_22p477_Urban",
+  "biome": "Fynbos",
+  "urbanisation": "Urban",
+  "city": "George",
+  "lat_name": -33.95,
+  "lon_name": 22.477,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 22,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   22.336294794910554,
+   -34.07020318655673,
+   22.616375429606308,
+   -33.836071715561786
+  ],
+  "centroid_wgs84": [
+   22.476335112258433,
+   -33.95313745105926
+  ]
+ },
+ {
+  "id": "Hermanes_Fynbos_-34p312_19p06_Urban",
+  "biome": "Fynbos",
+  "urbanisation": "Urban",
+  "city": "Hermanes",
+  "lat_name": -34.312,
+  "lon_name": 19.06,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 22,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   18.91733754133771,
+   -34.42798791934156,
+   19.199577489264687,
+   -34.19283902286432
+  ],
+  "centroid_wgs84": [
+   19.0584575153012,
+   -34.31041347110294
+  ]
+ },
+ {
+  "id": "Sandberg_Fynbos_-32p30_18p60_Rural",
+  "biome": "Fynbos",
+  "urbanisation": "Rural",
+  "city": "Sandberg",
+  "lat_name": -32.3,
+  "lon_name": 18.6,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 23,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   18.457032693567164,
+   -32.4172887608098,
+   18.734802279934637,
+   -32.181369738678654
+  ],
+  "centroid_wgs84": [
+   18.5959174867509,
+   -32.299329249744225
+  ]
+ },
+ {
+  "id": "Bloemfontein_Grassland_-29p115_26p216_Urban",
+  "biome": "Grassland",
+  "urbanisation": "Urban",
+  "city": "Bloemfontein",
+  "lat_name": -29.115,
+  "lon_name": 26.216,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   26.085352925276755,
+   -29.185655327860932,
+   26.29723130015364,
+   -28.99955642523666
+  ],
+  "centroid_wgs84": [
+   26.191292112715196,
+   -29.092605876548795
+  ]
+ },
+ {
+  "id": "Grassland_-25p07_30p41_Rural",
+  "biome": "Grassland",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -25.07,
+  "lon_name": 30.41,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   30.275008556175155,
+   -25.184770201873988,
+   30.53477465055682,
+   -24.948169556017742
+  ],
+  "centroid_wgs84": [
+   30.40489160336599,
+   -25.066469878945867
+  ]
+ },
+ {
+  "id": "Grassland_-25p12_29p75_PeriUrban",
+  "biome": "Grassland",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -25.12,
+  "lon_name": 29.75,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 24,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   29.615217631497472,
+   -25.240382365008625,
+   29.874032623819907,
+   -25.004757286239467
+  ],
+  "centroid_wgs84": [
+   29.74462512765869,
+   -25.122569825624048
+  ]
+ },
+ {
+  "id": "Grassland_-27p75_30p03_PeriUrban",
+  "biome": "Grassland",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -27.75,
+  "lon_name": 30.03,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   29.898671020909383,
+   -27.86934233196732,
+   30.16447659543533,
+   -27.632869569625537
+  ],
+  "centroid_wgs84": [
+   30.031573808172357,
+   -27.75110595079643
+  ]
+ },
+ {
+  "id": "Pietermaritzberg_Grassland_-29p602_30p377_Urban",
+  "biome": "Grassland",
+  "urbanisation": "Urban",
+  "city": "Pietermaritzberg",
+  "lat_name": -29.602,
+  "lon_name": 30.377,
+  "split": "train",
+  "crs": [
+   "EPSG:32736"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   30.238989821143672,
+   -29.717841090353225,
+   30.509069002595975,
+   -29.481812878888565
+  ],
+  "centroid_wgs84": [
+   30.374029411869824,
+   -29.599826984620897
+  ]
+ },
+ {
+  "id": "IndianOceanCoastalBelt_-28p93_31p58_Rural",
+  "biome": "IndianOceanCoastalBelt",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -28.93,
+  "lon_name": 31.58,
+  "split": "train",
+  "crs": [
+   "EPSG:32736"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   31.45122634112302,
+   -29.05110612255836,
+   31.716954081228877,
+   -28.81734841627366
+  ],
+  "centroid_wgs84": [
+   31.584090211175948,
+   -28.93422726941601
+  ]
+ },
+ {
+  "id": "IndianOceanCoastalBelt_-29p21_31p25_Rural",
+  "biome": "IndianOceanCoastalBelt",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -29.21,
+  "lon_name": 31.25,
+  "split": "train",
+  "crs": [
+   "EPSG:32736"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   31.11984653415253,
+   -29.32745011138821,
+   31.387010069237117,
+   -29.093064419001244
+  ],
+  "centroid_wgs84": [
+   31.253428301694825,
+   -29.210257265194727
+  ]
+ },
+ {
+  "id": "IndianOceanCoastalBelt_-29p56_30p99_PeriUrban",
+  "biome": "IndianOceanCoastalBelt",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -29.56,
+  "lon_name": 30.99,
+  "split": "train",
+  "crs": [
+   "EPSG:32736"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   30.85115397556181,
+   -29.67817057398517,
+   31.11984622475123,
+   -29.44326253583059
+  ],
+  "centroid_wgs84": [
+   30.98550010015652,
+   -29.56071655490788
+  ]
+ },
+ {
+  "id": "RichardsBay_IndianCoastal_-28p69_32p03_Urban",
+  "biome": "IndianOceanCoastalBelt",
+  "urbanisation": "Urban",
+  "city": "RichardsBay",
+  "lat_name": -28.69,
+  "lon_name": 32.03,
+  "split": "train",
+  "crs": [
+   "EPSG:32736"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   31.903309602770587,
+   -28.768316186016698,
+   32.11463301080172,
+   -28.581949430339364
+  ],
+  "centroid_wgs84": [
+   32.00897130678615,
+   -28.67513280817803
+  ]
+ },
+ {
+  "id": "BeaufortWest_NamaKaroo_-32p367_22p56_Urban",
+  "biome": "NamaKaroo",
+  "urbanisation": "Urban",
+  "city": "BeaufortWest",
+  "lat_name": -32.367,
+  "lon_name": 22.56,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 24,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   22.423469293496282,
+   -32.48370720192392,
+   22.69945360592217,
+   -32.249480307619045
+  ],
+  "centroid_wgs84": [
+   22.561461449709228,
+   -32.366593754771486
+  ]
+ },
+ {
+  "id": "Carnarvon_-30p97_22p13_PeriUrban",
+  "biome": "NamaKaroo",
+  "urbanisation": "PeriUrban",
+  "city": "Carnarvon",
+  "lat_name": -30.97,
+  "lon_name": 22.13,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   21.996422657815067,
+   -31.040243940481467,
+   22.212916421997555,
+   -30.853649628687887
+  ],
+  "centroid_wgs84": [
+   22.10466953990631,
+   -30.946946784584675
+  ]
+ },
+ {
+  "id": "Kenhart_-29p35_21p15_PeriUrban",
+  "biome": "NamaKaroo",
+  "urbanisation": "PeriUrban",
+  "city": "Kenhart",
+  "lat_name": -29.35,
+  "lon_name": 21.15,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   21.024388070152472,
+   -29.420002489105034,
+   21.23555748837588,
+   -29.234955255153398
+  ],
+  "centroid_wgs84": [
+   21.129972779264175,
+   -29.327478872129216
+  ]
+ },
+ {
+  "id": "NamaKaroo_-29p26_24p03_Rural",
+  "biome": "NamaKaroo",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -29.26,
+  "lon_name": 24.03,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 20,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   23.8964675071901,
+   -29.377461205409297,
+   24.16355020963182,
+   -29.14075852805126
+  ],
+  "centroid_wgs84": [
+   24.03000885841096,
+   -29.259109866730277
+  ]
+ },
+ {
+  "id": "NamaKaroo_-30p67_24p02_PeriUrban",
+  "biome": "NamaKaroo",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -30.67,
+  "lon_name": 24.02,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 22,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   23.88282822811341,
+   -30.780166414891408,
+   24.155489927064693,
+   -30.54448110229483
+  ],
+  "centroid_wgs84": [
+   24.01915907758905,
+   -30.662323758593118
+  ]
+ },
+ {
+  "id": "Kimberly_Savanna_-28p75_24p76_Urban",
+  "biome": "Savanna",
+  "urbanisation": "Urban",
+  "city": "Kimberly",
+  "lat_name": -28.75,
+  "lon_name": 24.76,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   24.62514347482717,
+   -28.867767350962527,
+   24.892080704256664,
+   -28.63252549826264
+  ],
+  "centroid_wgs84": [
+   24.758612089541916,
+   -28.750146424612584
+  ]
+ },
+ {
+  "id": "Mbombela_Savanna_-25p471_30p98_Urban",
+  "biome": "Savanna",
+  "urbanisation": "Urban",
+  "city": "Mbombela",
+  "lat_name": -25.471,
+  "lon_name": 30.98,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   30.84702820120435,
+   -25.587277150379233,
+   31.10867552774367,
+   -25.349759664981523
+  ],
+  "centroid_wgs84": [
+   30.97785186447401,
+   -25.468518407680378
+  ]
+ },
+ {
+  "id": "Savanna_-23p03_29p86_Rural",
+  "biome": "Savanna",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -23.03,
+  "lon_name": 29.86,
+  "split": "train",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   29.728132303227035,
+   -23.142149471265217,
+   29.98253494520582,
+   -22.906677408036828
+  ],
+  "centroid_wgs84": [
+   29.855333624216428,
+   -23.02441343965102
+  ]
+ },
+ {
+  "id": "Savanna_-26p13_24p85_Rural",
+  "biome": "Savanna",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -26.13,
+  "lon_name": 24.85,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 21,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   24.71215661209478,
+   -26.243184718800073,
+   24.973752218602794,
+   -26.00572623926921
+  ],
+  "centroid_wgs84": [
+   24.842954415348785,
+   -26.124455479034644
+  ]
+ },
+ {
+  "id": "Savanna_-27p09_23p91_PeriUrban",
+  "biome": "Savanna",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -27.09,
+  "lon_name": 23.91,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 24,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   23.771958621978076,
+   -27.20371997375833,
+   24.03580328395209,
+   -26.96755811802385
+  ],
+  "centroid_wgs84": [
+   23.903880952965082,
+   -27.08563904589109
+  ]
+ },
+ {
+  "id": "Oudtshoorn_SucculentKaroo_-33p595_22p204_Urban",
+  "biome": "SucculentKaroo",
+  "urbanisation": "Urban",
+  "city": "Oudtshoorn",
+  "lat_name": -33.595,
+  "lon_name": 22.204,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   22.065141181412784,
+   -33.66559630136344,
+   22.28827087289484,
+   -33.47881789958235
+  ],
+  "centroid_wgs84": [
+   22.176706027153813,
+   -33.572207100472895
+  ]
+ },
+ {
+  "id": "Soebatsfontein_-30p12_17p59_PeriUrban",
+  "biome": "SucculentKaroo",
+  "urbanisation": "PeriUrban",
+  "city": "Soebatsfontein",
+  "lat_name": -30.12,
+  "lon_name": 17.59,
+  "split": "train",
+  "crs": [
+   "EPSG:32733"
+  ],
+  "n_tiles": 21,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   17.45442448581901,
+   -30.234025588881583,
+   17.725919434972376,
+   -29.999008236698707
+  ],
+  "centroid_wgs84": [
+   17.590171960395693,
+   -30.116516912790146
+  ]
+ },
+ {
+  "id": "Springbok_SucculentKaroo_-29p664_17p886_Urban",
+  "biome": "SucculentKaroo",
+  "urbanisation": "Urban",
+  "city": "Springbok",
+  "lat_name": -29.664,
+  "lon_name": 17.886,
+  "split": "train",
+  "crs": [
+   "EPSG:32733"
+  ],
+  "n_tiles": 24,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   17.747360322693645,
+   -29.7794871680842,
+   18.018143499394505,
+   -29.542989394211517
+  ],
+  "centroid_wgs84": [
+   17.882751911044075,
+   -29.66123828114786
+  ]
+ },
+ {
+  "id": "SucculentKaroo_-29p30_17p38_Rural",
+  "biome": "SucculentKaroo",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -29.3,
+  "lon_name": 17.38,
+  "split": "train",
+  "crs": [
+   "EPSG:32733"
+  ],
+  "n_tiles": 21,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   17.23953495881893,
+   -29.410391397742043,
+   17.508232046213752,
+   -29.175753212477964
+  ],
+  "centroid_wgs84": [
+   17.373883502516343,
+   -29.29307230511
+  ]
+ },
+ {
+  "id": "Worcester_SucculentKaroo_-33p648_19p45_Urban",
+  "biome": "SucculentKaroo",
+  "urbanisation": "Urban",
+  "city": "Worcester",
+  "lat_name": -33.648,
+  "lon_name": 19.45,
+  "split": "train",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 24,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   19.31078929233151,
+   -33.76403649439157,
+   19.590899604788035,
+   -33.52976596059986
+  ],
+  "centroid_wgs84": [
+   19.45084444855977,
+   -33.64690122749572
+  ]
+ },
+ {
+  "id": "AlbanyThicket_-34p13_22p04_PeriUrban",
+  "biome": "AlbanyThicket",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -34.13,
+  "lon_name": 22.04,
+  "split": "val",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   21.899564631834398,
+   -34.19919509719137,
+   22.123774707146445,
+   -34.01269162829317
+  ],
+  "centroid_wgs84": [
+   22.011669669490423,
+   -34.105943362742266
+  ]
+ },
+ {
+  "id": "Upington_AzonalVegetation_-28p446_21p25_Urban",
+  "biome": "AzonalVegetation",
+  "urbanisation": "Urban",
+  "city": "Upington",
+  "lat_name": -28.446,
+  "lon_name": 21.25,
+  "split": "val",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 15,
+  "rows": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "footprint_wgs84": [
+   21.123547625034487,
+   -28.517618173281996,
+   21.333063122935418,
+   -28.33251916976169
+  ],
+  "centroid_wgs84": [
+   21.228305373984952,
+   -28.425068671521842
+  ]
+ },
+ {
+  "id": "Desert_-28p33_16p81_Rural",
+  "biome": "Desert",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -28.33,
+  "lon_name": 16.81,
+  "split": "val",
+  "crs": [
+   "EPSG:32733"
+  ],
+  "n_tiles": 16,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   16.72448356778667,
+   -28.44730267623546,
+   16.93727146224645,
+   -28.21353103571608
+  ],
+  "centroid_wgs84": [
+   16.83087751501656,
+   -28.33041685597577
+  ]
+ },
+ {
+  "id": "Forests_-31p97_29p04_PeriUrban",
+  "biome": "Forests",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -31.97,
+  "lon_name": 29.04,
+  "split": "val",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 24,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   28.900727463836123,
+   -32.08611725179664,
+   29.17550067018106,
+   -31.850955273142336
+  ],
+  "centroid_wgs84": [
+   29.038114067008593,
+   -31.968536262469485
+  ]
+ },
+ {
+  "id": "Fynbos_-33p65_19p03_PeriUrban",
+  "biome": "Fynbos",
+  "urbanisation": "PeriUrban",
+  "city": null,
+  "lat_name": -33.65,
+  "lon_name": 19.03,
+  "split": "val",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 23,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   18.88467946127284,
+   -33.76446299697994,
+   19.165862082757066,
+   -33.52929555285965
+  ],
+  "centroid_wgs84": [
+   19.025270772014952,
+   -33.6468792749198
+  ]
+ },
+ {
+  "id": "Grassland_-27p78_30p54_Rural",
+  "biome": "Grassland",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -27.78,
+  "lon_name": 30.54,
+  "split": "val",
+  "crs": [
+   "EPSG:32736"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   30.4011824313664,
+   -27.899327421329666,
+   30.66599862271661,
+   -27.663801504482862
+  ],
+  "centroid_wgs84": [
+   30.533590527041504,
+   -27.781564462906264
+  ]
+ },
+ {
+  "id": "Durban_IndianCoastal_-29p851_30p94_Urban",
+  "biome": "IndianOceanCoastalBelt",
+  "urbanisation": "Urban",
+  "city": "Durban",
+  "lat_name": -29.851,
+  "lon_name": 30.94,
+  "split": "val",
+  "crs": [
+   "EPSG:32736"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   30.800102968696272,
+   -29.96714948432202,
+   31.069714252976055,
+   -29.73212194933575
+  ],
+  "centroid_wgs84": [
+   30.934908610836164,
+   -29.849635716828885
+  ]
+ },
+ {
+  "id": "NamaKaroo_-33p04_23p02_Rural",
+  "biome": "NamaKaroo",
+  "urbanisation": "Rural",
+  "city": null,
+  "lat_name": -33.04,
+  "lon_name": 23.02,
+  "split": "val",
+  "crs": [
+   "EPSG:32734"
+  ],
+  "n_tiles": 21,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   22.881361062160103,
+   -33.15099166186097,
+   23.160607413242282,
+   -32.915777072253775
+  ],
+  "centroid_wgs84": [
+   23.020984237701192,
+   -33.03338436705737
+  ]
+ },
+ {
+  "id": "Polokwane_Savanna_-23p86_29p43_Urban",
+  "biome": "Savanna",
+  "urbanisation": "Urban",
+  "city": "Polokwane",
+  "lat_name": -23.86,
+  "lon_name": 29.43,
+  "split": "val",
+  "crs": [
+   "EPSG:32735"
+  ],
+  "n_tiles": 25,
+  "rows": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "cols": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "footprint_wgs84": [
+   29.303401454531716,
+   -23.978155216558854,
+   29.558912006943206,
+   -23.74316654839173
+  ],
+  "centroid_wgs84": [
+   29.431156730737463,
+   -23.860660882475294
+  ]
+ }
+]

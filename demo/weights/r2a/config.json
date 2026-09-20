@@ -1,0 +1,32 @@
+{
+ "arm": "r2a",
+ "source_run": "sr_r2a_new_gap_ce_anorm_recalpost_seed42",
+ "source_ckpt": "unet_s2rosa_jointsr_final.ckpt",
+ "epoch": 100,
+ "global_step": 268200,
+ "upsampler": "sen2sr",
+ "sr_hc": "native",
+ "reflectance_scale": 1.0,
+ "adaptive_norm": true,
+ "encoder_name": "resnet34",
+ "threshold": 0.7,
+ "threshold_source": "sweep.json (split=val, criterion=f1_macro, purpose=selection)",
+ "window_px": 128,
+ "window_px_reason": "SEN2SR HardConstraint pins the LR input; model._required_lr",
+ "bands": [
+  1,
+  2,
+  3,
+  4
+ ],
+ "band_names": [
+  "B4",
+  "B3",
+  "B2",
+  "B8"
+ ],
+ "sen2sr_dir": "models/SEN2SRLite_RGBN",
+ "sen2sr_dir_original": "/scratch/yhxjin001/InstaRoad/models/SEN2SRLite_RGBN",
+ "state_dict_mb": 101.451,
+ "n_tensors": 486
+}
