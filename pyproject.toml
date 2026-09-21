@@ -40,26 +40,6 @@ sentinel2 = [
     "pyyaml",               # CLI --config loader (sentinel2data.cli)
 ]
 
-samroad = [
-    "addict",               # Configuration dictionary management (utils.py)
-    "igraph",               # High-performance graph processing (dataset.py via graph_utils)
-    "imageio",              # Image reading/writing (inferencer.py)
-    "networkx",             # Graph topology building (graph_extraction.py)
-    "numpy>=1.24.0",        # Array manipulation
-    "opencv-python",        # Image processing (cv2)
-    "lightning",            # Training orchestration (train.py, model.py)
-    "pyyaml",               # Parsing YAML config files (utils.py)
-    "rtree",                # Spatial indexing for bounding box queries (dataset.py, inferencer.py)
-    "scikit-image",         # Image drawing algorithms (graph_extraction.py)
-    "scikit-learn",         # KDTree for spatial neighbor queries (graph_extraction.py)
-    "scipy",                # KDTree for spatial point queries (dataset.py, inferencer.py)
-    # "segment-anything",     # Official Meta SAM repository (model.py)
-    "tcod",                 # A* Pathfinding library (graph_extraction.py)
-    "torch>=2.1.0",         # Core deep learning
-    "torchmetrics",         # Evaluation metrics like IoU and F1 (model.py)
-    "torchvision>=0.25.0",  # Vision operations and loss functions
-    "wandb",
-]
 
 unet = [
     "segmentation-models-pytorch",

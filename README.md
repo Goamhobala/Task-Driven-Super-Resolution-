@@ -149,7 +149,6 @@ sharper purely because its histogram moved.
     src/benchmarking/    evaluation suite, metrics, statistics, result store
     src/dlinknet/        D-LinkNet baseline
     src/terramind/       geospatial foundation-model baseline
-    src/samroad/         graph-based baseline integration
     scripts/             cluster, Lightning, Kaggle and Modal run harnesses
     docs/                protocol documents, one per study
     tests/               15 test modules covering the above

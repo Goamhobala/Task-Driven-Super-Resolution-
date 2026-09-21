@@ -1,6 +1,3 @@
-[submodule "sam_road"]
-	path = sam_road
-	url = https://github.com/InstaRoad/samroad.git
 [submodule "instageo"]
 	path = instageo
 	url = https://github.com/InstaRoad/InstaGeo.git
