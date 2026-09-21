@@ -32,9 +32,9 @@ models to road segmentation.
 3. Is a high-capacity downstream road extractor necessary at all once the
    super-resolution model has been adapted for the task?
 
-## The two approaches
+## TDSR-JT — Task-Driven Super-Resolution Joint Training
 
-**TDSR-JT (Joint Training).** A pretrained SR model and a ResNet-34 U-Net are
+A pretrained SR model and a ResNet-34 U-Net are
 optimised end to end under the segmentation objective alone, with differential
 learning rates so the SR representation adapts more conservatively than the
 segmentation network. There is no reconstruction, perceptual or adversarial
@@ -43,7 +43,9 @@ assumes no high-resolution reference imagery and no task network pretrained on
 it — both are unavailable across much of the globe, and regional mismatch
 corrupts the training signal rather than merely the initialisation.
 
-**TDSR-LP-FT (Linear Probe then Fine-Tune).** The U-Net is replaced by a
+## TDSR-LP-FT — Linear Probe then Fine-Tune
+
+The U-Net is replaced by a
 **five-parameter** logistic head: a single 1x1 convolution mapping four bands
 to one logit. With the SR module frozen this is a linear probe, measuring how
 much road evidence is linearly decodable from the SR output; released and
@@ -52,7 +54,7 @@ linear-probe-then-fine-tune protocol. Because the head remains a five-parameter
 pixelwise projection throughout, any task-relevant spatial representation must
 be supplied by the SR model itself.
 
-Two mechanisms support this:
+## Supporting mechanisms
 
 - **Fourier-based Hard Constraint (FHC).** Task-only supervision leaves the SR
   output unanchored to the observed input — nothing in the objective requires
@@ -91,8 +93,8 @@ opposed in objective: **SEN2SR-Lite** is a CNN trained on pixel-wise
 reconstruction loss and ships with FHC; **SR4RS** is a GAN, which produces finer
 detail but is more prone to hallucination.
 
-The **RL series** (`docs/sr_linear_probe.md`) is the TDSR-LP-FT counterpart:
-the same SR front ends read by the five-parameter head instead of the U-Net.
+TDSR-LP-FT (`docs/sr_linear_probe.md`) runs the same SR front ends read by the
+five-parameter head instead of the U-Net.
 
 ## Dataset
 
@@ -120,8 +122,8 @@ under `scripts/GEE/`.
 Pixel F1 does not capture connectivity, which is what a road network is for.
 The suite therefore reports:
 
-- **APLS** (Average Path Length Similarity) and **clDice** — connectivity,
-  computed on skeletonised predictions
+- **APLS** (Average Path Length Similarity) — connectivity, computed over the
+  extracted road graph rather than per pixel
 - **Buffered F1** at tolerances of 1 to 5 px — the labels are rasterised from
   vector centrelines and are not pixel-perfect, so tolerance separates
   localisation error from genuinely wrong predictions
@@ -149,7 +151,6 @@ multiplicity-adjusted rank evidence.
 | Sharded parquet result store | `store.py` |
 | CLI (eval, sweep, compare, variance, report) | `cli.py` |
 | APLS | `graph_metrics.py` |
-| clDice | `skeleton_metrics.py` |
 
 Two conventions worth naming. **Undefined metrics are NaN, never 0 or 1** — a
 chip with no road has no defined IoU, and recording it as zero biases every
@@ -258,7 +259,7 @@ Select an operating point on validation, then evaluate on test at that point:
 Report across a result store:
 
     python -m benchmarking.cli report --store-dir <store> \
-        --metric f1 --metric iou --metric apls --metric cldice --aggregation both
+        --metric f1 --metric iou --metric apls --aggregation both
 
 Render a tile figure:
 
